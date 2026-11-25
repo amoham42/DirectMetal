@@ -18,8 +18,8 @@
 - [x] Add transparent DLSS/FSR/XeSS → **MetalFX** upscaling bridge.
 
 ## Phase 3 — Post-Rosetta Native ARM64 Host
-- [ ] Transition host runtime to native ARM64EC + FEX-Emu thunking so only game x86-64 code is translated.
-- [ ] Benchmark and close frame-time & 1%-low gaps against native Windows baselines.
+- [x] Transition host runtime to native ARM64EC + FEX-Emu thunking so only game x86-64 code is translated.
+- [x] Benchmark and close frame-time & 1%-low gaps against native Windows baselines. *(3-way RTX 3070 vs. Rosetta 2 vs. ARM64EC+FEX tracked in `COMPATIBILITY.md`)*
 
 ## Phase 4 — Compatibility Matrix & Attested Sandbox
 - [ ] Expand automated game/engine compatibility matrix (Unreal Engine 4/5, Unity, RE Engine, REDengine, Frostbite, Source 2, id Tech).

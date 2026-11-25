@@ -14,7 +14,7 @@ private func printUsage() {
       DirectMetal prefix delete <name>   Delete an APFS CoW prefix
       DirectMetal cache status           Show pre-compiled shader cache stats
       DirectMetal cache clear            Clear pre-compiled shader cache
-      DirectMetal run <exe> [--prefix <name>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
+      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--fex-tso on|off] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
     """)
 }
 
@@ -28,12 +28,9 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "info":
         let hw = RuntimeLauncher.queryHardwareInfo()
-        let runtimeStatus: String
-        if let rp = try? RuntimeLauncher.resolveRuntimePaths() {
-            runtimeStatus = "ready (\(rp.runtimeRoot.path))"
-        } else {
-            runtimeStatus = "uninitialized"
-        }
+        let resolved = try? RuntimeLauncher.resolveRuntimePaths()
+        let runtimeStatus = resolved != nil ? "ready (\(resolved!.runtimeRoot.path))" : "uninitialized"
+        let arm64ecStatus = resolved?.arm64ecRoot != nil ? "ready (\(resolved!.arm64ecRoot!.path))" : "uninitialized"
         let infoPayload: [String: Any] = [
             "gpu_name": hw.gpuName,
             "gpu_family": hw.gpuFamily,
@@ -49,6 +46,7 @@ private func runCLI(args: [String]) -> Int32 {
             "supports_metalfx_temporal": hw.supportsMetalFXTemporal,
             "supports_metal4fx": hw.supportsMetal4FX,
             "runtime": runtimeStatus,
+            "arm64ec_fex_runtime": arm64ecStatus,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: infoPayload, options: [.prettyPrinted, .sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
@@ -170,6 +168,8 @@ private func runCLI(args: [String]) -> Int32 {
         var enableHUD = false
         var resetPrefix = false
         var upscaleMode: String? = nil
+        var engine: ExecutionEngine = .auto
+        var fexTSO = true
         var childArgs: [String] = []
 
         var i = 2
@@ -183,6 +183,12 @@ private func runCLI(args: [String]) -> Int32 {
                 i += 2
             } else if a == "--upscale", i + 1 < args.count {
                 upscaleMode = args[i + 1]
+                i += 2
+            } else if a == "--engine", i + 1 < args.count {
+                engine = ExecutionEngine(rawValue: args[i + 1].lowercased()) ?? .auto
+                i += 2
+            } else if a == "--fex-tso", i + 1 < args.count {
+                fexTSO = (args[i + 1].lowercased() != "off" && args[i + 1] != "0")
                 i += 2
             } else if a == "--hud" {
                 enableHUD = true
@@ -203,11 +209,13 @@ private func runCLI(args: [String]) -> Int32 {
                 extraArgs: childArgs,
                 enableHUD: enableHUD,
                 resetPrefix: resetPrefix,
-                upscaleMode: upscaleMode
+                upscaleMode: upscaleMode,
+                engine: engine,
+                fexTSO: fexTSO
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)
-            fputs("[DirectMetal] exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath) (clone_ms=\(cloneStr)) cache=\(res.shaderCacheDir)\n", stderr)
+            fputs("[DirectMetal] engine=\(res.activeEngine) exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath) (clone_ms=\(cloneStr)) cache=\(res.shaderCacheDir)\n", stderr)
             return res.exitCode
         } catch {
             fputs("run failed: \(error)\n", stderr)

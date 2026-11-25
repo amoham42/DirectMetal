@@ -31,7 +31,7 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 | `d3d11_07_mrt_postprocess` | **PASS** | 62.55 dB | 0.999479 | 1 | 0.00% | - |  |
 | `d3d11_08_msaa_resolve` | **PASS** | 68.63 dB | 0.999982 | 1 | 0.00% | - |  |
 | `d3d11_09_instancing` | **PASS** | 69.45 dB | 0.999990 | 1 | 0.00% | - |  |
-| `d3d11_10_compute_uav` | **PASS** | 63.90 dB | 0.999826 | 1 | 0.00% | EXACT |  |
+| `d3d11_10_compute_uav` | **PASS** | 63.95 dB | 0.999828 | 1 | 0.00% | EXACT |  |
 
 ## D3D12 Conformance (9 / 9 Passed)
 
@@ -54,15 +54,15 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 
 | Suite | Reference Mean (ms) | Reference FPS | Reference 1%-Low FPS | DirectMetal Mean (ms) | DirectMetal FPS | DirectMetal 1%-Low FPS | M1 Pro / RTX 3070 FPS |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.748 | 1336.4 | 280.2 | 6.1% |
-| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.528 | 1893.9 | 471.6 | 20.5% |
+| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.603 | 1659.5 | 308.0 | 7.6% |
+| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.437 | 2287.8 | 577.8 | 24.8% |
 
 ## Native ARM64 Host Subsystem Microbenchmarks
 
-- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 234.56 ms total | 1.173 us/wakeup
-- **POSIX Baseline (pthread_cond):** pthread_cond            : 286.15 ms total | 1.431 us/wakeup (1.22x vs os_sync)
-- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 307.76 ms total | 1.539 us/wakeup (1.31x vs os_sync)
-- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.408 ms
+- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 244.14 ms total | 1.221 us/wakeup
+- **POSIX Baseline (pthread_cond):** pthread_cond            : 282.67 ms total | 1.413 us/wakeup (1.16x vs os_sync)
+- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 322.56 ms total | 1.613 us/wakeup (1.32x vs os_sync)
+- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.423 ms
 
 ## Phase 2 — Apple Silicon Deep Optimizations (M1 Pro)
 
@@ -75,3 +75,13 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 | **MetalFX Spatial Quality (720p -> 1080p, 1.5x)** | Native 1080p: 6.126 ms (163.2 FPS) | Spatial Quality: 3.559 ms (281.0 FPS) | **1.72x** FPS (PSNR=51.23 dB, SSIM=0.9941) |
 | **MetalFX Spatial Perf (540p -> 1080p, 2.0x)** | Native 1080p: 6.126 ms (163.2 FPS) | Spatial Perf: 2.403 ms (416.2 FPS) | **2.55x** FPS |
 | **MetalFX Temporal Quality (720p -> 1080p, 1.5x)** | Native 1080p FP16: 6.111 ms | Temporal Quality: 5.540 ms (180.5 FPS) | **1.10x** FPS (PSNR=55.95 dB, SSIM=0.9991) |
+
+## Phase 3 — Post-Rosetta Native ARM64EC + FEX-Emu Comparison (M1 Pro)
+
+- **ARM64EC + FEX-Emu Conformance (vs. RTX 3070):** **19 / 19 (100.0%)** | Mean SSIM: `0.999829` | Min PSNR: `54.32 dB`
+- **Native ARM64 Host I/O:** CoreAudio `MacBook Pro Speakers` (48000 Hz, 12.21 ms latency), GameController.framework `ready`
+
+| Benchmark Suite | RTX 3070 (FPS / 1%-Low) | M1 Pro Rosetta 2 (FPS / 1%-Low) | M1 Pro ARM64EC+FEX TSO=1 (FPS / 1%-Low) | M1 Pro ARM64EC+FEX TSO=0 (FPS / 1%-Low) | ARM64EC TSO=1 vs Rosetta 2 |
+| :--- | ---: | ---: | ---: | ---: | ---: |
+| `d3d11_bench_frame` | 21962.6 / 3397.3 | 1336.4 / 280.2 | 1715.4 / 339.4 | 1743.3 / 186.1 | **1.28x** |
+| `d3d12_bench_frame` | 9227.2 / 3641.0 | 1893.9 / 471.6 | 2630.7 / 796.0 | 2321.9 / 614.8 | **1.39x** |

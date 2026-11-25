@@ -12,6 +12,7 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var prefixes: [String] = []
     @Published var enableMetalHUD: Bool = true
     @Published var upscaleMode: String = "off"
+    @Published var selectedEngine: ExecutionEngine = .auto
     @Published var cacheSummary: ShaderCacheSummary = RuntimeLauncher.queryShaderCache()
     @Published var statusMessage: String = "Ready — drop a DirectX 10/11/12 .exe to inspect and launch."
     @Published var isRunning: Bool = false
@@ -68,6 +69,7 @@ final class DirectMetalViewModel: ObservableObject {
         let targetPrefix = prefixName
         let hud = enableMetalHUD
         let upscale = upscaleMode
+        let engine = selectedEngine
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -76,7 +78,8 @@ final class DirectMetalViewModel: ObservableObject {
                     prefixName: targetPrefix,
                     extraArgs: [],
                     enableHUD: hud,
-                    upscaleMode: upscale
+                    upscaleMode: upscale,
+                    engine: engine
                 )
                 DispatchQueue.main.async {
                     self.isRunning = false
@@ -169,15 +172,21 @@ struct DirectMetalContentView: View {
                 Text("APFS CoW Prefix:")
                 TextField("Prefix name", text: $vm.prefixName)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 180)
+                    .frame(width: 140)
+                Picker("Engine:", selection: $vm.selectedEngine) {
+                    Text("Auto").tag(ExecutionEngine.auto)
+                    Text("ARM64EC+FEX").tag(ExecutionEngine.arm64ec)
+                    Text("Rosetta 2").tag(ExecutionEngine.rosetta)
+                }
+                .frame(width: 165)
                 Picker("MetalFX:", selection: $vm.upscaleMode) {
                     Text("Off").tag("off")
                     Text("Quality (1.5x)").tag("quality")
                     Text("Balanced (1.7x)").tag("balanced")
                     Text("Perf (2.0x)").tag("performance")
                 }
-                .frame(width: 190)
-                Toggle("Metal HUD", isOn: $vm.enableMetalHUD)
+                .frame(width: 170)
+                Toggle("HUD", isOn: $vm.enableMetalHUD)
                 Spacer()
                 Button(vm.isRunning ? "Running…" : "Launch") {
                     vm.launchSelected()

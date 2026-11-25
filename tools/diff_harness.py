@@ -229,6 +229,7 @@ def render_compatibility_markdown(
     cand_sys: dict[str, Any] | None = None,
     extra_metrics: dict[str, Any] | None = None,
     phase2_metrics: dict[str, Any] | None = None,
+    phase3_metrics: dict[str, Any] | None = None,
 ) -> str:
     total = report["total_tests"]
     passed = report["passed_tests"]
@@ -367,6 +368,49 @@ def render_compatibility_markdown(
                 f"**{mfx.get('temporal_quality_speedup_x', 0):.2f}x** FPS (PSNR={_fmt_psnr(mfx.get('temporal_quality_psnr_db', 0.0))}, SSIM={mfx.get('temporal_quality_ssim', 0.0):.4f}) |"
             )
 
+    if phase3_metrics:
+        p3_pass = phase3_metrics.get("passed_tests", 0)
+        p3_tot = phase3_metrics.get("total_tests", 0)
+        p3_pct = (100.0 * p3_pass / p3_tot) if p3_tot else 0.0
+        p3_ssim = phase3_metrics.get("mean_ssim", 0.0)
+        p3_min_psnr = phase3_metrics.get("min_psnr_db")
+        p3_psnr_str = "Exact (inf)" if p3_min_psnr is None else f"{p3_min_psnr:.2f} dB"
+        lines.extend([
+            "",
+            "## Phase 3 — Post-Rosetta Native ARM64EC + FEX-Emu Comparison (M1 Pro)",
+            "",
+            f"- **ARM64EC + FEX-Emu Conformance (vs. RTX 3070):** **{p3_pass} / {p3_tot} ({p3_pct:.1f}%)** | Mean SSIM: `{p3_ssim:.6f}` | Min PSNR: `{p3_psnr_str}`",
+        ])
+        hio = phase3_metrics.get("host_io", {})
+        if hio:
+            lines.append(
+                f"- **Native ARM64 Host I/O:** CoreAudio `{hio.get('audio_device', 'N/A')}` "
+                f"({hio.get('audio_sample_rate_hz', 0):.0f} Hz, {hio.get('audio_latency_ms', 0):.2f} ms latency), "
+                f"GameController.framework `{'ready' if hio.get('gamecontroller_ok') else 'unavailable'}`"
+            )
+        lines.extend([
+            "",
+            "| Benchmark Suite | RTX 3070 (FPS / 1%-Low) | M1 Pro Rosetta 2 (FPS / 1%-Low) | M1 Pro ARM64EC+FEX TSO=1 (FPS / 1%-Low) | M1 Pro ARM64EC+FEX TSO=0 (FPS / 1%-Low) | ARM64EC TSO=1 vs Rosetta 2 |",
+            "| :--- | ---: | ---: | ---: | ---: | ---: |",
+        ])
+        for api, s in phase3_metrics.get("suites", {}).items():
+            rb = s.get("rtx3070", {})
+            ros = s.get("rosetta2", {})
+            t1 = s.get("arm64ec_tso1", {})
+            t0 = s.get("arm64ec_tso0", {})
+            ros_fps = float(ros.get("fps", 0.0))
+            t1_fps = float(t1.get("fps", 0.0))
+            t0_fps = float(t0.get("fps", 0.0))
+            ratio = (t1_fps / ros_fps) if ros_fps > 0 else 0.0
+            lines.append(
+                f"| `{api}_bench_frame` | "
+                f"{rb.get('fps', 0):.1f} / {rb.get('one_percent_low_fps', 0):.1f} | "
+                f"{ros_fps:.1f} / {ros.get('one_percent_low_fps', 0):.1f} | "
+                f"{t1_fps:.1f} / {t1.get('one_percent_low_fps', 0):.1f} | "
+                f"{t0_fps:.1f} / {t0.get('one_percent_low_fps', 0):.1f} | "
+                f"**{ratio:.2f}x** |"
+            )
+
     lines.append("")
     return "\n".join(lines)
 
@@ -380,6 +424,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--json-out", type=Path, default=None, help="Optional structured JSON summary path")
     parser.add_argument("--extra-metrics", type=Path, default=None, help="Optional extra host metrics JSON")
     parser.add_argument("--phase2-metrics", type=Path, default=None, help="Optional Phase 2 benchmarks JSON")
+    parser.add_argument("--phase3-metrics", type=Path, default=None, help="Optional Phase 3 ARM64EC benchmarks JSON")
     parser.add_argument("--ssim-threshold", type=float, default=0.995)
     parser.add_argument("--psnr-threshold", type=float, default=40.0)
     args = parser.parse_args(argv)
@@ -396,10 +441,12 @@ def main(argv: list[str] | None = None) -> int:
     cand_sys = json.loads((args.cand / "system_info.json").read_text()) if (args.cand / "system_info.json").exists() else None
     extra = json.loads(args.extra_metrics.read_text()) if (args.extra_metrics and args.extra_metrics.exists()) else None
     phase2 = json.loads(args.phase2_metrics.read_text()) if (args.phase2_metrics and args.phase2_metrics.exists()) else None
+    phase3 = json.loads(args.phase3_metrics.read_text()) if (args.phase3_metrics and args.phase3_metrics.exists()) else None
 
     if args.update_compat is not None:
         md = render_compatibility_markdown(
-            report, ref_sys=ref_sys, cand_sys=cand_sys, extra_metrics=extra, phase2_metrics=phase2
+            report, ref_sys=ref_sys, cand_sys=cand_sys, extra_metrics=extra,
+            phase2_metrics=phase2, phase3_metrics=phase3,
         )
         args.update_compat.write_text(md, encoding="utf-8")
 

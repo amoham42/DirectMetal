@@ -117,11 +117,19 @@ class TestDiffHarness(unittest.TestCase):
                             "discrete_gbps": 6.5, "uma_gbps": 12.0, "discrete_footprint_mib": 15.0,
                             "uma_footprint_mib": 5.0, "memory_reduction_pct": 66.7}
                 },
+                phase3_metrics={
+                    "passed_tests": 2, "total_tests": 2, "mean_ssim": 0.9999, "min_psnr_db": 55.0,
+                    "suites": {"d3d11": {"rtx3070": {"fps": 20000, "one_percent_low_fps": 3000},
+                                         "rosetta2": {"fps": 1300, "one_percent_low_fps": 280},
+                                         "arm64ec_tso1": {"fps": 1400, "one_percent_low_fps": 300},
+                                         "arm64ec_tso0": {"fps": 1500, "one_percent_low_fps": 320}}},
+                },
             )
             self.assertIn("1 / 2 (50.0%)", md)
             self.assertIn("Exact (inf)", md)
             self.assertIn("EXACT", md)
             self.assertIn("UMA Zero-Copy", md)
+            self.assertIn("ARM64EC + FEX-Emu", md)
 
 
 if __name__ == "__main__":

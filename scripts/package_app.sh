@@ -47,6 +47,12 @@ MULLION_REL="$(cd "${CONTENTS}/Runtime" && find mullion-dist -maxdepth 3 -type f
 ln -sfn "${WINE_REL}" "${CONTENTS}/Runtime/wine"
 ln -sfn "${MULLION_REL}" "${CONTENTS}/Runtime/mullion"
 
+ARM64EC_SRC="${REPO_ROOT}/build/runtime-arm64ec"
+if [[ -d "${ARM64EC_SRC}/base-prefix" ]]; then
+  echo "[DirectMetal] Cloning self-contained ARM64EC + FEX-Emu runtime via APFS CoW..."
+  cp -Rc "${ARM64EC_SRC}" "${CONTENTS}/Runtime-ARM64EC"
+fi
+
 echo "[DirectMetal] Applying Hardened Runtime entitlements (ad-hoc signed)..."
 xattr -dr com.apple.quarantine "${APP_BUNDLE}" 2>/dev/null || true
 codesign --force --sign - --entitlements "${REPO_ROOT}/sandbox/DirectMetal.entitlements" "${APP_BUNDLE}"

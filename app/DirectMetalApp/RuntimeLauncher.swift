@@ -26,12 +26,22 @@ struct ShaderCacheSummary: Codable {
     let entries: [String]
 }
 
+enum ExecutionEngine: String, Codable {
+    case auto
+    case arm64ec
+    case rosetta
+}
+
 struct RuntimePaths {
     let runtimeRoot: URL
     let wineBin: URL
     let wineserverBin: URL
     let basePrefix: URL
     let mullionConfig: URL?
+    let arm64ecRoot: URL?
+    let arm64ecWineBin: URL?
+    let arm64ecWineserverBin: URL?
+    let arm64ecBasePrefix: URL?
 }
 
 struct LaunchResult {
@@ -40,6 +50,7 @@ struct LaunchResult {
     let prefixPath: String
     let cloneMs: Double
     let shaderCacheDir: String
+    let activeEngine: String
 }
 
 enum LauncherError: Error, CustomStringConvertible {
@@ -129,6 +140,34 @@ enum RuntimeLauncher {
         )
     }
 
+    static func resolveARM64ECRuntime() -> (root: URL, wine: URL, wineserver: URL, basePrefix: URL)? {
+        let fm = FileManager.default
+        var candidates: [URL] = []
+        if let env = ProcessInfo.processInfo.environment["DIRECTMETAL_ARM64EC_RUNTIME_DIR"], !env.isEmpty {
+            candidates.append(URL(fileURLWithPath: env, isDirectory: true))
+        }
+        candidates.append(Bundle.main.bundleURL.appendingPathComponent("Contents/Runtime-ARM64EC", isDirectory: true))
+        let cwd = URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true)
+        candidates.append(cwd.appendingPathComponent("build/runtime-arm64ec", isDirectory: true))
+        var probe = URL(fileURLWithPath: CommandLine.arguments[0]).deletingLastPathComponent()
+        for _ in 0..<5 {
+            candidates.append(probe.appendingPathComponent("build/runtime-arm64ec", isDirectory: true))
+            candidates.append(probe.appendingPathComponent("Contents/Runtime-ARM64EC", isDirectory: true))
+            probe = probe.deletingLastPathComponent()
+        }
+
+        for root in candidates {
+            let wine = root.appendingPathComponent("bin/wine")
+            let ws = root.appendingPathComponent("bin/wineserver")
+            let basePrefix = root.appendingPathComponent("base-prefix", isDirectory: true)
+            if fm.isExecutableFile(atPath: wine.path) &&
+               fm.fileExists(atPath: basePrefix.appendingPathComponent("system.reg").path) {
+                return (root, wine, ws, basePrefix)
+            }
+        }
+        return nil
+    }
+
     static func resolveRuntimePaths() throws -> RuntimePaths {
         let fm = FileManager.default
         var candidates: [URL] = []
@@ -148,6 +187,8 @@ enum RuntimeLauncher {
             candidates.append(probe.appendingPathComponent("Contents/Runtime", isDirectory: true))
             probe = probe.deletingLastPathComponent()
         }
+
+        let arm64ec = resolveARM64ECRuntime()
 
         for root in candidates {
             let wine = root.appendingPathComponent("wine/bin/wine")
@@ -171,7 +212,11 @@ enum RuntimeLauncher {
                     wineBin: wine,
                     wineserverBin: wineserver,
                     basePrefix: basePrefix,
-                    mullionConfig: conf
+                    mullionConfig: conf,
+                    arm64ecRoot: arm64ec?.root,
+                    arm64ecWineBin: arm64ec?.wine,
+                    arm64ecWineserverBin: arm64ec?.wineserver,
+                    arm64ecBasePrefix: arm64ec?.basePrefix
                 )
             }
         }
@@ -232,7 +277,9 @@ enum RuntimeLauncher {
         extraArgs: [String],
         enableHUD: Bool = false,
         resetPrefix: Bool = false,
-        upscaleMode: String? = nil
+        upscaleMode: String? = nil,
+        engine: ExecutionEngine = .auto,
+        fexTSO: Bool = true
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -246,6 +293,24 @@ enum RuntimeLauncher {
         let dxApi = profile?.detectedAPIs.joined(separator: "+") ?? "auto"
         let buildHash = profile?.buildHash ?? "unknown"
 
+        let hasARM64EC = (paths.arm64ecWineBin != nil && paths.arm64ecBasePrefix != nil)
+        let useARM64EC: Bool
+        switch engine {
+        case .arm64ec:
+            guard hasARM64EC else {
+                throw LauncherError.runtimeNotFound("ARM64EC+FEX runtime not found. Run scripts/setup_runtime_arm64ec.sh first.")
+            }
+            useARM64EC = true
+        case .rosetta:
+            useARM64EC = false
+        case .auto:
+            useARM64EC = hasARM64EC && (profile?.is64Bit ?? true)
+        }
+
+        let selectedWine = useARM64EC ? paths.arm64ecWineBin! : paths.wineBin
+        let selectedBasePrefix = useARM64EC ? paths.arm64ecBasePrefix! : paths.basePrefix
+        let activeEngine = useARM64EC ? "arm64ec-fex" : "rosetta2"
+
         let shaderCacheDir = shaderCacheRoot()
             .appendingPathComponent("\(buildHash)_\(hw.cacheKey)", isDirectory: true)
         try fm.createDirectory(at: shaderCacheDir, withIntermediateDirectories: true)
@@ -253,7 +318,7 @@ enum RuntimeLauncher {
         let prefixMgr = PrefixManager()
         let (prefixURL, _, cloneMs) = try prefixMgr.createOrEnsure(
             name: prefixName,
-            basePrefix: paths.basePrefix,
+            basePrefix: selectedBasePrefix,
             gameExe: exeURL.path,
             dxApi: dxApi,
             shaderCacheKey: "\(buildHash)_\(hw.cacheKey)",
@@ -263,6 +328,9 @@ enum RuntimeLauncher {
         var env = ProcessInfo.processInfo.environment
         env["WINEPREFIX"] = prefixURL.path
         env["WINEMSYNC"] = "1"
+        if useARM64EC {
+            env["FEX_TSOENABLED"] = fexTSO ? "1" : "0"
+        }
         if env["DIRECTMETAL_VERBOSE_WINE"] != "1" {
             env["WINEDEBUG"] = "-all"
         }
@@ -293,7 +361,7 @@ enum RuntimeLauncher {
         }
 
         let proc = Process()
-        proc.executableURL = paths.wineBin
+        proc.executableURL = selectedWine
         proc.arguments = [exeURL.path] + extraArgs
         proc.currentDirectoryURL = exeURL.deletingLastPathComponent()
         proc.environment = env
@@ -308,7 +376,8 @@ enum RuntimeLauncher {
             elapsedSeconds: elapsed,
             prefixPath: prefixURL.path,
             cloneMs: cloneMs,
-            shaderCacheDir: shaderCacheDir.path
+            shaderCacheDir: shaderCacheDir.path,
+            activeEngine: activeEngine
         )
     }
 }
