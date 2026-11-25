@@ -1,0 +1,12 @@
+.DS_Store
+build/
+out/
+dist/
+*.xcodeproj/xcuserdata/
+*.xcworkspace/xcuserdata/
+.build/
+*.metallib
+*.air
+*.log
+prefixes/
+captures/
