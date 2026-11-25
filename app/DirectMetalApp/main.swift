@@ -16,7 +16,7 @@ private func printUsage() {
       DirectMetal cache clear            Clear pre-compiled shader cache
       DirectMetal attest [--nonce <hex>] [--sandbox] [--target <path>]
                                          Collect signed platform attestation JSON (opt-in)
-      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
+      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
     """)
 }
 
@@ -209,6 +209,8 @@ private func runCLI(args: [String]) -> Int32 {
         var upscaleMode: String? = nil
         var engine: ExecutionEngine = .auto
         var fexTSO = true
+        var dx9Backend: DX9Backend = .auto
+        var virtualDesktop: String? = nil
         var childArgs: [String] = []
 
         var i = 2
@@ -228,6 +230,12 @@ private func runCLI(args: [String]) -> Int32 {
                 i += 2
             } else if a == "--fex-tso", i + 1 < args.count {
                 fexTSO = (args[i + 1].lowercased() != "off" && args[i + 1] != "0")
+                i += 2
+            } else if a == "--dx9-backend", i + 1 < args.count {
+                dx9Backend = DX9Backend(rawValue: args[i + 1].lowercased()) ?? .auto
+                i += 2
+            } else if a == "--desktop", i + 1 < args.count {
+                virtualDesktop = args[i + 1]
                 i += 2
             } else if a == "--hud" {
                 enableHUD = true
@@ -261,6 +269,8 @@ private func runCLI(args: [String]) -> Int32 {
                 upscaleMode: upscaleMode,
                 engine: engine,
                 fexTSO: fexTSO,
+                dx9Backend: dx9Backend,
+                virtualDesktop: virtualDesktop,
                 sandboxed: sandboxed,
                 sandboxOffline: sandboxOffline,
                 sandboxOutputDir: sandboxOutDir

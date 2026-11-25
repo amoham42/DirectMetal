@@ -54,3 +54,15 @@ All 6 engine-class tests in [tests/conformance/engine_patterns/](../tests/confor
 - **Platform Attestation SDK ([sandbox/dm_attestation/](../sandbox/dm_attestation/) & `DirectMetal attest`):**
   - Measures authentic macOS security signals without spoofing: **SIP** (`csrutil status` -> `enabled`), **Signed System Volume** (`csrutil authenticated-root status` -> `enabled`), **`SecStaticCode` CDHash & binary SHA-256**, **sandbox flag**, and **`DCAppAttestService.shared.isSupported`** (honestly reports `false` on macOS desktop targets).
   - Signs canonical JSON claims with an ephemeral `ECDSA P-256 SHA-256 X9.62` keypair (`Security.framework` / `CryptoKit`) bound to server nonces; rejects mismatched nonces and tampered claims.
+
+---
+
+## 4. Real-World Retail Game Verification (M1 Pro)
+
+- **Need for Speed: Hot Pursuit (2010) (`NFS11.exe`, 32-bit x86, DirectX 9, `7.84 GB`, standalone):**
+  - **Auto-Detection (`DirectMetal inspect`):** `x86` (`is64Bit: false`), `detectedAPIs: ["D3D9"]` (`d3d9.dll`, `d3dx9_42.dll`, `DINPUT8.dll`, `XINPUT1_3.dll`, `DSOUND.dll`).
+  - **Root Causes Diagnosed & Fixed in `DirectMetal`:**
+    1. Exclusive fullscreen `ChangeDisplaySettings` failed with `DISP_CHANGE_BADMODE (-2)` (`hr 0x8876086a`) on macOS Retina display → auto-enables Wine Virtual Desktop (`explorer /desktop=DirectMetal,1280x720`) for D3D9 titles.
+    2. On Wine `11.21` + MoltenVK `1.1.323`, both DXVK (`v1.10.3`/`v2.4.1`) (`geometryShader` & `shaderCullDistance` unavailable) and WineD3D Vulkan (`VK_EXT_external_memory_host` handle mismatch) rejected device/buffer creation → `--dx9-backend auto` routes D3D9 titles to `WINE_D3D_CONFIG="renderer=gl"` (`d3d9=b`).
+  - **Live Result on Apple M1 Pro:** `NFS11.exe` booted cleanly, generated `Documents/Criterion Games/Need for Speed(TM) Hot Pursuit/config.NFS11Save`, opened an active on-screen window (`800×600`, `782 MB` RSS), and drove live 3D rendering on the Apple M1 Pro GPU (**66% Device / 64% Renderer / 66% Tiler utilization**, `729 MiB` active GPU memory).
+

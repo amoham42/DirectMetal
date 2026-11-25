@@ -193,6 +193,9 @@ enum PEInspector {
         if lowerDLLs.contains(where: { $0 == "d3d10.dll" || $0 == "d3d10_1.dll" || $0 == "d3d10core.dll" }) {
             apis.append("D3D10")
         }
+        if lowerDLLs.contains(where: { $0 == "d3d9.dll" || $0.hasPrefix("d3dx9_") }) {
+            apis.append("D3D9")
+        }
         if lowerDLLs.contains(where: { $0 == "dxgi.dll" }) { apis.append("DXGI") }
 
         var upscalers: [String] = []

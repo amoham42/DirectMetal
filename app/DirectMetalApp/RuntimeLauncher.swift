@@ -32,6 +32,12 @@ enum ExecutionEngine: String, Codable {
     case rosetta
 }
 
+enum DX9Backend: String, Codable {
+    case auto
+    case dxvk
+    case wined3d
+}
+
 struct RuntimePaths {
     let runtimeRoot: URL
     let wineBin: URL
@@ -281,6 +287,8 @@ enum RuntimeLauncher {
         upscaleMode: String? = nil,
         engine: ExecutionEngine = .auto,
         fexTSO: Bool = true,
+        dx9Backend: DX9Backend = .auto,
+        virtualDesktop: String? = nil,
         sandboxed: Bool = false,
         sandboxOffline: Bool = false,
         sandboxOutputDir: String? = nil
@@ -364,6 +372,51 @@ enum RuntimeLauncher {
             env["MTL_HUD_ENABLED"] = "1"
         }
 
+        let isD3D9 = profile?.detectedAPIs.contains("D3D9") ?? false
+        if isD3D9 || dx9Backend != .auto {
+            // On macOS 26.1 / MoltenVK 1.1.323, DXVK d3d9 requests unsupported geometryShader/shaderCullDistance
+            // and WineD3D Vulkan requests unsupported VK_EXT_external_memory_host; WineD3D GL runs reliably on M1 Pro.
+            let useDXVK = (dx9Backend == .dxvk)
+            let overrideEntry = useDXVK ? "d3d9=n,b" : "d3d9=b"
+            if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
+                env["WINEDLLOVERRIDES"] = "\(existing);\(overrideEntry)"
+            } else {
+                env["WINEDLLOVERRIDES"] = overrideEntry
+            }
+            if useDXVK {
+                env["DXVK_ASYNC"] = "1"
+                env["DXVK_STATE_CACHE_PATH"] = shaderCacheDir.path
+                if env["DXVK_LOG_PATH"] == nil {
+                    env["DXVK_LOG_PATH"] = "none"
+                }
+                env["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = "1"
+                if enableHUD && env["DXVK_HUD"] == nil {
+                    env["DXVK_HUD"] = "fps,frametimes,devinfo,api"
+                }
+            } else {
+                if env["WINE_D3D_CONFIG"] == nil {
+                    env["WINE_D3D_CONFIG"] = "renderer=gl"
+                }
+            }
+        }
+
+        // Legacy DX9 games calling ChangeDisplaySettings hit DISP_CHANGE_BADMODE on Retina displays;
+        // auto-enable a 1280x720 Wine Virtual Desktop for D3D9 unless --desktop off is passed.
+        let effectiveDesktop: String?
+        if let vd = virtualDesktop?.lowercased() {
+            effectiveDesktop = (vd == "off" || vd == "none" || vd.isEmpty) ? nil : vd
+        } else {
+            effectiveDesktop = isD3D9 ? "1280x720" : nil
+        }
+
+        let wineArgs: [String]
+        if let vd = effectiveDesktop {
+            let winExe = "Z:" + exeURL.path.replacingOccurrences(of: "/", with: "\\")
+            wineArgs = ["explorer", "/desktop=DirectMetal,\(vd)", winExe] + extraArgs
+        } else {
+            wineArgs = [exeURL.path] + extraArgs
+        }
+
         let proc = Process()
         if sandboxed {
             let resolvedOutDir = DirectMetalSandbox.inferOutputDir(
@@ -380,10 +433,10 @@ enum RuntimeLauncher {
                 allowNetwork: !sandboxOffline
             )
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
-            proc.arguments = ["-f", profileURL.path, selectedWine.path, exeURL.path] + extraArgs
+            proc.arguments = ["-f", profileURL.path, selectedWine.path] + wineArgs
         } else {
             proc.executableURL = selectedWine
-            proc.arguments = [exeURL.path] + extraArgs
+            proc.arguments = wineArgs
         }
         proc.currentDirectoryURL = exeURL.deletingLastPathComponent()
         proc.environment = env

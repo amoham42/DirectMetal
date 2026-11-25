@@ -12,6 +12,9 @@ WINE_TARBALL="${CACHE_DIR}/wine-devel-11.21-osx64.tar.xz"
 MULLION_URL="https://github.com/dttdrv/mullion/releases/download/v0.5-alpha.4/mullion-v0.5-alpha.4.tar.gz"
 MULLION_TARBALL="${CACHE_DIR}/mullion-v0.5-alpha.4.tar.gz"
 
+DXVK_URL="https://github.com/Gcenx/DXVK-macOS/releases/download/v1.10.3-20230507/dxvk-macOS-async-v1.10.3-20230507.tar.gz"
+DXVK_TARBALL="${CACHE_DIR}/dxvk-macOS-async-v1.10.3-20230507.tar.gz"
+
 mkdir -p "${CACHE_DIR}" "${RUNTIME_DIR}"
 
 download_if_missing() {
@@ -28,6 +31,7 @@ download_if_missing() {
 
 download_if_missing "${WINE_URL}" "${WINE_TARBALL}"
 download_if_missing "${MULLION_URL}" "${MULLION_TARBALL}"
+download_if_missing "${DXVK_URL}" "${DXVK_TARBALL}"
 
 WINE_EXTRACT="${RUNTIME_DIR}/wine-dist"
 if [[ ! -d "${WINE_EXTRACT}" ]]; then
@@ -86,6 +90,24 @@ fi
 
 echo "[DirectMetal] Installing Mullion DLLs into golden base prefix..."
 "${MULLION_ROOT}/install.sh" "${WINE_ROOT}" "${BASE_PREFIX}"
+
+DXVK_EXTRACT="${RUNTIME_DIR}/dxvk-dist"
+if [[ ! -d "${DXVK_EXTRACT}" ]]; then
+  echo "[DirectMetal] Extracting DXVK-macOS async (D3D9 -> Vulkan -> MoltenVK -> Metal)..."
+  mkdir -p "${DXVK_EXTRACT}"
+  tar -xzf "${DXVK_TARBALL}" -C "${DXVK_EXTRACT}"
+fi
+DXVK_X32_D3D9="$(find "${DXVK_EXTRACT}" -type f -path "*/x32/d3d9.dll" | head -n 1 || true)"
+DXVK_X64_D3D9="$(find "${DXVK_EXTRACT}" -type f -path "*/x64/d3d9.dll" | head -n 1 || true)"
+if [[ -n "${DXVK_X32_D3D9}" ]]; then
+  mkdir -p "${BASE_PREFIX}/drive_c/windows/syswow64"
+  cp -f "${DXVK_X32_D3D9}" "${BASE_PREFIX}/drive_c/windows/syswow64/d3d9.dll"
+  echo "[DirectMetal] Installed 32-bit DXVK d3d9.dll -> syswow64/d3d9.dll"
+fi
+if [[ -n "${DXVK_X64_D3D9}" ]]; then
+  cp -f "${DXVK_X64_D3D9}" "${BASE_PREFIX}/drive_c/windows/system32/d3d9.dll"
+  echo "[DirectMetal] Installed 64-bit DXVK d3d9.dll -> system32/d3d9.dll"
+fi
 
 echo "[DirectMetal] Verifying Wine + Mullion installation..."
 "${WINE_ROOT}/bin/wine" --version
