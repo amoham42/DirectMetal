@@ -1,0 +1,92 @@
+{
+  "api": "D3D12-Engine",
+  "feature_level": "12_2",
+  "adapter": {
+    "description": "NVIDIA GeForce RTX 3070 Laptop GPU",
+    "vendor_id": 4318,
+    "device_id": 9437,
+    "dedicated_vram_mb": 8018,
+    "shared_mem_mb": 8118
+  },
+  "summary": {
+    "passed": 6,
+    "total": 6
+  },
+  "tests": [
+    {
+      "name": "eng_01_deferred_gbuffer",
+      "status": "pass",
+      "png": "eng_01_deferred_gbuffer.png",
+      "pixel_checksum": "0x42f9d893b42d9b54",
+      "shader_model": "vs_6_0/ps_6_0 (DXIL)",
+      "duration_ms": 74.6166,
+      "detail": "3-MRT G-Buffer + D32 depth + Cook-Torrance GGX deferred PBR"
+    },
+    {
+      "name": "eng_02_shadow_pcf",
+      "status": "pass",
+      "png": "eng_02_shadow_pcf.png",
+      "pixel_checksum": "0xa0651b322657f7ab",
+      "shader_model": "vs_6_0/ps_6_0 (DXIL)",
+      "duration_ms": 38.0251,
+      "detail": "D32 depth shadow map + 3x3 SamplerComparisonState PCF"
+    },
+    {
+      "name": "eng_03_gpu_cull_indirect",
+      "status": "pass",
+      "png": "eng_03_gpu_cull_indirect.png",
+      "pixel_checksum": "0xd9c7913cfe663265",
+      "compute_checksum": "0x000000181106c74c",
+      "expected_compute_checksum": "0x000000181106c74c",
+      "shader_model": "cs_6_0+vs_6_0/ps_6_0 (DXIL)",
+      "duration_ms": 44.6685,
+      "detail": "Compute cull (24/64 kept) + ExecuteIndirect CountBuffer"
+    },
+    {
+      "name": "eng_04_hdr_bloom_tonemap",
+      "status": "pass",
+      "png": "eng_04_hdr_bloom_tonemap.png",
+      "pixel_checksum": "0xb278b18e334dec10",
+      "shader_model": "vs_6_0/cs_6_0/ps_6_0 (DXIL)",
+      "duration_ms": 52.9247,
+      "detail": "R16G16B16A16_FLOAT HDR -> CS separable bloom -> ACES tonemap"
+    },
+    {
+      "name": "eng_05_wave_ops",
+      "status": "pass",
+      "png": "eng_05_wave_ops.png",
+      "pixel_checksum": "0xe7f09f538c0f4f25",
+      "compute_checksum": "0x00000000015f0000",
+      "expected_compute_checksum": "0x00000000015f0000",
+      "shader_model": "cs_6_0 WaveOps (DXIL)",
+      "duration_ms": 34.9081,
+      "detail": "WaveActiveSum/PrefixSum/BitXor + RootConstants bit-exact"
+    },
+    {
+      "name": "eng_06_bindless",
+      "status": "pass",
+      "png": "eng_06_bindless.png",
+      "pixel_checksum": "0xe1f8b27fd5fc0692",
+      "shader_model": "vs_6_0/ps_6_0 Bindless (DXIL)",
+      "duration_ms": 44.2312,
+      "detail": "16-texture SM 6.0 NonUniformResourceIndex table + 64 instanced tiles"
+    }
+  ],
+  "benchmark": {
+    "name": "eng_bench_deferred_pbr",
+    "resolution": "1024x1024",
+    "warmup_frames": 20,
+    "measured_frames": 150,
+    "mean_ms": 0.2481,
+    "p50_ms": 0.2453,
+    "p95_ms": 0.2558,
+    "p99_ms": 0.3008,
+    "min_ms": 0.2399,
+    "max_ms": 0.4643,
+    "fps": 4030.8603,
+    "one_percent_low_fps": 2153.7803,
+    "gpu_mean_ms": 0.1135,
+    "extra_metric_name": "megapixels_per_sec",
+    "extra_ops_per_sec": 4226.6633
+  }
+}
