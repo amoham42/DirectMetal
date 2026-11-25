@@ -96,7 +96,7 @@ inline D3D12_RESOURCE_BARRIER make_transition(ID3D12Resource* res,
 inline D3D12_RASTERIZER_DESC default_rasterizer() {
     D3D12_RASTERIZER_DESC r{};
     r.FillMode = D3D12_FILL_MODE_SOLID;
-    r.CullMode = D3D12_CULL_NONE;
+    r.CullMode = D3D12_CULL_MODE_NONE;
     r.DepthClipEnable = TRUE;
     return r;
 }
@@ -777,7 +777,7 @@ float4 PSMain(PSIn input) : SV_Target {
 
         D3D12_STATIC_SAMPLER_DESC ss{};
         ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_WRAP;
+        ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
         ss.MaxLOD = D3D12_FLOAT32_MAX;
         ss.ShaderRegister = 0;
         ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -1160,7 +1160,7 @@ float4 PSMain(PSIn input) : SV_Target {
         p2.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         D3D12_STATIC_SAMPLER_DESC ss{};
         ss.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_CLAMP;
+        ss.AddressU = ss.AddressV = ss.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
         ss.MaxLOD = D3D12_FLOAT32_MAX;
         ss.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
         D3D12_ROOT_SIGNATURE_DESC rsd2{1, &p2, 1, &ss, D3D12_ROOT_SIGNATURE_FLAG_NONE};

@@ -1,0 +1,108 @@
+{
+  "api": "D3D12",
+  "feature_level": "12_2",
+  "adapter": {
+    "description": "NVIDIA GeForce RTX 3070 Laptop GPU",
+    "vendor_id": 4318,
+    "device_id": 9437,
+    "dedicated_vram_mb": 8018,
+    "shared_mem_mb": 8118
+  },
+  "summary": {
+    "passed": 9,
+    "total": 9
+  },
+  "tests": [
+    {
+      "name": "d3d12_01_clear_rtv",
+      "status": "pass",
+      "png": "d3d12_01_clear_rtv.png",
+      "pixel_checksum": "0x39b65531fcb22325",
+      "duration_ms": 21.7270,
+      "detail": "ClearRenderTargetView matched"
+    },
+    {
+      "name": "d3d12_02_triangle_pso",
+      "status": "pass",
+      "png": "d3d12_02_triangle_pso.png",
+      "pixel_checksum": "0xfb3d55be0baf434b",
+      "duration_ms": 37.7189,
+      "detail": "Graphics PSO + DEFAULT vertex buffer triangle"
+    },
+    {
+      "name": "d3d12_03_root_constants_cbv",
+      "status": "pass",
+      "png": "d3d12_03_root_constants_cbv.png",
+      "pixel_checksum": "0x2dc0d7590eaf7b81",
+      "duration_ms": 35.8399,
+      "detail": "32-bit root constants + inline root CBV grid"
+    },
+    {
+      "name": "d3d12_04_depth_stencil_3d",
+      "status": "pass",
+      "png": "d3d12_04_depth_stencil_3d.png",
+      "pixel_checksum": "0xe0b558feab278bb9",
+      "duration_ms": 23.0829,
+      "detail": "D32_FLOAT depth test intersecting triangles"
+    },
+    {
+      "name": "d3d12_05_srv_descriptor_table",
+      "status": "pass",
+      "png": "d3d12_05_srv_descriptor_table.png",
+      "pixel_checksum": "0x812b747c83490eab",
+      "duration_ms": 30.5490,
+      "detail": "Shader-visible SRV descriptor heap + static sampler"
+    },
+    {
+      "name": "d3d12_06_multi_pso_blend",
+      "status": "pass",
+      "png": "d3d12_06_multi_pso_blend.png",
+      "pixel_checksum": "0xdb19837adc36f24d",
+      "duration_ms": 21.9948,
+      "detail": "3 PSO transitions (opaque, alpha, additive)"
+    },
+    {
+      "name": "d3d12_07_compute_uav",
+      "status": "pass",
+      "png": "d3d12_07_compute_uav.png",
+      "pixel_checksum": "0x578b7444c83a5b15",
+      "compute_checksum": "0x00000805911ec000",
+      "expected_compute_checksum": "0x00000805911ec000",
+      "shader_model": "cs_6_0 (DXIL)",
+      "duration_ms": 46.6601,
+      "detail": "Compute UAV texture + buffer bit-exact (cs_6_0 (DXIL))"
+    },
+    {
+      "name": "d3d12_08_multi_pass_fence",
+      "status": "pass",
+      "png": "d3d12_08_multi_pass_fence.png",
+      "pixel_checksum": "0x4ff32048d6175db5",
+      "duration_ms": 39.8587,
+      "detail": "Two-submission RT->SRV fence synchronization"
+    },
+    {
+      "name": "d3d12_09_execute_indirect",
+      "status": "pass",
+      "png": "d3d12_09_execute_indirect.png",
+      "pixel_checksum": "0x31a76f17bac69daa",
+      "duration_ms": 23.5485,
+      "detail": "64 ExecuteIndirect draws from INDIRECT_ARGUMENT buffer"
+    }
+  ],
+  "benchmark": {
+    "name": "d3d12_bench_frame",
+    "warmup_frames": 20,
+    "measured_frames": 200,
+    "mean_ms": 0.1084,
+    "p50_ms": 0.1052,
+    "p95_ms": 0.1134,
+    "p99_ms": 0.1754,
+    "min_ms": 0.1017,
+    "max_ms": 0.3226,
+    "fps": 9227.1780,
+    "one_percent_low_fps": 3640.9979,
+    "gpu_mean_ms": 0.0071,
+    "extra_metric_name": "draw_calls_per_sec",
+    "extra_ops_per_sec": 147634.8479
+  }
+}
