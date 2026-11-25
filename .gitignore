@@ -15,3 +15,5 @@ captures/
 runtime/prebuilt/
 *.dSYM/
 tests/conformance/bin/
+__pycache__/
+*.pyc

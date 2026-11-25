@@ -1,15 +1,15 @@
 # DirectMetal Roadmap
 
 ## Phase 0 — Environment & Conformance Harness
-- [ ] Verify M1 Pro macOS toolchain (Xcode, Metal CLI `gpucapture`/`gpudebug`, CMake, Meson, LLVM, Rust/C++).
-- [ ] Establish automated Windows RTX 3070 reference test runner (compile D3D11/D3D12 micro-tests, capture reference PNGs + GPU timings).
-- [ ] Stand up automated visual diff pipeline (`PSNR`/`SSIM`) comparing Windows RTX 3070 ground truth vs. M1 Pro Metal output.
+- [x] Verify M1 Pro macOS toolchain (Xcode, Metal CLI `gpucapture`/`gpudebug`, CMake, Meson, LLVM, Rust/C++).
+- [x] Establish automated Windows RTX 3070 reference test runner (compile D3D11/D3D12 micro-tests, capture reference PNGs + GPU timings).
+- [x] Stand up automated visual diff pipeline (`PSNR`/`SSIM`) comparing Windows RTX 3070 ground truth vs. M1 Pro Metal output.
 
 ## Phase 1 — Vertical Slice (Unified Direct-to-Metal Runtime)
-- [ ] Build reproducible macOS Wine core with `msync` + `os_sync_wait_on_address` fast-path experiments.
-- [ ] Integrate open-source direct-to-Metal D3D10/11 (**DXMT**) and D3D12 (**Mullion**) pipelines into a single unified build.
-- [ ] Package a self-contained `.app` runner with APFS copy-on-write per-game prefixes and zero manual backend selection.
-- [ ] Pass 100% of Phase 0 D3D11 + D3D12 core rendering conformance tests and boot initial real-world DX11/DX12 titles.
+- [x] Build reproducible macOS Wine core with `msync` + `os_sync_wait_on_address` fast-path experiments.
+- [x] Integrate open-source direct-to-Metal D3D10/11 (**DXMT**) and D3D12 (**Mullion**) pipelines into a single unified build.
+- [x] Package a self-contained `.app` runner with APFS copy-on-write per-game prefixes and zero manual backend selection.
+- [ ] Pass 100% of Phase 0 D3D11 + D3D12 core rendering conformance tests (19/19 passing) and boot initial real-world DX11/DX12 titles.
 
 ## Phase 2 — Apple Silicon Deep Optimizations
 - [ ] Implement UMA zero-copy buffer allocator (`MTLStorageModeShared` fast paths for dynamic/upload/readback heaps).
