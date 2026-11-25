@@ -59,10 +59,25 @@ All 6 engine-class tests in [tests/conformance/engine_patterns/](../tests/confor
 
 ## 4. Real-World Retail Game Verification (M1 Pro)
 
-- **Need for Speed: Hot Pursuit (2010) (`NFS11.exe`, 32-bit x86, DirectX 9, `7.84 GB`, standalone):**
-  - **Auto-Detection (`DirectMetal inspect`):** `x86` (`is64Bit: false`), `detectedAPIs: ["D3D9"]` (`d3d9.dll`, `d3dx9_42.dll`, `DINPUT8.dll`, `XINPUT1_3.dll`, `DSOUND.dll`).
-  - **Root Causes Diagnosed & Fixed in `DirectMetal`:**
-    1. Exclusive fullscreen `ChangeDisplaySettings` failed with `DISP_CHANGE_BADMODE (-2)` (`hr 0x8876086a`) on macOS Retina display → auto-enables Wine Virtual Desktop (`explorer /desktop=DirectMetal,1280x720`) for D3D9 titles.
-    2. On Wine `11.21` + MoltenVK `1.1.323`, both DXVK (`v1.10.3`/`v2.4.1`) (`geometryShader` & `shaderCullDistance` unavailable) and WineD3D Vulkan (`VK_EXT_external_memory_host` handle mismatch) rejected device/buffer creation → `--dx9-backend auto` routes D3D9 titles to `WINE_D3D_CONFIG="renderer=gl"` (`d3d9=b`).
-  - **Live Result on Apple M1 Pro:** `NFS11.exe` booted cleanly, generated `Documents/Criterion Games/Need for Speed(TM) Hot Pursuit/config.NFS11Save`, opened an active on-screen window (`800×600`, `782 MB` RSS), and drove live 3D rendering on the Apple M1 Pro GPU (**66% Device / 64% Renderer / 66% Tiler utilization**, `729 MiB` active GPU memory).
+Real Windows retail games transferred from `LAPTOP-FRD51BOR` (`D:\`) and tested live on Apple M1 Pro (`macOS 26.1` `25B78`):
+
+| Game (Executable) | Size / Arch / API | DirectMetal Path | Live Verified Result on M1 Pro |
+| :--- | :--- | :--- | :--- |
+| **Need for Speed: Hot Pursuit** (`NFS11.exe`) | `7.84 GB` / x86 / **D3D9** | Rosetta 2 + WineD3D GL + Auto Virtual Desktop (`1280×720`) | **PASS** — Booted cleanly, wrote `config.NFS11Save`, active `800×600` window (`782 MB` RSS), **66% GPU** (`729 MiB` active GPU mem), ran `2h+` continuously |
+| **Hades** (`x64\Hades.exe`) | `11.08 GB` / x64 / **D3D11** | **ARM64EC + FEX-Emu + Mullion Direct-to-Metal D3D11** | **PASS (First Try)** — Booted to main menu & wrote `Profile1.sjson` in **`4.04 s`**, full Retina **`1512×982`** (`libMTLHud` active), `1.28 GB` RSS, **56% GPU** (`512 MiB` GPU mem) |
+| **REANIMAL** (`REANIMAL.exe`, Unreal Engine 5) | `15.94 GB` / x64 / **D3D12** | **ARM64EC + FEX-Emu + Mullion Direct-to-Metal D3D12** | **PASS (First Try)** — Initialized `D3D12Device` + Mullion compute pipelines + `libMTLHud`, `1280×720` window, `2.20 GB` RSS, **82% Device / 81% Renderer GPU** (`2.58 GiB` active GPU mem, `recoveryCount=0`) |
+| **Team Fortress 2** (`tf_win64.exe`, Source) | `31.01 GB` / x64 / **D3D9** | Rosetta 2 + WineD3D GL (`AppleMetalOpenGLRenderer`) | **PASS** — Created `"Team Fortress 2 - Direct3D 9 - 64 Bit"` (`1280×720`), loaded `stdshader_dx9.dll` + `CoreAudio`, **59–60% GPU** (`731–803 MB` GPU mem) |
+| **Prince of Persia: Forgotten Sands** (`Prince of Persia.exe`) | `1.60 GB` / x86 / **D3D9** | Rosetta 2 + WineD3D GL (`.bind` SteamStub + UPlay) | **Needs Steam Login** — Empirically popped `"Steam Error"` dialog without an active Steam session (no DRM bypass) |
+| **Official Windows Steam** (`steam.exe`) | Installed via `scripts/setup_steam.sh` | Rosetta 2 prefix (`steam`) | **PASS** — Silent installer succeeded in `4.3 s`; `steam.exe` boots cleanly for SteamStub titles (`Hades II`, `Assetto Corsa`, `Prince of Persia`) |
+
+### Key Real-Game Fixes Landed During Verification
+1. **Retina Fullscreen Mode Rejection (`DISP_CHANGE_BADMODE`, `hr 0x8876086a`):** Pure-D3D9 games (`isD3D9 && !isD3D11 && !isD3D12`) auto-enable a `1280×720` Wine Virtual Desktop (`--desktop <WxH>|off`), while DX11/DX12 titles that merely delay-load `d3d9.dll` (like UE5 `REANIMAL.exe`) launch natively without a virtual desktop.
+2. **MoltenVK `1.1.323` D3D9 Compatibility:** Because DXVK (`v1.10.3`/`v2.4.1`) requests unsupported `geometryShader`/`shaderCullDistance` and WineD3D Vulkan requests unsupported `VK_EXT_external_memory_host` on MoltenVK, `--dx9-backend auto` routes pure-D3D9 titles to `WINE_D3D_CONFIG="renderer=gl"` (`d3d9=b`).
+3. **Remaining `D:\` Library Status (Not Yet Transferred / Blocked):**
+   - **Counter-Strike 2** (`70.09 GB`, x64 DX11, no `.bind`): Feasible, requires freeing ~35 GB of local cache space before transfer.
+   - **Hades II** (`10.97 GB`, x64) & **Assetto Corsa** (`25.63 GB`, x64 DX11): Both carry `.bind` SteamStub DRM — ready to run once the user signs into the installed DirectMetal `steam` prefix.
+   - **Apex Legends** (`67.78 GB`): Blocked by `EAAntiCheat` kernel anti-cheat.
+   - **Halo Infinite** (`67.76 GB`): Requires D3D12 FL `12_0+` + anti-cheat.
+   - **Red Dead Redemption 2** (`119.51 GB`): Exceeds available free disk space + Rockstar Launcher DRM.
+
 

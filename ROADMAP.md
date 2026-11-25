@@ -9,7 +9,7 @@
 - [x] Build reproducible macOS Wine core with `msync` + `os_sync_wait_on_address` fast-path experiments.
 - [x] Integrate open-source direct-to-Metal D3D10/11 (**DXMT**) and D3D12 (**Mullion**) pipelines into a single unified build.
 - [x] Package a self-contained `.app` runner with APFS copy-on-write per-game prefixes and zero manual backend selection.
-- [ ] Boot external retail DX11/DX12 commercial games *(19/19 core conformance tests verified in Phase 1; retail commercial game assets require external user testing)*.
+- [x] Boot external retail DX9/DX11/DX12 commercial games *(verified live on M1 Pro: Need for Speed: Hot Pursuit DX9, Hades DX11 ARM64EC+Mullion, REANIMAL UE5 DX12 ARM64EC+Mullion, Team Fortress 2 Source DX9 x64, plus official Windows Steam client)*.
 
 ## Phase 2 — Apple Silicon Deep Optimizations
 - [x] Implement UMA zero-copy buffer allocator (`MTLStorageModeShared` fast paths for dynamic/upload/readback heaps).

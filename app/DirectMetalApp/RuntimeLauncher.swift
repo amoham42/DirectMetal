@@ -373,7 +373,9 @@ enum RuntimeLauncher {
         }
 
         let isD3D9 = profile?.detectedAPIs.contains("D3D9") ?? false
-        if isD3D9 || dx9Backend != .auto {
+        let isD3D11Or12 = (profile?.detectedAPIs.contains("D3D11") ?? false) || (profile?.detectedAPIs.contains("D3D12") ?? false)
+        let isPureD3D9 = isD3D9 && !isD3D11Or12
+        if isPureD3D9 || dx9Backend != .auto {
             // On macOS 26.1 / MoltenVK 1.1.323, DXVK d3d9 requests unsupported geometryShader/shaderCullDistance
             // and WineD3D Vulkan requests unsupported VK_EXT_external_memory_host; WineD3D GL runs reliably on M1 Pro.
             let useDXVK = (dx9Backend == .dxvk)
@@ -401,12 +403,12 @@ enum RuntimeLauncher {
         }
 
         // Legacy DX9 games calling ChangeDisplaySettings hit DISP_CHANGE_BADMODE on Retina displays;
-        // auto-enable a 1280x720 Wine Virtual Desktop for D3D9 unless --desktop off is passed.
+        // auto-enable a 1280x720 Wine Virtual Desktop for pure D3D9 games unless --desktop off is passed.
         let effectiveDesktop: String?
         if let vd = virtualDesktop?.lowercased() {
             effectiveDesktop = (vd == "off" || vd == "none" || vd.isEmpty) ? nil : vd
         } else {
-            effectiveDesktop = isD3D9 ? "1280x720" : nil
+            effectiveDesktop = isPureD3D9 ? "1280x720" : nil
         }
 
         let wineArgs: [String]
