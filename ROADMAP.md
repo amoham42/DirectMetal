@@ -14,8 +14,8 @@
 ## Phase 2 — Apple Silicon Deep Optimizations
 - [x] Implement UMA zero-copy buffer allocator (`MTLStorageModeShared` fast paths for dynamic/upload/readback heaps).
 - [x] Implement TBDR render-pass coalescing & `MTLStorageModeMemoryless` transient attachment detection.
-- [x] Build `MTLBinaryArchive` shader cache storage & pre-warming pipeline keyed by Apple Silicon GPU family.
-- [x] Add transparent DLSS/FSR/XeSS → **MetalFX** upscaling bridge.
+- [x] Build `MTLBinaryArchive` local + cloud shader cache storage, SHA-256 verified export/import (`DirectMetal cache export|import`), and pre-warming pipeline keyed by Apple Silicon GPU family.
+- [x] Add transparent DLSS/FSR/XeSS → **MetalFX** upscaling bridge (verified live Metal 4 MetalFX Temporal on UE5 `REANIMAL` via `nvngx.dll` + MetalFX Spatial on `Hades`).
 
 ## Phase 3 — Post-Rosetta Native ARM64 Host
 - [x] Transition host runtime to native ARM64EC + FEX-Emu thunking so only game x86-64 code is translated.
@@ -23,4 +23,4 @@
 
 ## Phase 4 — Compatibility Matrix & Attested Sandbox
 - [x] Expand automated game/engine compatibility matrix (Unreal Engine 4/5, Unity, RE Engine, REDengine, Frostbite, Source 2, id Tech). *(SM 6.0 DXIL `eng_01`–`eng_06` + `eng_bench_deferred_pbr` and [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md) verified **25/25**)*
-- [x] Prototype hardened per-game isolation sandbox and platform-attested anti-cheat verification SDK. *(Seatbelt `dm_sandbox` `5/5` + `DirectMetal run --sandbox` + `dm_attestation` / `DirectMetal attest` ECDSA P-256 verified)*
+- [x] Prototype hardened per-game isolation sandbox and platform-attested anti-cheat verification SDK. *(Stripped Hardened Runtime `--options runtime`, Seatbelt `dm_sandbox` `5/5` + live sandboxed `Hades`/`REANIMAL` + `dm_attestation` / `DirectMetal attest` & `verify-attest` ECDSA P-256 verified)*

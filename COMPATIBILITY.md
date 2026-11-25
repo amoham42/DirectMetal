@@ -68,16 +68,16 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 
 | Suite | Reference Mean (ms) | Reference FPS | Reference 1%-Low FPS | DirectMetal Mean (ms) | DirectMetal FPS | DirectMetal 1%-Low FPS | M1 Pro / RTX 3070 FPS |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.565 | 1769.9 | 295.3 | 8.1% |
-| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.453 | 2205.5 | 439.7 | 23.9% |
-| `eng_bench_deferred_pbr` | 0.248 | 4030.9 | 2153.8 | 0.726 | 1377.6 | 718.7 | 34.2% |
+| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.415 | 2410.3 | 532.3 | 11.0% |
+| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.456 | 2193.2 | 308.1 | 23.8% |
+| `eng_bench_deferred_pbr` | 0.248 | 4030.9 | 2153.8 | 0.715 | 1399.0 | 625.0 | 34.7% |
 
 ## Native ARM64 Host Subsystem Microbenchmarks
 
-- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 235.00 ms total | 1.175 us/wakeup
-- **POSIX Baseline (pthread_cond):** pthread_cond            : 287.75 ms total | 1.439 us/wakeup (1.22x vs os_sync)
-- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 327.56 ms total | 1.638 us/wakeup (1.39x vs os_sync)
-- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.411 ms
+- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 241.90 ms total | 1.209 us/wakeup
+- **POSIX Baseline (pthread_cond):** pthread_cond            : 284.21 ms total | 1.421 us/wakeup (1.17x vs os_sync)
+- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 321.76 ms total | 1.609 us/wakeup (1.33x vs os_sync)
+- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.461 ms
 
 ## Phase 2 — Apple Silicon Deep Optimizations (M1 Pro)
 

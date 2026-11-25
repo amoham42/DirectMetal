@@ -24,18 +24,21 @@ Development uses a two-machine ground-truth testing pipeline:
 **Phases 0–4 verified on Apple Silicon (`M1 Pro`, macOS `26.1` `25B78`) against Windows 11 + NVIDIA RTX 3070 ground truth:**
 
 - **Visual & Compute Conformance:** **25 / 25 (100.0%)** passing (`10/10` D3D11, `9/9` D3D12, `6/6` D3D12 SM 6.0 DXIL Engine Patterns) — Mean SSIM `0.999844`, Min PSNR `54.32 dB` (see [COMPATIBILITY.md](COMPATIBILITY.md) and [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md)).
-- **Apple Silicon Optimizations:** UMA `MTLStorageModeShared` (`1.51x`, `-66.2%` mem), TBDR `MTLStorageModeMemoryless` (`2.71x`, `-64.75 MiB` DRAM), `MTLBinaryArchive` (`66.7x` unit PSO / `17.07x` end-to-end warm cache), MetalFX Spatial (`1.72x`–`2.55x`) & Temporal (`1.10x`), and APFS CoW per-game prefixes (`0.41 ms`).
-- **Post-Rosetta Execution:** Native ARM64 host I/O + Wine ARM64EC + FEX-Emu (`1.28x` D3D11 / `1.39x` D3D12 avg and `1.69x` 1%-low vs. Rosetta 2; `1398.1 FPS` / `624.0` 1%-low sandboxed `1024x1024` Deferred PBR).
-- **Per-Game Isolation & Attestation:** macOS Seatbelt sandbox (`DirectMetal run --sandbox`, `5/5` kernel `EPERM` tests) and opt-in ECDSA P-256 challenge-response attestation (`DirectMetal attest --nonce <hex>`).
+- **Apple Silicon Optimizations:** UMA `MTLStorageModeShared` (`1.51x`, `-66.2%` mem), TBDR `MTLStorageModeMemoryless` (`2.71x`, `-64.75 MiB` DRAM), local + cloud SHA-256 verified `MTLBinaryArchive` (`66.7x` unit PSO / `17.07x` end-to-end warm cache / `DirectMetal cache export|import`), live Metal 4 MetalFX Temporal (`REANIMAL` UE5 via `nvngx.dll`) & MetalFX Spatial (`1.72x`–`2.55x`), and APFS CoW per-game prefixes (`0.41 ms`).
+- **Post-Rosetta Execution & Real Retail Games:** Native ARM64 host I/O + Wine ARM64EC + FEX-Emu (`2410.3 FPS` D3D11, `1391.3 FPS` / `729.5` 1%-low sandboxed `1024x1024` Deferred PBR = `2.44x` Rosetta 2 1%-low) + hardware-accelerated 64-bit DXVK D3D9 via Mesa KosmicKrisp + `VK_LAYER_DIRECTMETAL_mvk_compat`. Verified live on **Hades** (`120.00 FPS` locked, `--sandbox`), **REANIMAL** (UE5 DX12 `70.17 FPS` w/ Metal 4 MetalFX Temporal & DX11 `99.79 FPS`), **Team Fortress 2** (ARM64EC+FEX+DXVK+KosmicKrisp), and **Need for Speed: Hot Pursuit** (DX9).
+- **Per-Game Isolation & Hardened Attestation:** Stripped `5.8 GB` Hardened Runtime (`--options runtime`, `hardened_runtime: true`) `.app` bundle, macOS Seatbelt sandbox (`DirectMetal run --sandbox`, `5/5` kernel `EPERM` tests), and opt-in ECDSA P-256 challenge-response attestation + verifier CLI (`DirectMetal attest` / `DirectMetal verify-attest`).
 
 ### Quickstart
 
 ```bash
-# Inspect GPU capabilities, sign/attest host state, or run a Windows executable in a sandboxed CoW prefix
+# Build stripped Hardened Runtime .app, inspect GPU/games, manage cloud shader caches, attest & verify, or launch sandboxed
 ./scripts/package_app.sh
 ./dist/DirectMetal.app/Contents/MacOS/DirectMetal info
-./dist/DirectMetal.app/Contents/MacOS/DirectMetal attest --nonce aabbccdd00112233
-./dist/DirectMetal.app/Contents/MacOS/DirectMetal run /path/to/game.exe --engine arm64ec --sandbox --upscale quality
+./dist/DirectMetal.app/Contents/MacOS/DirectMetal cache export /tmp/title.dmcache.tar.gz
+./dist/DirectMetal.app/Contents/MacOS/DirectMetal cache import https://example.com/title.dmcache.tar.gz
+./dist/DirectMetal.app/Contents/MacOS/DirectMetal attest --nonce aabbccdd00112233 --sandbox > /tmp/attest.json
+./dist/DirectMetal.app/Contents/MacOS/DirectMetal verify-attest /tmp/attest.json --nonce aabbccdd00112233
+./dist/DirectMetal.app/Contents/MacOS/DirectMetal run /path/to/game.exe --sandbox --upscale quality
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) and [ROADMAP.md](ROADMAP.md) for the engineering plan.

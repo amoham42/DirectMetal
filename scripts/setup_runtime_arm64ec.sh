@@ -68,6 +68,13 @@ if [[ ! -f "${BASE_PREFIX}/system.reg" ]]; then
   "${RUNTIME_DIR}/bin/wineserver" -w || true
 fi
 
+# Install 64-bit DXVK d3d9.dll into ARM64EC base prefix for hardware-accelerated 64-bit D3D9 -> Vulkan 1.4 -> KosmicKrisp -> Metal
+DXVK_X64_D3D9="$(find "${REPO_ROOT}/build/runtime/dxvk-dist" -type f -path "*/x64/d3d9.dll" 2>/dev/null | head -n 1 || true)"
+if [[ -n "${DXVK_X64_D3D9}" ]]; then
+  cp -f "${DXVK_X64_D3D9}" "${BASE_PREFIX}/drive_c/windows/system32/d3d9.dll"
+  echo "[DirectMetal] Installed 64-bit DXVK d3d9.dll -> ARM64EC base-prefix/drive_c/windows/system32/d3d9.dll"
+fi
+
 echo "[DirectMetal] Wine version:"
 "${RUNTIME_DIR}/bin/wine" --version
 echo "[DirectMetal] ARM64EC + FEX-Emu runtime ready at ${RUNTIME_DIR}"

@@ -44,10 +44,12 @@ struct RuntimePaths {
     let wineserverBin: URL
     let basePrefix: URL
     let mullionConfig: URL?
+    let vkCompatLayerDir: URL?
     let arm64ecRoot: URL?
     let arm64ecWineBin: URL?
     let arm64ecWineserverBin: URL?
     let arm64ecBasePrefix: URL?
+    let arm64ecKosmicKrispICD: URL?
 }
 
 struct LaunchResult {
@@ -147,7 +149,7 @@ enum RuntimeLauncher {
         )
     }
 
-    static func resolveARM64ECRuntime() -> (root: URL, wine: URL, wineserver: URL, basePrefix: URL)? {
+    static func resolveARM64ECRuntime() -> (root: URL, wine: URL, wineserver: URL, basePrefix: URL, kosmicICD: URL?)? {
         let fm = FileManager.default
         var candidates: [URL] = []
         if let env = ProcessInfo.processInfo.environment["DIRECTMETAL_ARM64EC_RUNTIME_DIR"], !env.isEmpty {
@@ -164,12 +166,20 @@ enum RuntimeLauncher {
         }
 
         for root in candidates {
-            let wine = root.appendingPathComponent("bin/wine")
+            let wineLauncher = root.appendingPathComponent("bin/wine-launcher")
+            let wine = fm.isExecutableFile(atPath: wineLauncher.path)
+                ? wineLauncher
+                : root.appendingPathComponent("bin/wine")
             let ws = root.appendingPathComponent("bin/wineserver")
             let basePrefix = root.appendingPathComponent("base-prefix", isDirectory: true)
             if fm.isExecutableFile(atPath: wine.path) &&
                fm.fileExists(atPath: basePrefix.appendingPathComponent("system.reg").path) {
-                return (root, wine, ws, basePrefix)
+                let icdCandidate = wine.resolvingSymlinksInPath()
+                    .deletingLastPathComponent()
+                    .deletingLastPathComponent()
+                    .appendingPathComponent("share/vulkan/icd.d/kosmickrisp_icd.json")
+                let kkICD = fm.fileExists(atPath: icdCandidate.path) ? icdCandidate : nil
+                return (root, wine, ws, basePrefix, kkICD)
             }
         }
         return nil
@@ -214,16 +224,26 @@ enum RuntimeLauncher {
                 } else if fm.fileExists(atPath: repoConf.path) {
                     conf = repoConf
                 }
+                var vkCompatDir: URL? = nil
+                let bundleVK = Bundle.main.resourceURL?.appendingPathComponent("vulkan-layers", isDirectory: true)
+                let buildVK = cwd.appendingPathComponent("build/dm_vk_compat", isDirectory: true)
+                if let bvk = bundleVK, fm.fileExists(atPath: bvk.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
+                    vkCompatDir = bvk
+                } else if fm.fileExists(atPath: buildVK.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
+                    vkCompatDir = buildVK
+                }
                 return RuntimePaths(
                     runtimeRoot: root,
                     wineBin: wine,
                     wineserverBin: wineserver,
                     basePrefix: basePrefix,
                     mullionConfig: conf,
+                    vkCompatLayerDir: vkCompatDir,
                     arm64ecRoot: arm64ec?.root,
                     arm64ecWineBin: arm64ec?.wine,
                     arm64ecWineserverBin: arm64ec?.wineserver,
-                    arm64ecBasePrefix: arm64ec?.basePrefix
+                    arm64ecBasePrefix: arm64ec?.basePrefix,
+                    arm64ecKosmicKrispICD: arm64ec?.kosmicICD
                 )
             }
         }
@@ -342,6 +362,18 @@ enum RuntimeLauncher {
         env["WINEMSYNC"] = "1"
         if useARM64EC {
             env["FEX_TSOENABLED"] = fexTSO ? "1" : "0"
+            if env["FEX_SILENTLOG"] == nil {
+                env["FEX_SILENTLOG"] = "1"
+            }
+            let wineHome = selectedWine.resolvingSymlinksInPath()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            if env["GST_PLUGIN_SYSTEM_PATH_1_0"] == nil {
+                env["GST_PLUGIN_SYSTEM_PATH_1_0"] = wineHome.appendingPathComponent("lib/gstreamer-1.0").path
+            }
+            if env["GST_PLUGIN_SCANNER_1_0"] == nil {
+                env["GST_PLUGIN_SCANNER_1_0"] = wineHome.appendingPathComponent("libexec/gstreamer-1.0/gst-plugin-scanner").path
+            }
         }
         if env["DIRECTMETAL_VERBOSE_WINE"] != "1" {
             env["WINEDEBUG"] = "-all"
@@ -349,6 +381,37 @@ enum RuntimeLauncher {
         env["MULLION_SHADER_CACHE_PATH"] = shaderCacheDir.path
         if let conf = paths.mullionConfig {
             env["MULLION_CONFIG_FILE"] = conf.path
+        }
+
+        let isD3D12 = profile?.detectedAPIs.contains("D3D12") ?? false
+        let isD3D11 = profile?.detectedAPIs.contains("D3D11") ?? false
+        let isD3D9 = profile?.detectedAPIs.contains("D3D9") ?? false
+        let isPureD3D9 = isD3D9 && !isD3D11 && !isD3D12
+        let hasDLSS = profile?.detectedUpscalers.contains("DLSS") ?? false
+
+        // Prevent UE5 / D3D12 placed-texture 64KB-vs-32KB alignment E_INVALIDARG faults on macOS < 26.4 / Apple7.
+        if isD3D12 {
+            if env["MULLION_D3D12_PLACED_UNOPTIMIZED"] == nil {
+                env["MULLION_D3D12_PLACED_UNOPTIMIZED"] = "1"
+            }
+            let ueEngineBin = exeURL
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+                .appendingPathComponent("Engine/Binaries")
+            let osVer = ProcessInfo.processInfo.operatingSystemVersion
+            let isPre26_4 = (osVer.majorVersion < 26) || (osVer.majorVersion == 26 && osVer.minorVersion < 4)
+            if isPre26_4 && fm.fileExists(atPath: ueEngineBin.path) && env["MULLION_D3D12_METAL4"] == nil {
+                env["MULLION_D3D12_METAL4"] = "0"
+            }
+        }
+
+        var extraMullionCfg: [String] = []
+        // Auto-expose NVIDIA PCI vendor ID when DLSS is detected so Mullion's nvngx.dll routes DLSS -> Metal 4 MetalFX Temporal.
+        if hasDLSS && env["DIRECTMETAL_DISABLE_NVNGX_BRIDGE"] != "1" {
+            extraMullionCfg.append("dxgi.customVendorId=10de")
+            extraMullionCfg.append("dxgi.customDeviceId=2684")
         }
         // Keep standard Metal 4/3 pipelines by default; MULLION_D3D12_FLEXIBLE=1
         // in v0.5-alpha.4 breaks blend state updates across PSO transitions (d3d12_06).
@@ -361,24 +424,35 @@ enum RuntimeLauncher {
             default: factor = "1.5"
             }
             env["MULLION_METALFX_SPATIAL_SWAPCHAIN"] = "1"
-            let extraCfg = "d3d11.metalSpatialUpscale=True;d3d11.metalSpatialUpscaleFactor=\(factor)"
+            extraMullionCfg.append("d3d11.metalSpatialUpscale=True")
+            extraMullionCfg.append("d3d11.metalSpatialUpscaleFactor=\(factor)")
+        }
+        if !extraMullionCfg.isEmpty {
+            let joined = extraMullionCfg.joined(separator: ";")
             if let existing = env["MULLION_CONFIG"], !existing.isEmpty {
-                env["MULLION_CONFIG"] = "\(existing);\(extraCfg)"
+                env["MULLION_CONFIG"] = "\(existing);\(joined)"
             } else {
-                env["MULLION_CONFIG"] = extraCfg
+                env["MULLION_CONFIG"] = joined
             }
         }
         if enableHUD {
             env["MTL_HUD_ENABLED"] = "1"
         }
 
-        let isD3D9 = profile?.detectedAPIs.contains("D3D9") ?? false
-        let isD3D11Or12 = (profile?.detectedAPIs.contains("D3D11") ?? false) || (profile?.detectedAPIs.contains("D3D12") ?? false)
-        let isPureD3D9 = isD3D9 && !isD3D11Or12
         if isPureD3D9 || dx9Backend != .auto {
-            // On macOS 26.1 / MoltenVK 1.1.323, DXVK d3d9 requests unsupported geometryShader/shaderCullDistance
-            // and WineD3D Vulkan requests unsupported VK_EXT_external_memory_host; WineD3D GL runs reliably on M1 Pro.
-            let useDXVK = (dx9Backend == .dxvk)
+            // 64-bit D3D9 games on ARM64EC+FEX run hardware-accelerated DXVK -> Vulkan 1.4 -> Mesa KosmicKrisp -> Metal.
+            // 32-bit D3D9 games default to WineD3D GL + Virtual Desktop (since 32-bit Wine 11.21 winevulkan lacks
+            // VK_EXT_external_memory_host on MoltenVK). Explicit --dx9-backend dxvk/wined3d always wins.
+            let is64 = profile?.is64Bit ?? true
+            let useDXVK: Bool
+            switch dx9Backend {
+            case .dxvk:
+                useDXVK = true
+            case .wined3d:
+                useDXVK = false
+            case .auto:
+                useDXVK = is64 && useARM64EC
+            }
             let overrideEntry = useDXVK ? "d3d9=n,b" : "d3d9=b"
             if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
                 env["WINEDLLOVERRIDES"] = "\(existing);\(overrideEntry)"
@@ -391,7 +465,16 @@ enum RuntimeLauncher {
                 if env["DXVK_LOG_PATH"] == nil {
                     env["DXVK_LOG_PATH"] = "none"
                 }
-                env["MVK_CONFIG_USE_METAL_ARGUMENT_BUFFERS"] = "1"
+                if useARM64EC, let kkICD = paths.arm64ecKosmicKrispICD {
+                    env["VK_DRIVER_FILES"] = kkICD.path
+                    env["VK_ICD_FILENAMES"] = kkICD.path
+                }
+                if let vkDir = paths.vkCompatLayerDir {
+                    env["VK_ADD_LAYER_PATH"] = vkDir.path
+                    env["VK_LAYER_PATH"] = vkDir.path
+                    env["VK_INSTANCE_LAYERS"] = "VK_LAYER_DIRECTMETAL_mvk_compat"
+                    env["DM_VK_COMPAT_ENABLE"] = "1"
+                }
                 if enableHUD && env["DXVK_HUD"] == nil {
                     env["DXVK_HUD"] = "fps,frametimes,devinfo,api"
                 }
@@ -402,13 +485,13 @@ enum RuntimeLauncher {
             }
         }
 
-        // Legacy DX9 games calling ChangeDisplaySettings hit DISP_CHANGE_BADMODE on Retina displays;
-        // auto-enable a 1280x720 Wine Virtual Desktop for pure D3D9 games unless --desktop off is passed.
+        // Legacy 32-bit DX9 games calling ChangeDisplaySettings hit DISP_CHANGE_BADMODE on Retina displays;
+        // auto-enable a 1280x720 Wine Virtual Desktop for 32-bit pure D3D9 games unless --desktop is specified.
         let effectiveDesktop: String?
         if let vd = virtualDesktop?.lowercased() {
             effectiveDesktop = (vd == "off" || vd == "none" || vd.isEmpty) ? nil : vd
         } else {
-            effectiveDesktop = isPureD3D9 ? "1280x720" : nil
+            effectiveDesktop = (isPureD3D9 && !(profile?.is64Bit ?? true)) ? "1280x720" : nil
         }
 
         let wineArgs: [String]

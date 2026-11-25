@@ -13,9 +13,15 @@ private func printUsage() {
       DirectMetal prefix reset <name>    Reset an existing APFS CoW prefix
       DirectMetal prefix delete <name>   Delete an APFS CoW prefix
       DirectMetal cache status           Show pre-compiled shader cache stats
+      DirectMetal cache export <file.tar.gz> [--filter <key>]
+                                         Export portable SHA-256 verified shader cache archive
+      DirectMetal cache import <path_or_url> [--force]
+                                         Import local or cloud HTTPS shader cache archive with SHA-256 verification
       DirectMetal cache clear            Clear pre-compiled shader cache
       DirectMetal attest [--nonce <hex>] [--sandbox] [--target <path>]
                                          Collect signed platform attestation JSON (opt-in)
+      DirectMetal verify-attest <bundle.json> [--nonce <hex>]
+                                         Verify a signed DirectMetal attestation bundle JSON
       DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
     """)
 }
@@ -49,6 +55,8 @@ private func runCLI(args: [String]) -> Int32 {
             "supports_metal4fx": hw.supportsMetal4FX,
             "runtime": runtimeStatus,
             "arm64ec_fex_runtime": arm64ecStatus,
+            "vk_compat_layer": resolved?.vkCompatLayerDir?.path ?? "unavailable",
+            "kosmickrisp_icd": resolved?.arm64ecKosmicKrispICD?.path ?? "unavailable",
         ]
         if let data = try? JSONSerialization.data(withJSONObject: infoPayload, options: [.prettyPrinted, .sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
@@ -132,7 +140,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "cache":
         guard args.count >= 2 else {
-            fputs("error: cache requires subcommand (status|clear)\n", stderr)
+            fputs("error: cache requires subcommand (status|export|import|clear)\n", stderr)
             return 1
         }
         let sub = args[1]
@@ -145,6 +153,53 @@ private func runCLI(args: [String]) -> Int32 {
                 print(str)
             }
             return 0
+        case "export":
+            guard args.count >= 3 else {
+                fputs("error: cache export requires <output.dmcache.tar.gz>\n", stderr)
+                return 1
+            }
+            let outPath = args[2]
+            var filter: String? = nil
+            var idx = 3
+            while idx < args.count {
+                if args[idx] == "--filter", idx + 1 < args.count {
+                    filter = args[idx + 1]
+                    idx += 2
+                } else {
+                    idx += 1
+                }
+            }
+            do {
+                let res = try ShaderCacheManager.exportArchive(to: outPath, filterEntry: filter)
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? enc.encode(res), let str = String(data: data, encoding: .utf8) {
+                    print(str)
+                }
+                return 0
+            } catch {
+                fputs("cache export failed: \(error)\n", stderr)
+                return 1
+            }
+        case "import":
+            guard args.count >= 3 else {
+                fputs("error: cache import requires <archive_path_or_https_url>\n", stderr)
+                return 1
+            }
+            let src = args[2]
+            let force = args.dropFirst(3).contains("--force")
+            do {
+                let res = try ShaderCacheManager.importArchive(from: src, allowCrossBuild: force)
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? enc.encode(res), let str = String(data: data, encoding: .utf8) {
+                    print(str)
+                }
+                return 0
+            } catch {
+                fputs("cache import failed: \(error)\n", stderr)
+                return 1
+            }
         case "clear":
             do {
                 try RuntimeLauncher.clearShaderCache()
@@ -158,6 +213,38 @@ private func runCLI(args: [String]) -> Int32 {
             fputs("unknown cache subcommand: \(sub)\n", stderr)
             return 1
         }
+
+    case "verify-attest":
+        guard args.count >= 2 else {
+            fputs("error: verify-attest requires <bundle.json> [--nonce <hex>]\n", stderr)
+            return 1
+        }
+        let bundlePath = args[1]
+        var expectedNonce: String? = nil
+        var idx = 2
+        while idx < args.count {
+            if args[idx] == "--nonce", idx + 1 < args.count {
+                expectedNonce = args[idx + 1]
+                idx += 2
+            } else {
+                idx += 1
+            }
+        }
+        guard let jsonStr = try? String(contentsOfFile: bundlePath, encoding: .utf8) else {
+            fputs("error: could not read attestation bundle at \(bundlePath)\n", stderr)
+            return 1
+        }
+        let valid = DirectMetalAttestation.verify(bundleJSON: jsonStr, expectedNonce: expectedNonce)
+        let verdict: [String: Any] = [
+            "bundle_path": bundlePath,
+            "expected_nonce": expectedNonce ?? "",
+            "valid": valid,
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: verdict, options: [.prettyPrinted, .sortedKeys]),
+           let out = String(data: data, encoding: .utf8) {
+            print(out)
+        }
+        return valid ? 0 : 1
 
     case "attest":
         var nonceHex = String(format: "%016llx", UInt64.random(in: 0...UInt64.max))

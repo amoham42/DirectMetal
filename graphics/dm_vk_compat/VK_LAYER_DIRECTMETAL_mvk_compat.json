@@ -1,0 +1,21 @@
+{
+  "file_format_version": "1.0.0",
+  "layer": {
+    "name": "VK_LAYER_DIRECTMETAL_mvk_compat",
+    "type": "GLOBAL",
+    "library_path": "./libdm_vk_compat_layer.dylib",
+    "api_version": "1.4.0",
+    "implementation_version": "1",
+    "description": "DirectMetal MoltenVK feature-mask compatibility layer for DXVK D3D9",
+    "functions": {
+      "vkGetInstanceProcAddr": "dm_vkGetInstanceProcAddr",
+      "vkGetDeviceProcAddr": "dm_vkGetDeviceProcAddr"
+    },
+    "enable_environment": {
+      "DM_VK_COMPAT_ENABLE": "1"
+    },
+    "disable_environment": {
+      "DM_VK_COMPAT_DISABLE": "1"
+    }
+  }
+}

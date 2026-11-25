@@ -198,10 +198,49 @@ enum PEInspector {
         }
         if lowerDLLs.contains(where: { $0 == "dxgi.dll" }) { apis.append("DXGI") }
 
+        let exeDir = url.deletingLastPathComponent()
+        let fm = FileManager.default
+        // Source Engine / dynamically loaded D3D9 games (e.g., Team Fortress 2 loads bin/x64/shaderapidx9.dll)
+        if apis.isEmpty {
+            let sourceDX9Paths = [
+                exeDir.appendingPathComponent("bin/x64/shaderapidx9.dll").path,
+                exeDir.appendingPathComponent("bin/shaderapidx9.dll").path,
+                exeDir.appendingPathComponent("shaderapidx9.dll").path,
+            ]
+            if sourceDX9Paths.contains(where: { fm.fileExists(atPath: $0) }) {
+                apis.append("D3D9")
+            }
+        }
+
         var upscalers: [String] = []
-        if lowerDLLs.contains(where: { $0.contains("nvngx") }) { upscalers.append("DLSS") }
-        if lowerDLLs.contains(where: { $0.contains("ffx_fsr") || $0.contains("fidelityfx") }) { upscalers.append("FSR") }
-        if lowerDLLs.contains(where: { $0.contains("libxess") }) { upscalers.append("XeSS") }
+        func addUpscaler(_ name: String) {
+            if !upscalers.contains(name) { upscalers.append(name) }
+        }
+        if lowerDLLs.contains(where: { $0.contains("nvngx") }) { addUpscaler("DLSS") }
+        if lowerDLLs.contains(where: { $0.contains("ffx_fsr") || $0.contains("fidelityfx") }) { addUpscaler("FSR") }
+        if lowerDLLs.contains(where: { $0.contains("libxess") }) { addUpscaler("XeSS") }
+
+        // Also scan game binary directory & Unreal Engine plugin directories for dynamically loaded upscaler DLLs
+        var searchDirs: [URL] = [exeDir]
+        // UE5 layout: <GameRoot>/<Project>/Binaries/Win64/<Game>.exe -> <GameRoot>/Engine/Plugins/Marketplace
+        let ueRoot = exeDir
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let uePlugins = ueRoot.appendingPathComponent("Engine/Plugins/Marketplace", isDirectory: true)
+        if fm.fileExists(atPath: uePlugins.path) {
+            searchDirs.append(uePlugins)
+        }
+        for dir in searchDirs {
+            if let items = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                for item in items {
+                    let low = item.lastPathComponent.lowercased()
+                    if low.contains("nvngx_dlss") || low == "dlss" { addUpscaler("DLSS") }
+                    if low.contains("amd_fidelityfx") || low.contains("ffx_fsr") || low == "fsr" || low == "fsr3" { addUpscaler("FSR") }
+                    if low.contains("libxess") || low == "xess" { addUpscaler("XeSS") }
+                }
+            }
+        }
 
         let digest = SHA256.hash(data: data.prefix(65536))
         let shortHash = digest.prefix(6).map { String(format: "%02x", $0) }.joined()
