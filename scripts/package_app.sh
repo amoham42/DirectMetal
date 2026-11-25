@@ -25,15 +25,19 @@ xcrun swiftc \
   -framework Metal \
   -framework MetalFX \
   -framework CryptoKit \
+  -framework Security \
+  -framework DeviceCheck \
   -o "${CONTENTS}/MacOS/DirectMetal" \
   "${APP_SRC}/PEInspector.swift" \
   "${APP_SRC}/PrefixManager.swift" \
+  "${APP_SRC}/SandboxAttestation.swift" \
   "${APP_SRC}/RuntimeLauncher.swift" \
   "${APP_SRC}/DirectMetalGUI.swift" \
   "${APP_SRC}/main.swift"
 
 cp "${APP_SRC}/Info.plist" "${CONTENTS}/Info.plist"
 cp "${REPO_ROOT}/runtime/config/mullion.conf" "${CONTENTS}/Resources/mullion.conf"
+cp "${REPO_ROOT}/sandbox/profiles/directmetal_game.sb.tmpl" "${CONTENTS}/Resources/directmetal_game.sb.tmpl"
 
 echo "[DirectMetal] Cloning self-contained Wine + Mullion runtime via APFS CoW..."
 cp -Rc "${RUNTIME_SRC}/wine-dist" "${CONTENTS}/Runtime/wine-dist"

@@ -14,7 +14,9 @@ private func printUsage() {
       DirectMetal prefix delete <name>   Delete an APFS CoW prefix
       DirectMetal cache status           Show pre-compiled shader cache stats
       DirectMetal cache clear            Clear pre-compiled shader cache
-      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--fex-tso on|off] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
+      DirectMetal attest [--nonce <hex>] [--sandbox] [--target <path>]
+                                         Collect signed platform attestation JSON (opt-in)
+      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
     """)
 }
 
@@ -157,6 +159,40 @@ private func runCLI(args: [String]) -> Int32 {
             return 1
         }
 
+    case "attest":
+        var nonceHex = String(format: "%016llx", UInt64.random(in: 0...UInt64.max))
+        var sandboxActive = false
+        var targetPath: String? = nil
+        var idx = 1
+        while idx < args.count {
+            let a = args[idx]
+            if a == "--nonce", idx + 1 < args.count {
+                nonceHex = args[idx + 1]
+                idx += 2
+            } else if a == "--target", idx + 1 < args.count {
+                targetPath = args[idx + 1]
+                idx += 2
+            } else if a == "--sandbox" {
+                sandboxActive = true
+                idx += 1
+            } else {
+                idx += 1
+            }
+        }
+        let status = DirectMetalAttestation.collectStatus(targetBinaryPath: targetPath, sandboxActive: sandboxActive)
+        do {
+            let (json, verified) = try DirectMetalAttestation.generateSignedBundle(status: status, nonceHex: nonceHex)
+            print(json)
+            if !verified {
+                fputs("error: self-verification of ECDSA attestation failed\n", stderr)
+                return 1
+            }
+            return 0
+        } catch {
+            fputs("attest failed: \(error)\n", stderr)
+            return 1
+        }
+
     case "run":
         guard args.count >= 2 else {
             fputs("error: run requires <exe>\n", stderr)
@@ -167,6 +203,9 @@ private func runCLI(args: [String]) -> Int32 {
         if prefixName.isEmpty { prefixName = "default" }
         var enableHUD = false
         var resetPrefix = false
+        var sandboxed = false
+        var sandboxOffline = false
+        var sandboxOutDir: String? = nil
         var upscaleMode: String? = nil
         var engine: ExecutionEngine = .auto
         var fexTSO = true
@@ -196,6 +235,16 @@ private func runCLI(args: [String]) -> Int32 {
             } else if a == "--reset-prefix" {
                 resetPrefix = true
                 i += 1
+            } else if a == "--sandbox" {
+                sandboxed = true
+                i += 1
+            } else if a == "--sandbox-offline" {
+                sandboxed = true
+                sandboxOffline = true
+                i += 1
+            } else if a == "--sandbox-out", i + 1 < args.count {
+                sandboxOutDir = args[i + 1]
+                i += 2
             } else {
                 childArgs.append(a)
                 i += 1
@@ -211,11 +260,14 @@ private func runCLI(args: [String]) -> Int32 {
                 resetPrefix: resetPrefix,
                 upscaleMode: upscaleMode,
                 engine: engine,
-                fexTSO: fexTSO
+                fexTSO: fexTSO,
+                sandboxed: sandboxed,
+                sandboxOffline: sandboxOffline,
+                sandboxOutputDir: sandboxOutDir
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)
-            fputs("[DirectMetal] engine=\(res.activeEngine) exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath) (clone_ms=\(cloneStr)) cache=\(res.shaderCacheDir)\n", stderr)
+            fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath) (clone_ms=\(cloneStr)) cache=\(res.shaderCacheDir)\n", stderr)
             return res.exitCode
         } catch {
             fputs("run failed: \(error)\n", stderr)

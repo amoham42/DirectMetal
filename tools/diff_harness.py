@@ -115,6 +115,7 @@ def evaluate_pair(
     apis: list[tuple[str, str]] = [
         ("D3D11", "d3d11_results.json"),
         ("D3D12", "d3d12_results.json"),
+        ("D3D12-Engine", "engine_results.json"),
     ]
     report: dict[str, Any] = {
         "apis": {},
@@ -230,6 +231,7 @@ def render_compatibility_markdown(
     extra_metrics: dict[str, Any] | None = None,
     phase2_metrics: dict[str, Any] | None = None,
     phase3_metrics: dict[str, Any] | None = None,
+    phase4_metrics: dict[str, Any] | None = None,
 ) -> str:
     total = report["total_tests"]
     passed = report["passed_tests"]
@@ -411,6 +413,47 @@ def render_compatibility_markdown(
                 f"**{ratio:.2f}x** |"
             )
 
+    if phase4_metrics:
+        p4_pass = phase4_metrics.get("passed_tests", 0)
+        p4_tot = phase4_metrics.get("total_tests", 0)
+        p4_pct = (100.0 * p4_pass / p4_tot) if p4_tot else 0.0
+        p4_ssim = phase4_metrics.get("mean_ssim", 0.0)
+        p4_min_psnr = phase4_metrics.get("min_psnr_db")
+        p4_psnr_str = "Exact (inf)" if p4_min_psnr is None else f"{p4_min_psnr:.2f} dB"
+        sbx = phase4_metrics.get("sandbox", {})
+        att = phase4_metrics.get("attestation", {})
+        lines.extend([
+            "",
+            "## Phase 4 — Engine Patterns (SM 6.0 DXIL), Seatbelt Sandbox & Attestation (M1 Pro)",
+            "",
+            f"- **Engine Conformance (`eng_01`–`eng_06`, ARM64EC+FEX Sandboxed vs. RTX 3070):** **{p4_pass} / {p4_tot} ({p4_pct:.1f}%)** | Mean SSIM: `{p4_ssim:.6f}` | Min PSNR: `{p4_psnr_str}`",
+        ])
+        if sbx:
+            lines.append(
+                f"- **Seatbelt Sandbox (`sandbox-exec`):** `{sbx.get('assertions_passed', 0)}/{sbx.get('assertions_total', 0)}` kernel `EPERM` assertions passed "
+                f"(sibling prefix read blocked, `~/.ssh` blocked, unapproved `$HOME` writes blocked; target prefix + shader cache RW intact)"
+            )
+        if att:
+            lines.append(
+                f"- **Opt-In Attestation (`{att.get('algorithm', 'ECDSA-P256-SHA256-X962')}`):** "
+                f"SIP=`{att.get('sip_enabled')}`, SSV=`{att.get('ssv_sealed')}`, "
+                f"`DCAppAttestService.isSupported`=`{att.get('dc_app_attest_supported')}` (honest macOS capability), "
+                f"signature verified=`{att.get('bundle_verified')}`, tampered-claim rejected=`{att.get('tamper_rejected')}`"
+            )
+        b = phase4_metrics.get("bench_deferred_pbr", {})
+        if b:
+            rb = b.get("rtx3070", {})
+            ros = b.get("rosetta2", {})
+            a64 = b.get("arm64ec_sandboxed", {})
+            lines.extend([
+                "",
+                "| 1024x1024 Deferred PBR Benchmark | Mean Frame Time | FPS | 1%-Low FPS | GPU Mean (ms) | Throughput (MP/s) |",
+                "| :--- | ---: | ---: | ---: | ---: | ---: |",
+                f"| **Windows RTX 3070** (Native SM 6.0) | {rb.get('mean_ms', 0):.3f} ms | {rb.get('fps', 0):.1f} | {rb.get('one_percent_low_fps', 0):.1f} | {rb.get('gpu_mean_ms', 0):.3f} ms | {rb.get('extra_ops_per_sec', 0):.1f} |",
+                f"| **M1 Pro Rosetta 2** (Mullion DXIL->Metal) | {ros.get('mean_ms', 0):.3f} ms | {ros.get('fps', 0):.1f} | {ros.get('one_percent_low_fps', 0):.1f} | {ros.get('gpu_mean_ms', 0):.3f} ms | {ros.get('extra_ops_per_sec', 0):.1f} |",
+                f"| **M1 Pro ARM64EC+FEX (Sandboxed)** | {a64.get('mean_ms', 0):.3f} ms | {a64.get('fps', 0):.1f} | {a64.get('one_percent_low_fps', 0):.1f} | {a64.get('gpu_mean_ms', 0):.3f} ms | {a64.get('extra_ops_per_sec', 0):.1f} |",
+            ])
+
     lines.append("")
     return "\n".join(lines)
 
@@ -425,6 +468,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--extra-metrics", type=Path, default=None, help="Optional extra host metrics JSON")
     parser.add_argument("--phase2-metrics", type=Path, default=None, help="Optional Phase 2 benchmarks JSON")
     parser.add_argument("--phase3-metrics", type=Path, default=None, help="Optional Phase 3 ARM64EC benchmarks JSON")
+    parser.add_argument("--phase4-metrics", type=Path, default=None, help="Optional Phase 4 engine/sandbox/attestation JSON")
     parser.add_argument("--ssim-threshold", type=float, default=0.995)
     parser.add_argument("--psnr-threshold", type=float, default=40.0)
     args = parser.parse_args(argv)
@@ -442,11 +486,12 @@ def main(argv: list[str] | None = None) -> int:
     extra = json.loads(args.extra_metrics.read_text()) if (args.extra_metrics and args.extra_metrics.exists()) else None
     phase2 = json.loads(args.phase2_metrics.read_text()) if (args.phase2_metrics and args.phase2_metrics.exists()) else None
     phase3 = json.loads(args.phase3_metrics.read_text()) if (args.phase3_metrics and args.phase3_metrics.exists()) else None
+    phase4 = json.loads(args.phase4_metrics.read_text()) if (args.phase4_metrics and args.phase4_metrics.exists()) else None
 
     if args.update_compat is not None:
         md = render_compatibility_markdown(
             report, ref_sys=ref_sys, cand_sys=cand_sys, extra_metrics=extra,
-            phase2_metrics=phase2, phase3_metrics=phase3,
+            phase2_metrics=phase2, phase3_metrics=phase3, phase4_metrics=phase4,
         )
         args.update_compat.write_text(md, encoding="utf-8")
 

@@ -9,7 +9,7 @@
 - [x] Build reproducible macOS Wine core with `msync` + `os_sync_wait_on_address` fast-path experiments.
 - [x] Integrate open-source direct-to-Metal D3D10/11 (**DXMT**) and D3D12 (**Mullion**) pipelines into a single unified build.
 - [x] Package a self-contained `.app` runner with APFS copy-on-write per-game prefixes and zero manual backend selection.
-- [ ] Pass 100% of Phase 0 D3D11 + D3D12 core rendering conformance tests (19/19 passing) and boot initial real-world DX11/DX12 titles.
+- [ ] Boot external retail DX11/DX12 commercial games *(19/19 core conformance tests verified in Phase 1; retail commercial game assets require external user testing)*.
 
 ## Phase 2 — Apple Silicon Deep Optimizations
 - [x] Implement UMA zero-copy buffer allocator (`MTLStorageModeShared` fast paths for dynamic/upload/readback heaps).
@@ -22,5 +22,5 @@
 - [x] Benchmark and close frame-time & 1%-low gaps against native Windows baselines. *(3-way RTX 3070 vs. Rosetta 2 vs. ARM64EC+FEX tracked in `COMPATIBILITY.md`)*
 
 ## Phase 4 — Compatibility Matrix & Attested Sandbox
-- [ ] Expand automated game/engine compatibility matrix (Unreal Engine 4/5, Unity, RE Engine, REDengine, Frostbite, Source 2, id Tech).
-- [ ] Prototype hardened per-game isolation sandbox and platform-attested anti-cheat verification SDK.
+- [x] Expand automated game/engine compatibility matrix (Unreal Engine 4/5, Unity, RE Engine, REDengine, Frostbite, Source 2, id Tech). *(SM 6.0 DXIL `eng_01`–`eng_06` + `eng_bench_deferred_pbr` and [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md) verified **25/25**)*
+- [x] Prototype hardened per-game isolation sandbox and platform-attested anti-cheat verification SDK. *(Seatbelt `dm_sandbox` `5/5` + `DirectMetal run --sandbox` + `dm_attestation` / `DirectMetal attest` ECDSA P-256 verified)*

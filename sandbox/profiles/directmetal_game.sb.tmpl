@@ -1,0 +1,42 @@
+;; DirectMetal Per-Game Seatbelt Sandbox Profile (SBPL v1)
+;; Enforced via /usr/bin/sandbox-exec -f <rendered_profile>
+(version 1)
+(allow default)
+
+;; 1. Deny access to sensitive user credentials, keychains, and browser profiles
+(deny file-read* file-write*
+  (subpath "${USER_HOME}/.ssh")
+  (subpath "${USER_HOME}/.gnupg")
+  (subpath "${USER_HOME}/.aws")
+  (subpath "${USER_HOME}/.kube")
+  (subpath "${USER_HOME}/.config/gcloud")
+  (subpath "${USER_HOME}/Library/Keychains")
+  (subpath "${USER_HOME}/Library/Cookies")
+  (subpath "${USER_HOME}/Library/Safari")
+  (subpath "${USER_HOME}/Library/Application Support/Google/Chrome")
+  (subpath "${USER_HOME}/Library/Application Support/Firefox"))
+
+;; 2. Isolate Wine prefixes: deny sibling prefixes, allow only target prefix (and stat on parent for realpath)
+(deny file-read* file-write*
+  (subpath "${PREFIXES_ROOT}"))
+(allow file-read-metadata
+  (literal "${PREFIXES_ROOT}"))
+(allow file-read* file-write*
+  (subpath "${TARGET_PREFIX}"))
+
+;; 3. Least-privilege writes inside HOME: deny HOME writes by default, allow scoped game/cache/output dirs
+(deny file-write*
+  (subpath "${USER_HOME}"))
+(allow file-write*
+  (subpath "${TARGET_PREFIX}")
+  (subpath "${SHADER_CACHE_DIR}")
+  (subpath "${OUTPUT_DIR}")
+  (subpath "${USER_HOME}/Library/Caches"))
+
+(allow file-read*
+  (subpath "${GAME_DIR}")
+  (subpath "${SHADER_CACHE_DIR}")
+  (subpath "${OUTPUT_DIR}"))
+
+;; 4. Network policy (optional offline confinement while keeping AF_UNIX/Mach IPC for wineserver)
+${NETWORK_RULES}

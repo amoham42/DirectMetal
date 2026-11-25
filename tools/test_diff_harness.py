@@ -124,12 +124,44 @@ class TestDiffHarness(unittest.TestCase):
                                          "arm64ec_tso1": {"fps": 1400, "one_percent_low_fps": 300},
                                          "arm64ec_tso0": {"fps": 1500, "one_percent_low_fps": 320}}},
                 },
+                phase4_metrics={
+                    "passed_tests": 6, "total_tests": 6, "mean_ssim": 0.9999, "min_psnr_db": 52.0,
+                    "sandbox": {"assertions_passed": 5, "assertions_total": 5},
+                    "attestation": {"algorithm": "ECDSA-P256-SHA256-X962", "sip_enabled": True, "ssv_sealed": True,
+                                    "dc_app_attest_supported": False, "bundle_verified": True, "tamper_rejected": True},
+                    "bench_deferred_pbr": {
+                        "rtx3070": {"mean_ms": 0.25, "fps": 4000.0, "one_percent_low_fps": 2100.0, "gpu_mean_ms": 0.11, "extra_ops_per_sec": 4200.0},
+                        "rosetta2": {"mean_ms": 1.20, "fps": 833.3, "one_percent_low_fps": 400.0, "gpu_mean_ms": 0.45, "extra_ops_per_sec": 870.0},
+                        "arm64ec_sandboxed": {"mean_ms": 0.95, "fps": 1052.6, "one_percent_low_fps": 520.0, "gpu_mean_ms": 0.44, "extra_ops_per_sec": 1100.0},
+                    },
+                },
             )
             self.assertIn("1 / 2 (50.0%)", md)
             self.assertIn("Exact (inf)", md)
             self.assertIn("EXACT", md)
             self.assertIn("UMA Zero-Copy", md)
             self.assertIn("ARM64EC + FEX-Emu", md)
+            self.assertIn("Phase 4", md)
+            self.assertIn("Seatbelt Sandbox", md)
+
+            # Also verify D3D12-Engine (engine_results.json) evaluation
+            (ref_dir / "engine_results.json").write_text(json.dumps({
+                "api": "D3D12-Engine",
+                "feature_level": "12_2",
+                "adapter": {"description": "RTX 3070"},
+                "tests": [{"name": "t_ok", "status": "pass", "png": "t_ok.png"}],
+                "benchmark": {"name": "eng_bench_deferred_pbr", "mean_ms": 0.25, "fps": 4000.0, "one_percent_low_fps": 2100.0},
+            }))
+            (cand_dir / "engine_results.json").write_text(json.dumps({
+                "api": "D3D12-Engine",
+                "feature_level": "11_1",
+                "adapter": {"description": "Apple M1 Pro"},
+                "tests": [{"name": "t_ok", "status": "pass", "png": "t_ok.png"}],
+                "benchmark": {"name": "eng_bench_deferred_pbr", "mean_ms": 1.0, "fps": 1000.0, "one_percent_low_fps": 600.0},
+            }))
+            rep_eng = evaluate_pair(ref_dir, cand_dir, save_diffs_dir=diffs_dir)
+            self.assertIn("D3D12-Engine", rep_eng["apis"])
+            self.assertEqual(rep_eng["apis"]["D3D12-Engine"]["passed"], 1)
 
 
 if __name__ == "__main__":

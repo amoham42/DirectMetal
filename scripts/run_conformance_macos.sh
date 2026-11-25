@@ -19,11 +19,17 @@ if [[ ! -f "${BIN_CACHE}/dm_d3d11_conformance.exe" || ! -f "${BIN_CACHE}/dm_d3d1
   echo "[DirectMetal] Downloading conformance test binaries from GitHub release conformance-bins-v0.1..."
   gh release download conformance-bins-v0.1 -R amoham42/DirectMetal -D "${BIN_CACHE}" --clobber
 fi
+if [[ ! -f "${BIN_CACHE}/dm_engine_conformance.exe" ]]; then
+  echo "[DirectMetal] Downloading engine conformance binary from GitHub release conformance-bins-v0.2..."
+  gh release download conformance-bins-v0.2 -R amoham42/DirectMetal -D "${BIN_CACHE}" --clobber
+fi
 
 echo "=== PE INSPECT: D3D11 ==="
 "${DM_BIN}" inspect "${BIN_CACHE}/dm_d3d11_conformance.exe"
 echo "=== PE INSPECT: D3D12 ==="
 "${DM_BIN}" inspect "${BIN_CACHE}/dm_d3d12_conformance.exe"
+echo "=== PE INSPECT: D3D12-ENGINE ==="
+"${DM_BIN}" inspect "${BIN_CACHE}/dm_engine_conformance.exe"
 
 # Convert POSIX path to Wine Z: path
 WIN_CAND_DIR="Z:${CAND_DIR//\//\\}"
@@ -39,6 +45,13 @@ echo "=== RUNNING D3D12 CONFORMANCE VIA DIRECTMETAL ==="
   --prefix conformance_d3d12 \
   --reset-prefix \
   -- --out "${WIN_CAND_DIR}" --frames 200 || true
+
+echo "=== RUNNING D3D12 ENGINE CONFORMANCE VIA DIRECTMETAL (SANDBOXED) ==="
+"${DM_BIN}" run "${BIN_CACHE}/dm_engine_conformance.exe" \
+  --prefix conformance_engine \
+  --reset-prefix \
+  --sandbox \
+  -- --out "${WIN_CAND_DIR}" --frames 150 || true
 
 # Write system_info.json for M1 Pro
 MACOS_VER="$(sw_vers -productVersion)"
@@ -83,6 +96,10 @@ if [[ -d "${REF_DIR}" && -f "${REF_DIR}/d3d11_results.json" ]]; then
   if [[ -f "${CAND_DIR}/phase3_summary.json" ]]; then
     PHASE3_ARG=(--phase3-metrics "${CAND_DIR}/phase3_summary.json")
   fi
+  PHASE4_ARG=()
+  if [[ -f "${CAND_DIR}/phase4_summary.json" ]]; then
+    PHASE4_ARG=(--phase4-metrics "${CAND_DIR}/phase4_summary.json")
+  fi
   "${REPO_ROOT}/.venv/bin/python" "${REPO_ROOT}/tools/diff_harness.py" \
     --ref "${REF_DIR}" \
     --cand "${CAND_DIR}" \
@@ -90,6 +107,7 @@ if [[ -d "${REF_DIR}" && -f "${REF_DIR}/d3d11_results.json" ]]; then
     --extra-metrics "${CAND_DIR}/host_metrics.json" \
     "${PHASE2_ARG[@]}" \
     "${PHASE3_ARG[@]}" \
+    "${PHASE4_ARG[@]}" \
     --json-out "${CAND_DIR}/diff_report.json" \
     --update-compat "${REPO_ROOT}/COMPATIBILITY.md"
 else

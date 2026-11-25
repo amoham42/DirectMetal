@@ -51,6 +51,7 @@ struct LaunchResult {
     let cloneMs: Double
     let shaderCacheDir: String
     let activeEngine: String
+    let sandboxed: Bool
 }
 
 enum LauncherError: Error, CustomStringConvertible {
@@ -279,7 +280,10 @@ enum RuntimeLauncher {
         resetPrefix: Bool = false,
         upscaleMode: String? = nil,
         engine: ExecutionEngine = .auto,
-        fexTSO: Bool = true
+        fexTSO: Bool = true,
+        sandboxed: Bool = false,
+        sandboxOffline: Bool = false,
+        sandboxOutputDir: String? = nil
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -361,8 +365,26 @@ enum RuntimeLauncher {
         }
 
         let proc = Process()
-        proc.executableURL = selectedWine
-        proc.arguments = [exeURL.path] + extraArgs
+        if sandboxed {
+            let resolvedOutDir = DirectMetalSandbox.inferOutputDir(
+                from: extraArgs,
+                explicit: sandboxOutputDir,
+                targetPrefix: prefixURL.path
+            )
+            let profileURL = try DirectMetalSandbox.writeProfile(
+                prefixesRoot: prefixMgr.prefixRoot.path,
+                targetPrefix: prefixURL.path,
+                gameDir: exeURL.deletingLastPathComponent().path,
+                shaderCacheDir: shaderCacheDir.path,
+                outputDir: resolvedOutDir,
+                allowNetwork: !sandboxOffline
+            )
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/sandbox-exec")
+            proc.arguments = ["-f", profileURL.path, selectedWine.path, exeURL.path] + extraArgs
+        } else {
+            proc.executableURL = selectedWine
+            proc.arguments = [exeURL.path] + extraArgs
+        }
         proc.currentDirectoryURL = exeURL.deletingLastPathComponent()
         proc.environment = env
 
@@ -377,7 +399,8 @@ enum RuntimeLauncher {
             prefixPath: prefixURL.path,
             cloneMs: cloneMs,
             shaderCacheDir: shaderCacheDir.path,
-            activeEngine: activeEngine
+            activeEngine: activeEngine,
+            sandboxed: sandboxed
         )
     }
 }

@@ -11,6 +11,7 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var prefixName: String = "default"
     @Published var prefixes: [String] = []
     @Published var enableMetalHUD: Bool = true
+    @Published var enableSandbox: Bool = false
     @Published var upscaleMode: String = "off"
     @Published var selectedEngine: ExecutionEngine = .auto
     @Published var cacheSummary: ShaderCacheSummary = RuntimeLauncher.queryShaderCache()
@@ -68,6 +69,7 @@ final class DirectMetalViewModel: ObservableObject {
         let targetExe = exePath
         let targetPrefix = prefixName
         let hud = enableMetalHUD
+        let sandbox = enableSandbox
         let upscale = upscaleMode
         let engine = selectedEngine
 
@@ -79,7 +81,8 @@ final class DirectMetalViewModel: ObservableObject {
                     extraArgs: [],
                     enableHUD: hud,
                     upscaleMode: upscale,
-                    engine: engine
+                    engine: engine,
+                    sandboxed: sandbox
                 )
                 DispatchQueue.main.async {
                     self.isRunning = false
@@ -187,6 +190,7 @@ struct DirectMetalContentView: View {
                 }
                 .frame(width: 170)
                 Toggle("HUD", isOn: $vm.enableMetalHUD)
+                Toggle("Sandbox", isOn: $vm.enableSandbox)
                 Spacer()
                 Button(vm.isRunning ? "Running…" : "Launch") {
                     vm.launchSelected()
