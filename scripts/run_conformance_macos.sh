@@ -75,11 +75,16 @@ fi
 
 if [[ -d "${REF_DIR}" && -f "${REF_DIR}/d3d11_results.json" ]]; then
   echo "=== RUNNING PSNR / SSIM VISUAL DIFF HARNESS ==="
+  PHASE2_ARG=()
+  if [[ -f "${CAND_DIR}/phase2_summary.json" ]]; then
+    PHASE2_ARG=(--phase2-metrics "${CAND_DIR}/phase2_summary.json")
+  fi
   "${REPO_ROOT}/.venv/bin/python" "${REPO_ROOT}/tools/diff_harness.py" \
     --ref "${REF_DIR}" \
     --cand "${CAND_DIR}" \
     --save-diffs "${DIFF_DIR}" \
     --extra-metrics "${CAND_DIR}/host_metrics.json" \
+    "${PHASE2_ARG[@]}" \
     --json-out "${CAND_DIR}/diff_report.json" \
     --update-compat "${REPO_ROOT}/COMPATIBILITY.md"
 else

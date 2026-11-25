@@ -1,5 +1,6 @@
 import Foundation
 import Metal
+import MetalFX
 
 struct MetalHardwareInfo: Codable {
     let gpuName: String
@@ -12,6 +13,17 @@ struct MetalHardwareInfo: Codable {
     let supportsMetal3: Bool
     let supportsMetal4: Bool
     let supportsRaytracing: Bool
+    let supportsMetalFXSpatial: Bool
+    let supportsMetalFXTemporal: Bool
+    let supportsMetal4FX: Bool
+}
+
+struct ShaderCacheSummary: Codable {
+    let rootPath: String
+    let entryCount: Int
+    let fileCount: Int
+    let totalBytes: UInt64
+    let entries: [String]
 }
 
 struct RuntimePaths {
@@ -68,7 +80,10 @@ enum RuntimeLauncher {
                 hasUnifiedMemory: false,
                 supportsMetal3: false,
                 supportsMetal4: false,
-                supportsRaytracing: false
+                supportsRaytracing: false,
+                supportsMetalFXSpatial: false,
+                supportsMetalFXTemporal: false,
+                supportsMetal4FX: false
             )
         }
 
@@ -87,8 +102,11 @@ enum RuntimeLauncher {
 
         let m3 = dev.supportsFamily(.metal3)
         var m4 = false
+        var m4fx = false
         if #available(macOS 26.0, *) {
             m4 = dev.supportsFamily(.metal4)
+            m4fx = MTLFXSpatialScalerDescriptor.supportsMetal4FX(dev) &&
+                   MTLFXTemporalScalerDescriptor.supportsMetal4FX(dev)
         }
 
         let cacheKey = "\(family.lowercased())_\(buildStr)"
@@ -104,7 +122,10 @@ enum RuntimeLauncher {
             hasUnifiedMemory: dev.hasUnifiedMemory,
             supportsMetal3: m3,
             supportsMetal4: m4,
-            supportsRaytracing: dev.supportsRaytracing
+            supportsRaytracing: dev.supportsRaytracing,
+            supportsMetalFXSpatial: MTLFXSpatialScalerDescriptor.supportsDevice(dev),
+            supportsMetalFXTemporal: MTLFXTemporalScalerDescriptor.supportsDevice(dev),
+            supportsMetal4FX: m4fx
         )
     }
 
@@ -160,12 +181,58 @@ enum RuntimeLauncher {
         )
     }
 
+    static func shaderCacheRoot() -> URL {
+        let fm = FileManager.default
+        let cachesDir = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
+        return cachesDir.appendingPathComponent("DirectMetal/Shaders", isDirectory: true)
+    }
+
+    static func queryShaderCache() -> ShaderCacheSummary {
+        let fm = FileManager.default
+        let root = shaderCacheRoot()
+        guard let top = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return ShaderCacheSummary(rootPath: root.path, entryCount: 0, fileCount: 0, totalBytes: 0, entries: [])
+        }
+        var entries: [String] = []
+        var fileCount = 0
+        var totalBytes: UInt64 = 0
+        for item in top {
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            if isDir { entries.append(item.lastPathComponent) }
+        }
+        if let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) {
+            for case let url as URL in enumerator {
+                let vals = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                if vals?.isRegularFile == true {
+                    fileCount += 1
+                    totalBytes += UInt64(vals?.fileSize ?? 0)
+                }
+            }
+        }
+        return ShaderCacheSummary(
+            rootPath: root.path,
+            entryCount: entries.count,
+            fileCount: fileCount,
+            totalBytes: totalBytes,
+            entries: entries.sorted()
+        )
+    }
+
+    static func clearShaderCache() throws {
+        let fm = FileManager.default
+        let root = shaderCacheRoot()
+        if fm.fileExists(atPath: root.path) {
+            try fm.removeItem(at: root)
+        }
+    }
+
     static func runExecutable(
         exePath: String,
         prefixName: String,
         extraArgs: [String],
         enableHUD: Bool = false,
-        resetPrefix: Bool = false
+        resetPrefix: Bool = false,
+        upscaleMode: String? = nil
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -179,9 +246,7 @@ enum RuntimeLauncher {
         let dxApi = profile?.detectedAPIs.joined(separator: "+") ?? "auto"
         let buildHash = profile?.buildHash ?? "unknown"
 
-        let cachesDir = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
-        let shaderCacheDir = cachesDir
-            .appendingPathComponent("DirectMetal/Shaders", isDirectory: true)
+        let shaderCacheDir = shaderCacheRoot()
             .appendingPathComponent("\(buildHash)_\(hw.cacheKey)", isDirectory: true)
         try fm.createDirectory(at: shaderCacheDir, withIntermediateDirectories: true)
 
@@ -207,6 +272,22 @@ enum RuntimeLauncher {
         }
         // Keep standard Metal 4/3 pipelines by default; MULLION_D3D12_FLEXIBLE=1
         // in v0.5-alpha.4 breaks blend state updates across PSO transitions (d3d12_06).
+        if let mode = upscaleMode?.lowercased(), !mode.isEmpty, mode != "off" {
+            let factor: String
+            switch mode {
+            case "quality": factor = "1.5"
+            case "balanced": factor = "1.7"
+            case "performance": factor = "2.0"
+            default: factor = "1.5"
+            }
+            env["MULLION_METALFX_SPATIAL_SWAPCHAIN"] = "1"
+            let extraCfg = "d3d11.metalSpatialUpscale=True;d3d11.metalSpatialUpscaleFactor=\(factor)"
+            if let existing = env["MULLION_CONFIG"], !existing.isEmpty {
+                env["MULLION_CONFIG"] = "\(existing);\(extraCfg)"
+            } else {
+                env["MULLION_CONFIG"] = extraCfg
+            }
+        }
         if enableHUD {
             env["MTL_HUD_ENABLED"] = "1"
         }

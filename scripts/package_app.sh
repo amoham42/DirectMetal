@@ -23,6 +23,7 @@ xcrun swiftc \
   -framework SwiftUI \
   -framework AppKit \
   -framework Metal \
+  -framework MetalFX \
   -framework CryptoKit \
   -o "${CONTENTS}/MacOS/DirectMetal" \
   "${APP_SRC}/PEInspector.swift" \

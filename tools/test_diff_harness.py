@@ -110,10 +110,18 @@ class TestDiffHarness(unittest.TestCase):
             self.assertTrue((diffs_dir / "t_ok_diff.png").exists())
             self.assertTrue((diffs_dir / "t_bad_diff.png").exists())
 
-            md = render_compatibility_markdown(report)
+            md = render_compatibility_markdown(
+                report,
+                phase2_metrics={
+                    "uma": {"discrete_mean_ms": 0.75, "uma_mean_ms": 0.40, "speedup_x": 1.88,
+                            "discrete_gbps": 6.5, "uma_gbps": 12.0, "discrete_footprint_mib": 15.0,
+                            "uma_footprint_mib": 5.0, "memory_reduction_pct": 66.7}
+                },
+            )
             self.assertIn("1 / 2 (50.0%)", md)
             self.assertIn("Exact (inf)", md)
             self.assertIn("EXACT", md)
+            self.assertIn("UMA Zero-Copy", md)
 
 
 if __name__ == "__main__":

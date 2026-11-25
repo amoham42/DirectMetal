@@ -11,6 +11,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var prefixName: String = "default"
     @Published var prefixes: [String] = []
     @Published var enableMetalHUD: Bool = true
+    @Published var upscaleMode: String = "off"
+    @Published var cacheSummary: ShaderCacheSummary = RuntimeLauncher.queryShaderCache()
     @Published var statusMessage: String = "Ready — drop a DirectX 10/11/12 .exe to inspect and launch."
     @Published var isRunning: Bool = false
 
@@ -22,6 +24,13 @@ final class DirectMetalViewModel: ObservableObject {
 
     func refreshPrefixes() {
         prefixes = prefixManager.listPrefixes()
+        cacheSummary = RuntimeLauncher.queryShaderCache()
+    }
+
+    func clearShaderCache() {
+        try? RuntimeLauncher.clearShaderCache()
+        cacheSummary = RuntimeLauncher.queryShaderCache()
+        statusMessage = "Cleared pre-compiled shader cache."
     }
 
     func selectExe(path: String) {
@@ -58,6 +67,7 @@ final class DirectMetalViewModel: ObservableObject {
         let targetExe = exePath
         let targetPrefix = prefixName
         let hud = enableMetalHUD
+        let upscale = upscaleMode
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -65,7 +75,8 @@ final class DirectMetalViewModel: ObservableObject {
                     exePath: targetExe,
                     prefixName: targetPrefix,
                     extraArgs: [],
-                    enableHUD: hud
+                    enableHUD: hud,
+                    upscaleMode: upscale
                 )
                 DispatchQueue.main.async {
                     self.isRunning = false
@@ -158,7 +169,14 @@ struct DirectMetalContentView: View {
                 Text("APFS CoW Prefix:")
                 TextField("Prefix name", text: $vm.prefixName)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 220)
+                    .frame(width: 180)
+                Picker("MetalFX:", selection: $vm.upscaleMode) {
+                    Text("Off").tag("off")
+                    Text("Quality (1.5x)").tag("quality")
+                    Text("Balanced (1.7x)").tag("balanced")
+                    Text("Perf (2.0x)").tag("performance")
+                }
+                .frame(width: 190)
                 Toggle("Metal HUD", isOn: $vm.enableMetalHUD)
                 Spacer()
                 Button(vm.isRunning ? "Running…" : "Launch") {
@@ -166,6 +184,18 @@ struct DirectMetalContentView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(vm.exePath.isEmpty || vm.isRunning || vm.runtimePaths == nil)
+            }
+
+            HStack {
+                let mb = Double(vm.cacheSummary.totalBytes) / (1024.0 * 1024.0)
+                Text("Shader Cache: \(vm.cacheSummary.entryCount) titles, \(vm.cacheSummary.fileCount) files (\(mb, specifier: "%.2f") MiB)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear Cache") {
+                    vm.clearShaderCache()
+                }
+                .font(.caption)
             }
 
             Text(vm.statusMessage)

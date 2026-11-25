@@ -228,6 +228,7 @@ def render_compatibility_markdown(
     ref_sys: dict[str, Any] | None = None,
     cand_sys: dict[str, Any] | None = None,
     extra_metrics: dict[str, Any] | None = None,
+    phase2_metrics: dict[str, Any] | None = None,
 ) -> str:
     total = report["total_tests"]
     passed = report["passed_tests"]
@@ -305,6 +306,67 @@ def render_compatibility_markdown(
         for k, v in extra_metrics.items():
             lines.append(f"- **{k}:** {v}")
 
+    if phase2_metrics:
+        lines.extend([
+            "",
+            "## Phase 2 — Apple Silicon Deep Optimizations (M1 Pro)",
+            "",
+            "| Optimization Subsystem | Baseline | DirectMetal M1+ Optimized | Gain / Accuracy |",
+            "| :--- | :--- | :--- | :--- |",
+        ])
+        uma = phase2_metrics.get("uma", {})
+        if uma:
+            lines.append(
+                f"| **UMA Zero-Copy (`MTLStorageModeShared`)** | "
+                f"{uma.get('discrete_mean_ms', 0):.3f} ms ({uma.get('discrete_gbps', 0):.2f} GB/s, {uma.get('discrete_footprint_mib', 0):.2f} MiB) | "
+                f"{uma.get('uma_mean_ms', 0):.3f} ms ({uma.get('uma_gbps', 0):.2f} GB/s, {uma.get('uma_footprint_mib', 0):.2f} MiB) | "
+                f"**{uma.get('speedup_x', 0):.2f}x** faster, **-{uma.get('memory_reduction_pct', 0):.1f}%** memory (bit-exact) |"
+            )
+        tbdr = phase2_metrics.get("tbdr", {})
+        if tbdr:
+            lines.append(
+                f"| **TBDR Coalescing + `MTLStorageModeMemoryless`** | "
+                f"{tbdr.get('passes_original', 9)} passes, {tbdr.get('baseline_mean_ms', 0):.3f} ms, {tbdr.get('baseline_transient_mib', 0):.2f} MiB DRAM | "
+                f"{tbdr.get('passes_coalesced', 1)} pass, {tbdr.get('optimized_mean_ms', 0):.3f} ms, {tbdr.get('optimized_transient_mib', 0):.2f} MiB DRAM | "
+                f"**{tbdr.get('speedup_x', 0):.2f}x** faster, **-{tbdr.get('dram_saved_mib', 0):.2f} MiB** DRAM (max_diff={tbdr.get('max_diff', 0)}) |"
+            )
+        sc = phase2_metrics.get("shader_cache", {})
+        if sc:
+            lines.append(
+                f"| **`MTLBinaryArchive` Pipeline Cache** (`{sc.get('cache_key', '')}`) | "
+                f"Cold compile: {sc.get('cold_compile_ms', 0):.2f} ms ({sc.get('pipelines_total', 0)} PSOs) | "
+                f"Warm archive load: {sc.get('warm_load_ms', 0):.2f} ms ({sc.get('strict_archive_hits', 0)}/{sc.get('pipelines_total', 0)} strict hits) | "
+                f"**{sc.get('speedup_x', 0):.1f}x** faster warm PSO load |"
+            )
+        mc = phase2_metrics.get("mullion_cache", {})
+        if mc:
+            lines.append(
+                f"| **Mullion D3D12 End-to-End Cache (`dm_d3d12_conformance.exe`)** | "
+                f"Cold cache: {mc.get('cold_wall_s', 0):.3f} s | "
+                f"Warm cache: {mc.get('warm_wall_s', 0):.3f} s ({mc.get('cache_bytes', 0)} bytes) | "
+                f"**{mc.get('speedup_x', 0):.2f}x** end-to-end launch speedup |"
+            )
+        mfx = phase2_metrics.get("metalfx", {})
+        if mfx:
+            lines.append(
+                f"| **MetalFX Spatial Quality (720p -> 1080p, 1.5x)** | "
+                f"Native 1080p: {mfx.get('native_1080p_ms', 0):.3f} ms ({mfx.get('native_1080p_fps', 0):.1f} FPS) | "
+                f"Spatial Quality: {mfx.get('spatial_quality_ms', 0):.3f} ms ({mfx.get('spatial_quality_fps', 0):.1f} FPS) | "
+                f"**{mfx.get('spatial_quality_speedup_x', 0):.2f}x** FPS (PSNR={_fmt_psnr(mfx.get('spatial_quality_psnr_db', 0.0))}, SSIM={mfx.get('spatial_quality_ssim', 0.0):.4f}) |"
+            )
+            lines.append(
+                f"| **MetalFX Spatial Perf (540p -> 1080p, 2.0x)** | "
+                f"Native 1080p: {mfx.get('native_1080p_ms', 0):.3f} ms ({mfx.get('native_1080p_fps', 0):.1f} FPS) | "
+                f"Spatial Perf: {mfx.get('spatial_perf_ms', 0):.3f} ms ({mfx.get('spatial_perf_fps', 0):.1f} FPS) | "
+                f"**{mfx.get('spatial_perf_speedup_x', 0):.2f}x** FPS |"
+            )
+            lines.append(
+                f"| **MetalFX Temporal Quality (720p -> 1080p, 1.5x)** | "
+                f"Native 1080p FP16: {mfx.get('native_1080p_fp16_ms', 0):.3f} ms | "
+                f"Temporal Quality: {mfx.get('temporal_quality_ms', 0):.3f} ms ({mfx.get('temporal_quality_fps', 0):.1f} FPS) | "
+                f"**{mfx.get('temporal_quality_speedup_x', 0):.2f}x** FPS (PSNR={_fmt_psnr(mfx.get('temporal_quality_psnr_db', 0.0))}, SSIM={mfx.get('temporal_quality_ssim', 0.0):.4f}) |"
+            )
+
     lines.append("")
     return "\n".join(lines)
 
@@ -317,6 +379,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--update-compat", type=Path, default=None, help="Output Markdown path (e.g. COMPATIBILITY.md)")
     parser.add_argument("--json-out", type=Path, default=None, help="Optional structured JSON summary path")
     parser.add_argument("--extra-metrics", type=Path, default=None, help="Optional extra host metrics JSON")
+    parser.add_argument("--phase2-metrics", type=Path, default=None, help="Optional Phase 2 benchmarks JSON")
     parser.add_argument("--ssim-threshold", type=float, default=0.995)
     parser.add_argument("--psnr-threshold", type=float, default=40.0)
     args = parser.parse_args(argv)
@@ -332,9 +395,12 @@ def main(argv: list[str] | None = None) -> int:
     ref_sys = json.loads((args.ref / "system_info.json").read_text()) if (args.ref / "system_info.json").exists() else None
     cand_sys = json.loads((args.cand / "system_info.json").read_text()) if (args.cand / "system_info.json").exists() else None
     extra = json.loads(args.extra_metrics.read_text()) if (args.extra_metrics and args.extra_metrics.exists()) else None
+    phase2 = json.loads(args.phase2_metrics.read_text()) if (args.phase2_metrics and args.phase2_metrics.exists()) else None
 
     if args.update_compat is not None:
-        md = render_compatibility_markdown(report, ref_sys=ref_sys, cand_sys=cand_sys, extra_metrics=extra)
+        md = render_compatibility_markdown(
+            report, ref_sys=ref_sys, cand_sys=cand_sys, extra_metrics=extra, phase2_metrics=phase2
+        )
         args.update_compat.write_text(md, encoding="utf-8")
 
     if args.json_out is not None:

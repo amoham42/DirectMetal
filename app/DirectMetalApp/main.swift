@@ -12,7 +12,9 @@ private func printUsage() {
       DirectMetal prefix create <name>   Create an APFS CoW prefix immediately
       DirectMetal prefix reset <name>    Reset an existing APFS CoW prefix
       DirectMetal prefix delete <name>   Delete an APFS CoW prefix
-      DirectMetal run <exe> [--prefix <name>] [--hud] [--reset-prefix] [-- <args...>]
+      DirectMetal cache status           Show pre-compiled shader cache stats
+      DirectMetal cache clear            Clear pre-compiled shader cache
+      DirectMetal run <exe> [--prefix <name>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
     """)
 }
 
@@ -43,6 +45,9 @@ private func runCLI(args: [String]) -> Int32 {
             "supports_metal3": hw.supportsMetal3,
             "supports_metal4": hw.supportsMetal4,
             "supports_raytracing": hw.supportsRaytracing,
+            "supports_metalfx_spatial": hw.supportsMetalFXSpatial,
+            "supports_metalfx_temporal": hw.supportsMetalFXTemporal,
+            "supports_metal4fx": hw.supportsMetal4FX,
             "runtime": runtimeStatus,
         ]
         if let data = try? JSONSerialization.data(withJSONObject: infoPayload, options: [.prettyPrinted, .sortedKeys]),
@@ -125,6 +130,35 @@ private func runCLI(args: [String]) -> Int32 {
             return 1
         }
 
+    case "cache":
+        guard args.count >= 2 else {
+            fputs("error: cache requires subcommand (status|clear)\n", stderr)
+            return 1
+        }
+        let sub = args[1]
+        switch sub {
+        case "status":
+            let summary = RuntimeLauncher.queryShaderCache()
+            let enc = JSONEncoder()
+            enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let data = try? enc.encode(summary), let str = String(data: data, encoding: .utf8) {
+                print(str)
+            }
+            return 0
+        case "clear":
+            do {
+                try RuntimeLauncher.clearShaderCache()
+                print("cleared shader cache")
+                return 0
+            } catch {
+                fputs("cache clear failed: \(error)\n", stderr)
+                return 1
+            }
+        default:
+            fputs("unknown cache subcommand: \(sub)\n", stderr)
+            return 1
+        }
+
     case "run":
         guard args.count >= 2 else {
             fputs("error: run requires <exe>\n", stderr)
@@ -135,6 +169,7 @@ private func runCLI(args: [String]) -> Int32 {
         if prefixName.isEmpty { prefixName = "default" }
         var enableHUD = false
         var resetPrefix = false
+        var upscaleMode: String? = nil
         var childArgs: [String] = []
 
         var i = 2
@@ -145,6 +180,9 @@ private func runCLI(args: [String]) -> Int32 {
                 break
             } else if a == "--prefix", i + 1 < args.count {
                 prefixName = args[i + 1]
+                i += 2
+            } else if a == "--upscale", i + 1 < args.count {
+                upscaleMode = args[i + 1]
                 i += 2
             } else if a == "--hud" {
                 enableHUD = true
@@ -164,7 +202,8 @@ private func runCLI(args: [String]) -> Int32 {
                 prefixName: prefixName,
                 extraArgs: childArgs,
                 enableHUD: enableHUD,
-                resetPrefix: resetPrefix
+                resetPrefix: resetPrefix,
+                upscaleMode: upscaleMode
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)

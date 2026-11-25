@@ -54,12 +54,24 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 
 | Suite | Reference Mean (ms) | Reference FPS | Reference 1%-Low FPS | DirectMetal Mean (ms) | DirectMetal FPS | DirectMetal 1%-Low FPS | M1 Pro / RTX 3070 FPS |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.762 | 1311.9 | 280.6 | 6.0% |
-| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.507 | 1973.4 | 436.0 | 21.4% |
+| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.748 | 1336.4 | 280.2 | 6.1% |
+| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.528 | 1893.9 | 471.6 | 20.5% |
 
 ## Native ARM64 Host Subsystem Microbenchmarks
 
-- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 173.08 ms total | 0.865 us/wakeup
-- **POSIX Baseline (pthread_cond):** pthread_cond            : 292.31 ms total | 1.462 us/wakeup (1.69x vs os_sync)
-- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 314.97 ms total | 1.575 us/wakeup (1.82x vs os_sync)
-- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.447 ms
+- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 234.56 ms total | 1.173 us/wakeup
+- **POSIX Baseline (pthread_cond):** pthread_cond            : 286.15 ms total | 1.431 us/wakeup (1.22x vs os_sync)
+- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 307.76 ms total | 1.539 us/wakeup (1.31x vs os_sync)
+- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.408 ms
+
+## Phase 2 — Apple Silicon Deep Optimizations (M1 Pro)
+
+| Optimization Subsystem | Baseline | DirectMetal M1+ Optimized | Gain / Accuracy |
+| :--- | :--- | :--- | :--- |
+| **UMA Zero-Copy (`MTLStorageModeShared`)** | 0.686 ms (7.12 GB/s, 15.00 MiB) | 0.454 ms (10.77 GB/s, 5.06 MiB) | **1.51x** faster, **-66.2%** memory (bit-exact) |
+| **TBDR Coalescing + `MTLStorageModeMemoryless`** | 9 passes, 1.068 ms, 64.75 MiB DRAM | 1 pass, 0.394 ms, 0.00 MiB DRAM | **2.71x** faster, **-64.75 MiB** DRAM (max_diff=0) |
+| **`MTLBinaryArchive` Pipeline Cache** (`demo_v1_apple7_25B78_m4`) | Cold compile: 88.18 ms (24 PSOs) | Warm archive load: 1.32 ms (24/24 strict hits) | **66.7x** faster warm PSO load |
+| **Mullion D3D12 End-to-End Cache (`dm_d3d12_conformance.exe`)** | Cold cache: 16.779 s | Warm cache: 0.983 s (378640 bytes) | **17.07x** end-to-end launch speedup |
+| **MetalFX Spatial Quality (720p -> 1080p, 1.5x)** | Native 1080p: 6.126 ms (163.2 FPS) | Spatial Quality: 3.559 ms (281.0 FPS) | **1.72x** FPS (PSNR=51.23 dB, SSIM=0.9941) |
+| **MetalFX Spatial Perf (540p -> 1080p, 2.0x)** | Native 1080p: 6.126 ms (163.2 FPS) | Spatial Perf: 2.403 ms (416.2 FPS) | **2.55x** FPS |
+| **MetalFX Temporal Quality (720p -> 1080p, 1.5x)** | Native 1080p FP16: 6.111 ms | Temporal Quality: 5.540 ms (180.5 FPS) | **1.10x** FPS (PSNR=55.95 dB, SSIM=0.9991) |

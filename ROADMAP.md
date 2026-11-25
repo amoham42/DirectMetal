@@ -12,10 +12,10 @@
 - [ ] Pass 100% of Phase 0 D3D11 + D3D12 core rendering conformance tests (19/19 passing) and boot initial real-world DX11/DX12 titles.
 
 ## Phase 2 — Apple Silicon Deep Optimizations
-- [ ] Implement UMA zero-copy buffer allocator (`MTLStorageModeShared` fast paths for dynamic/upload/readback heaps).
-- [ ] Implement TBDR render-pass coalescing & `MTLStorageModeMemoryless` transient attachment detection.
-- [ ] Build `MTLBinaryArchive` shader cache storage & pre-warming pipeline keyed by Apple Silicon GPU family.
-- [ ] Add transparent DLSS/FSR/XeSS → **MetalFX** upscaling bridge.
+- [x] Implement UMA zero-copy buffer allocator (`MTLStorageModeShared` fast paths for dynamic/upload/readback heaps).
+- [x] Implement TBDR render-pass coalescing & `MTLStorageModeMemoryless` transient attachment detection.
+- [x] Build `MTLBinaryArchive` shader cache storage & pre-warming pipeline keyed by Apple Silicon GPU family.
+- [x] Add transparent DLSS/FSR/XeSS → **MetalFX** upscaling bridge.
 
 ## Phase 3 — Post-Rosetta Native ARM64 Host
 - [ ] Transition host runtime to native ARM64EC + FEX-Emu thunking so only game x86-64 code is translated.
