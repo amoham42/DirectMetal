@@ -10,3 +10,8 @@ dist/
 *.log
 prefixes/
 captures/
+.venv/
+.directmetal_cache/
+runtime/prebuilt/
+*.dSYM/
+tests/conformance/bin/
