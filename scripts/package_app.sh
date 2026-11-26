@@ -72,11 +72,7 @@ ARM64EC_SRC="${REPO_ROOT}/build/runtime-arm64ec"
 if [[ -d "${ARM64EC_SRC}/base-prefix" ]]; then
   echo "[DirectMetal] Cloning self-contained ARM64EC + FEX-Emu runtime via APFS CoW..."
   cp -Rc "${ARM64EC_SRC}" "${CONTENTS}/Runtime-ARM64EC"
-  # Ensure 64-bit DXVK d3d9.dll is present in bundled ARM64EC base-prefix
-  DXVK_X64_D3D9="$(find "${RUNTIME_SRC}/dxvk-dist" -type f -path "*/x64/d3d9.dll" 2>/dev/null | head -n 1 || true)"
-  if [[ -n "${DXVK_X64_D3D9}" ]]; then
-    cp -f "${DXVK_X64_D3D9}" "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d9.dll"
-  fi
+  # Keep native ARM64X DXVK 3.1.1 (loaded via GRAPHICS_BACKEND=dxvk) instead of overwriting system32/d3d9.dll with x86_64 DXVK 1.10.3
   # Strip unused archives/installers/headers/VR/legacy translators from bundled ARM64EC copy
   MSW_BUNDLE_ROOT="$(find "${CONTENTS}/Runtime-ARM64EC/wine-dist" -maxdepth 2 -type d -name "metalsharp-wine-*" | head -n 1 || true)"
   if [[ -n "${MSW_BUNDLE_ROOT}" ]]; then
@@ -94,6 +90,10 @@ if [[ -d "${ARM64EC_SRC}/base-prefix" ]]; then
            "${MSW_BUNDLE_ROOT}/lib/metalvr" \
            "${MSW_BUNDLE_ROOT}/bin/metalvrd" 2>/dev/null || true
     find "${MSW_BUNDLE_ROOT}/lib/wine" -type f -name "*.a" -delete 2>/dev/null || true
+    # Disable FEX ProfileStats in bundled Config.json (avoids per-frame profiling CPU overhead)
+    if [[ -f "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json" ]]; then
+      sed -i '' 's/"ProfileStats":[[:space:]]*"1"/"ProfileStats": "0"/g' "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json"
+    fi
   fi
 fi
 

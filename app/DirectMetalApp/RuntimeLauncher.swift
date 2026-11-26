@@ -362,6 +362,9 @@ enum RuntimeLauncher {
         env["WINEMSYNC"] = "1"
         if useARM64EC {
             env["FEX_TSOENABLED"] = fexTSO ? "1" : "0"
+            if env["FEX_PROFILESTATS"] == nil {
+                env["FEX_PROFILESTATS"] = "0"
+            }
             if env["FEX_SILENTLOG"] == nil {
                 env["FEX_SILENTLOG"] = "1"
             }
@@ -389,7 +392,9 @@ enum RuntimeLauncher {
         let isPureD3D9 = isD3D9 && !isD3D11 && !isD3D12
         let hasDLSS = profile?.detectedUpscalers.contains("DLSS") ?? false
 
-        // Prevent UE5 / D3D12 placed-texture 64KB-vs-32KB alignment E_INVALIDARG faults on macOS < 26.4 / Apple7.
+        // Prevent UE5 / D3D12 placed-resource alignment E_INVALIDARG faults on macOS < 26.4 / Apple7
+        // while keeping full Metal 4 + Metal 4 FX Temporal active.
+        var autoExtraArgs: [String] = []
         if isD3D12 {
             if env["MULLION_D3D12_PLACED_UNOPTIMIZED"] == nil {
                 env["MULLION_D3D12_PLACED_UNOPTIMIZED"] = "1"
@@ -402,8 +407,9 @@ enum RuntimeLauncher {
                 .appendingPathComponent("Engine/Binaries")
             let osVer = ProcessInfo.processInfo.operatingSystemVersion
             let isPre26_4 = (osVer.majorVersion < 26) || (osVer.majorVersion == 26 && osVer.minorVersion < 4)
-            if isPre26_4 && fm.fileExists(atPath: ueEngineBin.path) && env["MULLION_D3D12_METAL4"] == nil {
-                env["MULLION_D3D12_METAL4"] = "0"
+            let hasTransientArg = extraArgs.contains(where: { $0.contains("TransientAllocator") })
+            if isPre26_4 && fm.fileExists(atPath: ueEngineBin.path) && !hasTransientArg && env["DIRECTMETAL_ALLOW_UE_TRANSIENT_ALLOC"] != "1" {
+                autoExtraArgs.append("-dpcvars=r.RDG.TransientAllocator=0")
             }
         }
 
@@ -417,15 +423,43 @@ enum RuntimeLauncher {
         // in v0.5-alpha.4 breaks blend state updates across PSO transitions (d3d12_06).
         if let mode = upscaleMode?.lowercased(), !mode.isEmpty, mode != "off" {
             let factor: String
+            let lodBias: String
+            let dlssScale: String
             switch mode {
-            case "quality": factor = "1.5"
-            case "balanced": factor = "1.7"
-            case "performance": factor = "2.0"
-            default: factor = "1.5"
+            case "quality":
+                factor = "1.5"
+                lodBias = "-0.58"
+                dlssScale = "quality"
+            case "balanced":
+                factor = "1.7"
+                lodBias = "-0.76"
+                dlssScale = "balanced"
+            case "performance":
+                factor = "2.0"
+                lodBias = "-1.0"
+                dlssScale = "performance"
+            case "ultra_performance":
+                factor = "2.5"
+                lodBias = "-1.32"
+                dlssScale = "ultra_performance"
+            default:
+                factor = "1.5"
+                lodBias = "-0.58"
+                dlssScale = "quality"
+            }
+            if hasDLSS {
+                if env["METALSHARP_DLSS_SCALE"] == nil {
+                    env["METALSHARP_DLSS_SCALE"] = dlssScale
+                }
             }
             env["MULLION_METALFX_SPATIAL_SWAPCHAIN"] = "1"
             extraMullionCfg.append("d3d11.metalSpatialUpscale=True")
             extraMullionCfg.append("d3d11.metalSpatialUpscaleFactor=\(factor)")
+            if !hasDLSS {
+                extraMullionCfg.append("d3d12.metalSpatialUpscale=True")
+                extraMullionCfg.append("d3d12.metalSpatialUpscaleFactor=\(factor)")
+                extraMullionCfg.append("d3d12.samplerLodBias=\(lodBias)")
+            }
         }
         if !extraMullionCfg.isEmpty {
             let joined = extraMullionCfg.joined(separator: ";")
@@ -453,11 +487,13 @@ enum RuntimeLauncher {
             case .auto:
                 useDXVK = is64 && useARM64EC
             }
-            let overrideEntry = useDXVK ? "d3d9=n,b" : "d3d9=b"
-            if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
-                env["WINEDLLOVERRIDES"] = "\(existing);\(overrideEntry)"
-            } else {
-                env["WINEDLLOVERRIDES"] = overrideEntry
+            if !(useDXVK && useARM64EC) {
+                let overrideEntry = useDXVK ? "d3d9=n,b" : "d3d9=b"
+                if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
+                    env["WINEDLLOVERRIDES"] = "\(existing);\(overrideEntry)"
+                } else {
+                    env["WINEDLLOVERRIDES"] = overrideEntry
+                }
             }
             if useDXVK {
                 env["DXVK_ASYNC"] = "1"
@@ -465,15 +501,25 @@ enum RuntimeLauncher {
                 if env["DXVK_LOG_PATH"] == nil {
                     env["DXVK_LOG_PATH"] = "none"
                 }
-                if useARM64EC, let kkICD = paths.arm64ecKosmicKrispICD {
-                    env["VK_DRIVER_FILES"] = kkICD.path
-                    env["VK_ICD_FILENAMES"] = kkICD.path
+                if useARM64EC {
+                    // Use native ARM64X DXVK 3.1.1 (MetalVulkan) + Mesa KosmicKrisp Vulkan 1.4
+                    env["GRAPHICS_BACKEND"] = "dxvk"
+                    if let kkICD = paths.arm64ecKosmicKrispICD {
+                        env["VK_DRIVER_FILES"] = kkICD.path
+                        env["VK_ICD_FILENAMES"] = kkICD.path
+                    }
+                } else {
+                    env["WINE_LARGE_ADDRESS_AWARE"] = "1"
                 }
                 if let vkDir = paths.vkCompatLayerDir {
                     env["VK_ADD_LAYER_PATH"] = vkDir.path
                     env["VK_LAYER_PATH"] = vkDir.path
                     env["VK_INSTANCE_LAYERS"] = "VK_LAYER_DIRECTMETAL_mvk_compat"
                     env["DM_VK_COMPAT_ENABLE"] = "1"
+                    env["DM_VK_COMPAT_HOST_IMPORT"] = "1"
+                    if useARM64EC {
+                        env["DM_VK_COMPAT_ADVERTISE_FILLMODE"] = "1"
+                    }
                 }
                 if enableHUD && env["DXVK_HUD"] == nil {
                     env["DXVK_HUD"] = "fps,frametimes,devinfo,api"
@@ -494,12 +540,13 @@ enum RuntimeLauncher {
             effectiveDesktop = (isPureD3D9 && !(profile?.is64Bit ?? true)) ? "1280x720" : nil
         }
 
+        let combinedArgs = extraArgs + autoExtraArgs
         let wineArgs: [String]
         if let vd = effectiveDesktop {
             let winExe = "Z:" + exeURL.path.replacingOccurrences(of: "/", with: "\\")
-            wineArgs = ["explorer", "/desktop=DirectMetal,\(vd)", winExe] + extraArgs
+            wineArgs = ["explorer", "/desktop=DirectMetal,\(vd)", winExe] + combinedArgs
         } else {
-            wineArgs = [exeURL.path] + extraArgs
+            wineArgs = [exeURL.path] + combinedArgs
         }
 
         let proc = Process()

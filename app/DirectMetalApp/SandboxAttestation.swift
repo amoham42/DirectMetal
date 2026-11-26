@@ -2,17 +2,28 @@ import CryptoKit
 import Darwin
 import DeviceCheck
 import Foundation
+import MachO
 import Security
 
 struct AttestationStatus: Codable {
     let macosVersion: String
     let macosBuild: String
     let hardwareModel: String
+    let bootSessionUuid: String
     let sipEnabled: Bool
     let ssvSealed: Bool
+    let secureEnclaveAvailable: Bool
+    let dcDeviceSupported: Bool
     let dcAppAttestSupported: Bool
     let codeSigned: Bool
     let hardenedRuntime: Bool
+    let csStatusFlagsHex: String
+    let csValid: Bool
+    let csRuntime: Bool
+    let csDebugged: Bool
+    let dyldImageCount: Int
+    let nonSystemImages: [String]
+    let nonSystemImagesSha256: String
     let sandboxActive: Bool
     let codeIdentifier: String
     let cdhash: String
@@ -23,11 +34,21 @@ struct AttestationStatus: Codable {
         case macosVersion = "macos_version"
         case macosBuild = "macos_build"
         case hardwareModel = "hardware_model"
+        case bootSessionUuid = "boot_session_uuid"
         case sipEnabled = "sip_enabled"
         case ssvSealed = "ssv_sealed"
+        case secureEnclaveAvailable = "secure_enclave_available"
+        case dcDeviceSupported = "dc_device_supported"
         case dcAppAttestSupported = "dc_app_attest_supported"
         case codeSigned = "code_signed"
         case hardenedRuntime = "hardened_runtime"
+        case csStatusFlagsHex = "cs_status_flags_hex"
+        case csValid = "cs_valid"
+        case csRuntime = "cs_runtime"
+        case csDebugged = "cs_debugged"
+        case dyldImageCount = "dyld_image_count"
+        case nonSystemImages = "non_system_images"
+        case nonSystemImagesSha256 = "non_system_images_sha256"
         case sandboxActive = "sandbox_active"
         case codeIdentifier = "code_identifier"
         case cdhash
@@ -76,11 +97,76 @@ enum DirectMetalAttestation {
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
+    private static func secureEnclaveKeyURL() -> URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport
+            .appendingPathComponent("DirectMetal", isDirectory: true)
+            .appendingPathComponent("attest.sekey")
+    }
+
+    private static func loadOrCreateSecureEnclaveKey() -> SecureEnclave.P256.Signing.PrivateKey? {
+        guard SecureEnclave.isAvailable else { return nil }
+        let url = secureEnclaveKeyURL()
+        let fm = FileManager.default
+        if let blob = try? Data(contentsOf: url),
+           let existing = try? SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: blob) {
+            return existing
+        }
+        guard let fresh = try? SecureEnclave.P256.Signing.PrivateKey() else {
+            return nil
+        }
+        do {
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try fresh.dataRepresentation.write(to: url, options: [.atomic])
+            try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            // Even if persistence fails (e.g. read-only FS), key still signs inside Secure Enclave
+        }
+        return fresh
+    }
+
+    private static func collectLoadedImages() -> (total: Int, nonSystem: [String], digest: String) {
+        let count = Int(_dyld_image_count())
+        var nonSys: [String] = []
+        for i in 0..<count {
+            if let cName = _dyld_get_image_name(UInt32(i)) {
+                let s = String(cString: cName)
+                if !s.hasPrefix("/System/") && !s.hasPrefix("/usr/lib/") {
+                    nonSys.append(s)
+                }
+            }
+        }
+        nonSys.sort()
+        let joined = nonSys.joined(separator: "\n")
+        let digest = SHA256.hash(data: Data(joined.utf8)).map { String(format: "%02x", $0) }.joined()
+        return (count, nonSys, digest)
+    }
+
+    private static func collectDynamicCSStatus() -> (flags: UInt32, valid: Bool, runtime: Bool, debugged: Bool) {
+        var selfCode: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &selfCode) == errSecSuccess, let sc = selfCode else {
+            return (0, false, false, false)
+        }
+        var infoRef: CFDictionary?
+        let dynFlags = SecCSFlags(rawValue: kSecCSDynamicInformation)
+        let scStatic = unsafeBitCast(sc, to: SecStaticCode.self)
+        guard SecCodeCopySigningInformation(scStatic, dynFlags, &infoRef) == errSecSuccess,
+              let dict = infoRef as? [String: Any],
+              let status = dict[kSecCodeInfoStatus as String] as? UInt32 else {
+            return (0, false, false, false)
+        }
+        let valid = (status & 0x0000_0001) != 0       // CS_VALID
+        let runtime = (status & 0x0001_0000) != 0     // CS_RUNTIME
+        let debugged = (status & 0x1000_0000) != 0    // CS_DEBUGGED
+        return (status, valid, runtime, debugged)
+    }
+
     static func collectStatus(targetBinaryPath: String? = nil, sandboxActive: Bool = false) -> AttestationStatus {
         let osv = ProcessInfo.processInfo.operatingSystemVersion
         let osStr = "\(osv.majorVersion).\(osv.minorVersion).\(osv.patchVersion)"
         let buildStr = sysctlString("kern.osversion")
         let hwModel = sysctlString("hw.model")
+        let bootUUID = sysctlString("kern.bootsessionuuid")
 
         let csr = runStdout("/usr/bin/csrutil", ["status"])
         let sipEnabled = (csr.status == 0) && csr.output.contains("enabled")
@@ -88,7 +174,9 @@ enum DirectMetalAttestation {
         let ssv = runStdout("/usr/bin/csrutil", ["authenticated-root", "status"])
         let ssvSealed = (ssv.status == 0) && ssv.output.contains("enabled")
 
-        let dcSupported = DCAppAttestService.shared.isSupported
+        let seAvail = SecureEnclave.isAvailable
+        let dcDevSupported = DCDevice.current.isSupported
+        let dcAppAttestSupported = DCAppAttestService.shared.isSupported
 
         let rawPath = (targetBinaryPath?.isEmpty == false)
             ? targetBinaryPath!
@@ -114,7 +202,7 @@ enum DirectMetalAttestation {
                     codeIdentifier = ident
                 }
                 if let sigFlags = dict[kSecCodeInfoFlags as String] as? UInt32 {
-                    hardenedRuntime = (sigFlags & 0x00010000) != 0
+                    hardenedRuntime = (sigFlags & 0x0001_0000) != 0
                 }
                 if let unique = dict[kSecCodeInfoUnique as String] as? Data {
                     cdhashHex = unique.map { String(format: "%02x", $0) }.joined()
@@ -122,15 +210,28 @@ enum DirectMetalAttestation {
             }
         }
 
+        let dynCS = collectDynamicCSStatus()
+        let imgs = collectLoadedImages()
+
         return AttestationStatus(
             macosVersion: osStr,
             macosBuild: buildStr,
             hardwareModel: hwModel,
+            bootSessionUuid: bootUUID,
             sipEnabled: sipEnabled,
             ssvSealed: ssvSealed,
-            dcAppAttestSupported: dcSupported,
+            secureEnclaveAvailable: seAvail,
+            dcDeviceSupported: dcDevSupported,
+            dcAppAttestSupported: dcAppAttestSupported,
             codeSigned: codeSigned,
             hardenedRuntime: hardenedRuntime,
+            csStatusFlagsHex: String(format: "0x%08x", dynCS.flags),
+            csValid: dynCS.valid,
+            csRuntime: dynCS.runtime,
+            csDebugged: dynCS.debugged,
+            dyldImageCount: imgs.total,
+            nonSystemImages: imgs.nonSystem,
+            nonSystemImagesSha256: imgs.digest,
             sandboxActive: sandboxActive,
             codeIdentifier: codeIdentifier,
             cdhash: cdhashHex,
@@ -140,26 +241,45 @@ enum DirectMetalAttestation {
     }
 
     static func generateSignedBundle(status: AttestationStatus, nonceHex: String) throws -> (json: String, verified: Bool) {
-        let privKey = P256.Signing.PrivateKey()
-        let pubX963 = privKey.publicKey.x963Representation
-        let keyId = SHA256.hash(data: pubX963).map { String(format: "%02x", $0) }.joined()
-        let ts = ISO8601DateFormatter().string(from: Date())
+        let seKey = loadOrCreateSecureEnclaveKey()
+        let keyClass: String
+        let pubX963: Data
 
+        if let seKey = seKey {
+            keyClass = "secure-enclave-persistent"
+            pubX963 = seKey.publicKey.x963Representation
+        } else {
+            keyClass = "software-ephemeral"
+            pubX963 = Data() // overwritten below
+        }
+
+        let ts = ISO8601DateFormatter().string(from: Date())
         let claims: [String: Any] = [
             "nonce": nonceHex,
             "timestamp_utc": ts,
             "macos_version": status.macosVersion,
             "macos_build": status.macosBuild,
             "hardware_model": status.hardwareModel,
+            "boot_session_uuid": status.bootSessionUuid,
             "sip_enabled": status.sipEnabled,
             "ssv_sealed": status.ssvSealed,
+            "secure_enclave_available": status.secureEnclaveAvailable,
+            "dc_device_supported": status.dcDeviceSupported,
             "dc_app_attest_supported": status.dcAppAttestSupported,
             "code_signed": status.codeSigned,
             "hardened_runtime": status.hardenedRuntime,
+            "cs_status_flags_hex": status.csStatusFlagsHex,
+            "cs_valid": status.csValid,
+            "cs_runtime": status.csRuntime,
+            "cs_debugged": status.csDebugged,
+            "dyld_image_count": status.dyldImageCount,
+            "non_system_images_count": status.nonSystemImages.count,
+            "non_system_images_sha256": status.nonSystemImagesSha256,
             "sandbox_active": status.sandboxActive,
             "code_identifier": status.codeIdentifier,
             "cdhash": status.cdhash,
             "binary_sha256": status.binarySha256,
+            "integrity_scope": "launcher-strong,native-runtime-measured,guest-jit-unattested",
         ]
 
         let canonicalData = try JSONSerialization.data(
@@ -167,13 +287,25 @@ enum DirectMetalAttestation {
             options: [.sortedKeys, .withoutEscapingSlashes]
         )
         let canonicalStr = String(data: canonicalData, encoding: .utf8) ?? "{}"
-        let signature = try privKey.signature(for: canonicalData)
-        let sigDER = signature.derRepresentation
+
+        let finalPubX963: Data
+        let sigDER: Data
+        if let seKey = seKey {
+            finalPubX963 = pubX963
+            sigDER = try seKey.signature(for: canonicalData).derRepresentation
+        } else {
+            let swKey = P256.Signing.PrivateKey()
+            finalPubX963 = swKey.publicKey.x963Representation
+            sigDER = try swKey.signature(for: canonicalData).derRepresentation
+        }
+
+        let keyId = SHA256.hash(data: finalPubX963).map { String(format: "%02x", $0) }.joined()
 
         let bundle: [String: Any] = [
-            "schema": "directmetal.attestation.v1",
+            "schema": "directmetal.attestation.v2",
             "algorithm": "ECDSA-P256-SHA256-X962",
-            "public_key_x963_b64": pubX963.base64EncodedString(),
+            "key_class": keyClass,
+            "public_key_x963_b64": finalPubX963.base64EncodedString(),
             "key_id_sha256": keyId,
             "signature_b64": sigDER.base64EncodedString(),
             "payload_canonical": canonicalStr,
@@ -191,7 +323,8 @@ enum DirectMetalAttestation {
     static func verify(bundleJSON: String, expectedNonce: String? = nil) -> Bool {
         guard let data = bundleJSON.data(using: .utf8),
               let root = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let schema = root["schema"] as? String, schema == "directmetal.attestation.v1",
+              let schema = root["schema"] as? String,
+              (schema == "directmetal.attestation.v2" || schema == "directmetal.attestation.v1"),
               let pubB64 = root["public_key_x963_b64"] as? String,
               let sigB64 = root["signature_b64"] as? String,
               let canonical = root["payload_canonical"] as? String,

@@ -110,8 +110,38 @@ typedef void (*PFN_vkDestroyInstance)(VkInstance, const void*);
 typedef VkResult (*PFN_vkCreateDevice)(VkPhysicalDevice, const VkDeviceCreateInfo*, const void*, VkDevice*);
 typedef void (*PFN_vkDestroyDevice)(VkDevice, const void*);
 typedef void (*PFN_vkGetPhysicalDeviceFeatures)(VkPhysicalDevice, VkPhysicalDeviceFeatures*);
+typedef void (*PFN_vkGetPhysicalDeviceFeatures2)(VkPhysicalDevice, VkPhysicalDeviceFeatures2*);
 typedef VkResult (*PFN_vkEnumerateDeviceExtensionProperties)(VkPhysicalDevice, const char*, uint32_t*, VkExtensionProperties*);
+typedef struct VkExternalMemoryBufferCreateInfo {
+    int32_t sType;
+    const void* pNext;
+    uint32_t handleTypes;
+} VkExternalMemoryBufferCreateInfo;
+
+typedef struct VkImageCreateInfo {
+    int32_t sType;
+    const void* pNext;
+    VkFlags flags;
+    int32_t imageType;
+    int32_t format;
+    uint32_t extent[3];
+    uint32_t mipLevels;
+    uint32_t arrayLayers;
+    int32_t samples;
+    int32_t tiling;
+    VkFlags usage;
+    int32_t sharingMode;
+    uint32_t queueFamilyIndexCount;
+    const uint32_t* pQueueFamilyIndices;
+    int32_t initialLayout;
+} VkImageCreateInfo;
+
+#define VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT 0x00000080u
+#define VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT 0x00000100u
+#define VK_HOST_EXTERNAL_HANDLE_MASK (VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_ALLOCATION_BIT_EXT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_HOST_MAPPED_FOREIGN_MEMORY_BIT_EXT)
+
 typedef VkResult (*PFN_vkCreateBuffer)(VkDevice, const VkBufferCreateInfo*, const void*, void*);
+typedef VkResult (*PFN_vkCreateImage)(VkDevice, const VkImageCreateInfo*, const void*, void*);
 
 typedef struct VkLayerInstanceLink {
     struct VkLayerInstanceLink* pNext;
@@ -151,6 +181,7 @@ typedef struct {
     PFN_vkDestroyInstance next_destroy_instance;
     PFN_vkCreateDevice next_create_device;
     PFN_vkGetPhysicalDeviceFeatures next_get_features;
+    PFN_vkGetPhysicalDeviceFeatures2 next_get_features2;
     PFN_vkEnumerateDeviceExtensionProperties next_enum_dev_exts;
 } InstEntry;
 
@@ -159,6 +190,7 @@ typedef struct {
     PFN_vkGetDeviceProcAddr next_gdpa;
     PFN_vkDestroyDevice next_destroy_device;
     PFN_vkCreateBuffer next_create_buffer;
+    PFN_vkCreateImage next_create_image;
 } DevEntry;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -216,14 +248,58 @@ static VkResult dm_vkCreateInstance(
         e->next_destroy_instance = (PFN_vkDestroyInstance)next_gipa(*pInstance, "vkDestroyInstance");
         e->next_create_device = (PFN_vkCreateDevice)next_gipa(*pInstance, "vkCreateDevice");
         e->next_get_features = (PFN_vkGetPhysicalDeviceFeatures)next_gipa(*pInstance, "vkGetPhysicalDeviceFeatures");
+        e->next_get_features2 = (PFN_vkGetPhysicalDeviceFeatures2)next_gipa(*pInstance, "vkGetPhysicalDeviceFeatures2");
+        if (!e->next_get_features2) {
+            e->next_get_features2 = (PFN_vkGetPhysicalDeviceFeatures2)next_gipa(*pInstance, "vkGetPhysicalDeviceFeatures2KHR");
+        }
         e->next_enum_dev_exts = (PFN_vkEnumerateDeviceExtensionProperties)next_gipa(*pInstance, "vkEnumerateDeviceExtensionProperties");
     }
     pthread_mutex_unlock(&g_lock);
     return res;
 }
 
+static int advertise_fillmode_enabled(void) {
+    const char* v = getenv("DM_VK_COMPAT_ADVERTISE_FILLMODE");
+    return (v && v[0] == '1');
+}
+
+/* VkPhysicalDeviceFeatures index 13 is fillModeNonSolid (0=robustBufferAccess .. 12=depthBiasClamp, 13=fillModeNonSolid) */
+#define VK_FEAT_IDX_FILL_MODE_NON_SOLID 13
+
+static void dm_vkGetPhysicalDeviceFeatures(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures* pFeatures) {
+    PFN_vkGetPhysicalDeviceFeatures next_fn = NULL;
+    pthread_mutex_lock(&g_lock);
+    InstEntry* ie = find_inst(physicalDevice);
+    if (ie) next_fn = ie->next_get_features;
+    pthread_mutex_unlock(&g_lock);
+    if (!next_fn || !pFeatures) return;
+    next_fn(physicalDevice, pFeatures);
+    if (advertise_fillmode_enabled()) {
+        pFeatures->features[VK_FEAT_IDX_FILL_MODE_NON_SOLID] = 1;
+    }
+}
+
+static void dm_vkGetPhysicalDeviceFeatures2(VkPhysicalDevice physicalDevice, VkPhysicalDeviceFeatures2* pFeatures) {
+    PFN_vkGetPhysicalDeviceFeatures2 next_fn = NULL;
+    pthread_mutex_lock(&g_lock);
+    InstEntry* ie = find_inst(physicalDevice);
+    if (ie) next_fn = ie->next_get_features2;
+    pthread_mutex_unlock(&g_lock);
+    if (!next_fn || !pFeatures) return;
+    next_fn(physicalDevice, pFeatures);
+    if (advertise_fillmode_enabled()) {
+        pFeatures->features.features[VK_FEAT_IDX_FILL_MODE_NON_SOLID] = 1;
+    }
+}
+
+static int host_import_passthrough_enabled(void) {
+    const char* v = getenv("DM_VK_COMPAT_HOST_IMPORT");
+    return (v && v[0] == '1');
+}
+
 static int is_blocked_ext(const char* name) {
     if (!name) return 0;
+    if (host_import_passthrough_enabled()) return 0;
     return strcmp(name, "VK_EXT_external_memory_host") == 0;
 }
 
@@ -383,9 +459,38 @@ static VkResult dm_vkCreateDevice(
         de->next_gdpa = next_gdpa;
         de->next_destroy_device = (PFN_vkDestroyDevice)next_gdpa(*pDevice, "vkDestroyDevice");
         de->next_create_buffer = (PFN_vkCreateBuffer)next_gdpa(*pDevice, "vkCreateBuffer");
+        de->next_create_image = (PFN_vkCreateImage)next_gdpa(*pDevice, "vkCreateImage");
     }
     pthread_mutex_unlock(&g_lock);
     return res;
+}
+
+static int strip_host_ext_mem_pnext(const void* orig_pnext, int32_t target_stype, const void** out_pnext) {
+    const VkBaseInStructure* cur = (const VkBaseInStructure*)orig_pnext;
+    int needs_strip = 0;
+    while (cur) {
+        if (cur->sType == target_stype) {
+            const VkExternalMemoryBufferCreateInfo* em = (const VkExternalMemoryBufferCreateInfo*)cur;
+            if (!host_import_passthrough_enabled() || (em->handleTypes & VK_HOST_EXTERNAL_HANDLE_MASK)) {
+                needs_strip = 1;
+                break;
+            }
+        }
+        cur = cur->pNext;
+    }
+    if (!needs_strip) return 0;
+    /* Unlink matching node(s) from the front; if embedded deeper, zero out host bits in place or skip head */
+    const VkBaseInStructure* head = (const VkBaseInStructure*)orig_pnext;
+    while (head && head->sType == target_stype) {
+        const VkExternalMemoryBufferCreateInfo* em = (const VkExternalMemoryBufferCreateInfo*)head;
+        if (!host_import_passthrough_enabled() || (em->handleTypes & VK_HOST_EXTERNAL_HANDLE_MASK)) {
+            head = head->pNext;
+        } else {
+            break;
+        }
+    }
+    *out_pnext = head;
+    return 1;
 }
 
 static VkResult dm_vkCreateBuffer(
@@ -402,27 +507,38 @@ static VkResult dm_vkCreateBuffer(
     if (!next_fn) return VK_ERROR_INITIALIZATION_FAILED;
 
     if (pCreateInfo && pCreateInfo->pNext) {
-        /* Strip VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO if present so MoltenVK 1.4 accepts DXVK buffers */
-        const VkBaseInStructure* cur = (const VkBaseInStructure*)pCreateInfo->pNext;
-        int has_ext_mem = 0;
-        while (cur) {
-            if (cur->sType == VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO) {
-                has_ext_mem = 1;
-                break;
-            }
-            cur = cur->pNext;
-        }
-        if (has_ext_mem) {
+        const void* new_pnext = NULL;
+        if (strip_host_ext_mem_pnext(pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO, &new_pnext)) {
             VkBufferCreateInfo patched = *pCreateInfo;
-            const VkBaseInStructure* head = (const VkBaseInStructure*)pCreateInfo->pNext;
-            while (head && head->sType == VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO) {
-                head = head->pNext;
-            }
-            patched.pNext = head;
+            patched.pNext = new_pnext;
             return next_fn(device, &patched, pAllocator, pBuffer);
         }
     }
     return next_fn(device, pCreateInfo, pAllocator, pBuffer);
+}
+
+static VkResult dm_vkCreateImage(
+    VkDevice device,
+    const VkImageCreateInfo* pCreateInfo,
+    const void* pAllocator,
+    void* pImage)
+{
+    PFN_vkCreateImage next_fn = NULL;
+    pthread_mutex_lock(&g_lock);
+    DevEntry* de = find_dev(device);
+    if (de) next_fn = de->next_create_image;
+    pthread_mutex_unlock(&g_lock);
+    if (!next_fn) return VK_ERROR_INITIALIZATION_FAILED;
+
+    if (pCreateInfo && pCreateInfo->pNext) {
+        const void* new_pnext = NULL;
+        if (strip_host_ext_mem_pnext(pCreateInfo->pNext, VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_IMAGE_CREATE_INFO, &new_pnext)) {
+            VkImageCreateInfo patched = *pCreateInfo;
+            patched.pNext = new_pnext;
+            return next_fn(device, &patched, pAllocator, pImage);
+        }
+    }
+    return next_fn(device, pCreateInfo, pAllocator, pImage);
 }
 
 static void dm_vkDestroyDevice(VkDevice device, const void* pAllocator) {
@@ -446,6 +562,7 @@ PFN_vkVoidFunction dm_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)dm_vkGetDeviceProcAddr;
     if (strcmp(pName, "vkDestroyDevice") == 0) return (PFN_vkVoidFunction)dm_vkDestroyDevice;
     if (strcmp(pName, "vkCreateBuffer") == 0) return (PFN_vkVoidFunction)dm_vkCreateBuffer;
+    if (strcmp(pName, "vkCreateImage") == 0) return (PFN_vkVoidFunction)dm_vkCreateImage;
     pthread_mutex_lock(&g_lock);
     DevEntry* de = find_dev(device);
     PFN_vkGetDeviceProcAddr next_gdpa = de ? de->next_gdpa : NULL;
@@ -460,6 +577,9 @@ PFN_vkVoidFunction dm_vkGetInstanceProcAddr(VkInstance instance, const char* pNa
     if (strcmp(pName, "vkCreateInstance") == 0) return (PFN_vkVoidFunction)dm_vkCreateInstance;
     if (strcmp(pName, "vkDestroyInstance") == 0) return (PFN_vkVoidFunction)dm_vkDestroyInstance;
     if (strcmp(pName, "vkCreateDevice") == 0) return (PFN_vkVoidFunction)dm_vkCreateDevice;
+    if (strcmp(pName, "vkGetPhysicalDeviceFeatures") == 0) return (PFN_vkVoidFunction)dm_vkGetPhysicalDeviceFeatures;
+    if (strcmp(pName, "vkGetPhysicalDeviceFeatures2") == 0) return (PFN_vkVoidFunction)dm_vkGetPhysicalDeviceFeatures2;
+    if (strcmp(pName, "vkGetPhysicalDeviceFeatures2KHR") == 0) return (PFN_vkVoidFunction)dm_vkGetPhysicalDeviceFeatures2;
     if (strcmp(pName, "vkEnumerateDeviceExtensionProperties") == 0) return (PFN_vkVoidFunction)dm_vkEnumerateDeviceExtensionProperties;
     if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)dm_vkGetDeviceProcAddr;
     pthread_mutex_lock(&g_lock);
