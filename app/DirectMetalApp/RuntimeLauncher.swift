@@ -38,6 +38,11 @@ enum DX9Backend: String, Codable {
     case wined3d
 }
 
+enum PerfProfile: String, Codable {
+    case balanced
+    case ultra
+}
+
 struct RuntimePaths {
     let runtimeRoot: URL
     let wineBin: URL
@@ -308,6 +313,7 @@ enum RuntimeLauncher {
         engine: ExecutionEngine = .auto,
         fexTSO: Bool = true,
         dx9Backend: DX9Backend = .auto,
+        perfProfile: PerfProfile = .balanced,
         virtualDesktop: String? = nil,
         sandboxed: Bool = false,
         sandboxOffline: Bool = false,
@@ -392,28 +398,35 @@ enum RuntimeLauncher {
         let isPureD3D9 = isD3D9 && !isD3D11 && !isD3D12
         let hasDLSS = profile?.detectedUpscalers.contains("DLSS") ?? false
 
-        // Prevent UE5 / D3D12 placed-resource alignment E_INVALIDARG faults on macOS < 26.4 / Apple7
-        // while keeping full Metal 4 + Metal 4 FX Temporal active.
-        var autoExtraArgs: [String] = []
-        if isD3D12 {
-            if env["MULLION_D3D12_PLACED_UNOPTIMIZED"] == nil {
-                env["MULLION_D3D12_PLACED_UNOPTIMIZED"] = "1"
-            }
-            let ueEngineBin = exeURL
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .deletingLastPathComponent()
-                .appendingPathComponent("Engine/Binaries")
-            let osVer = ProcessInfo.processInfo.operatingSystemVersion
-            let isPre26_4 = (osVer.majorVersion < 26) || (osVer.majorVersion == 26 && osVer.minorVersion < 4)
-            let hasTransientArg = extraArgs.contains(where: { $0.contains("TransientAllocator") })
-            if isPre26_4 && fm.fileExists(atPath: ueEngineBin.path) && !hasTransientArg && env["DIRECTMETAL_ALLOW_UE_TRANSIENT_ALLOC"] != "1" {
-                autoExtraArgs.append("-dpcvars=r.RDG.TransientAllocator=0")
-            }
+        // Keep placed-texture unoptimized layout fallback + our D3D12 Placed-Resource Alignment Guard active
+        // for both direct D3D12 EXEs and launcher bootstrappers (e.g., UE5 -> *-Win64-Shipping.exe).
+        if env["MULLION_D3D12_PLACED_UNOPTIMIZED"] == nil {
+            env["MULLION_D3D12_PLACED_UNOPTIMIZED"] = "1"
         }
 
         var extraMullionCfg: [String] = []
+        if perfProfile == .ultra {
+            // Skip per-frame GPU counter/timestamp passes & enable parallel D3D12 command encoding for peak FPS/1%-lows
+            extraMullionCfg.append("d3d11.timestampQueries=False")
+            extraMullionCfg.append("d3d12.timestampQueries=False")
+            if env["MULLION_D3D12_PARALLEL_COMMANDS"] == nil {
+                env["MULLION_D3D12_PARALLEL_COMMANDS"] = "1"
+            }
+            if env["MULLION_D3D12_ENCODE_THREADS"] == nil {
+                env["MULLION_D3D12_ENCODE_THREADS"] = "4"
+            }
+        }
+        // Enable our D3D12 Placed-Resource Alignment Guard when bundled in prefix (guards UE5 32KB offsets with 0% overhead on valid calls)
+        if env["DIRECTMETAL_DISABLE_D3D12_GUARD"] != "1" {
+            let guardReal = prefixURL.appendingPathComponent("drive_c/windows/system32/d3d12_mullion.dll")
+            if fm.fileExists(atPath: guardReal.path) {
+                if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
+                    env["WINEDLLOVERRIDES"] = "\(existing);d3d12=n"
+                } else {
+                    env["WINEDLLOVERRIDES"] = "d3d12=n"
+                }
+            }
+        }
         // Auto-expose NVIDIA PCI vendor ID when DLSS is detected so Mullion's nvngx.dll routes DLSS -> Metal 4 MetalFX Temporal.
         if hasDLSS && env["DIRECTMETAL_DISABLE_NVNGX_BRIDGE"] != "1" {
             extraMullionCfg.append("dxgi.customVendorId=10de")
@@ -540,13 +553,12 @@ enum RuntimeLauncher {
             effectiveDesktop = (isPureD3D9 && !(profile?.is64Bit ?? true)) ? "1280x720" : nil
         }
 
-        let combinedArgs = extraArgs + autoExtraArgs
         let wineArgs: [String]
         if let vd = effectiveDesktop {
             let winExe = "Z:" + exeURL.path.replacingOccurrences(of: "/", with: "\\")
-            wineArgs = ["explorer", "/desktop=DirectMetal,\(vd)", winExe] + combinedArgs
+            wineArgs = ["explorer", "/desktop=DirectMetal,\(vd)", winExe] + extraArgs
         } else {
-            wineArgs = [exeURL.path] + combinedArgs
+            wineArgs = [exeURL.path] + extraArgs
         }
 
         let proc = Process()

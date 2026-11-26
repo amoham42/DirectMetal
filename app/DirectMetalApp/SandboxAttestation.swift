@@ -57,6 +57,17 @@ struct AttestationStatus: Codable {
     }
 }
 
+struct ChildProcessIntegrity: Codable {
+    let pid: Int32
+    let codeSigned: Bool
+    let csStatusFlagsHex: String
+    let csValid: Bool
+    let csRuntime: Bool
+    let csDebugged: Bool
+    let codeIdentifier: String
+    let cdhash: String
+}
+
 enum DirectMetalAttestation {
     private static func sysctlString(_ name: String) -> String {
         var size = 0
@@ -240,7 +251,51 @@ enum DirectMetalAttestation {
         )
     }
 
-    static func generateSignedBundle(status: AttestationStatus, nonceHex: String) throws -> (json: String, verified: Bool) {
+    static func inspectRunningProcess(pid: Int32) -> ChildProcessIntegrity {
+        var guest: SecCode?
+        let attrs: [String: Any] = [kSecGuestAttributePid as String: NSNumber(value: pid)]
+        guard SecCodeCopyGuestWithAttributes(nil, attrs as CFDictionary, SecCSFlags(), &guest) == errSecSuccess,
+              let g = guest else {
+            return ChildProcessIntegrity(
+                pid: pid, codeSigned: false, csStatusFlagsHex: "0x00000000",
+                csValid: false, csRuntime: false, csDebugged: false,
+                codeIdentifier: "", cdhash: ""
+            )
+        }
+        let gStatic = unsafeBitCast(g, to: SecStaticCode.self)
+        var infoRef: CFDictionary?
+        let flags = SecCSFlags(rawValue: kSecCSDynamicInformation | kSecCSSigningInformation)
+        guard SecCodeCopySigningInformation(gStatic, flags, &infoRef) == errSecSuccess,
+              let dict = infoRef as? [String: Any] else {
+            return ChildProcessIntegrity(
+                pid: pid, codeSigned: false, csStatusFlagsHex: "0x00000000",
+                csValid: false, csRuntime: false, csDebugged: false,
+                codeIdentifier: "", cdhash: ""
+            )
+        }
+        let status = (dict[kSecCodeInfoStatus as String] as? UInt32) ?? 0
+        let ident = (dict[kSecCodeInfoIdentifier as String] as? String) ?? ""
+        var cdhash = ""
+        if let unique = dict[kSecCodeInfoUnique as String] as? Data {
+            cdhash = unique.map { String(format: "%02x", $0) }.joined()
+        }
+        return ChildProcessIntegrity(
+            pid: pid,
+            codeSigned: !ident.isEmpty,
+            csStatusFlagsHex: String(format: "0x%08x", status),
+            csValid: (status & 0x0000_0001) != 0,
+            csRuntime: (status & 0x0001_0000) != 0,
+            csDebugged: (status & 0x1000_0000) != 0,
+            codeIdentifier: ident,
+            cdhash: cdhash
+        )
+    }
+
+    static func generateSignedBundle(
+        status: AttestationStatus,
+        nonceHex: String,
+        targetPid: Int32? = nil
+    ) throws -> (json: String, verified: Bool) {
         let seKey = loadOrCreateSecureEnclaveKey()
         let keyClass: String
         let pubX963: Data
@@ -254,7 +309,7 @@ enum DirectMetalAttestation {
         }
 
         let ts = ISO8601DateFormatter().string(from: Date())
-        let claims: [String: Any] = [
+        var claims: [String: Any] = [
             "nonce": nonceHex,
             "timestamp_utc": ts,
             "macos_version": status.macosVersion,
@@ -281,6 +336,17 @@ enum DirectMetalAttestation {
             "binary_sha256": status.binarySha256,
             "integrity_scope": "launcher-strong,native-runtime-measured,guest-jit-unattested",
         ]
+        if let pid = targetPid {
+            let child = inspectRunningProcess(pid: pid)
+            claims["target_pid"] = Int(child.pid)
+            claims["target_pid_code_signed"] = child.codeSigned
+            claims["target_pid_cs_status_flags_hex"] = child.csStatusFlagsHex
+            claims["target_pid_cs_valid"] = child.csValid
+            claims["target_pid_cs_runtime"] = child.csRuntime
+            claims["target_pid_cs_debugged"] = child.csDebugged
+            claims["target_pid_code_identifier"] = child.codeIdentifier
+            claims["target_pid_cdhash"] = child.cdhash
+        }
 
         let canonicalData = try JSONSerialization.data(
             withJSONObject: claims,

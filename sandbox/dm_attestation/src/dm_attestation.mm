@@ -186,13 +186,46 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
     }
 
     @autoreleasepool {
-        NSDictionary* keyAttrs = @{
-            (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
-            (__bridge id)kSecAttrKeySizeInBits: @256,
-            (__bridge id)kSecAttrIsPermanent: @NO,
-        };
+        NSDictionary* keyAttrs = nil;
+        NSString* keyClass = @"software-ephemeral";
         CFErrorRef cfErr = nullptr;
-        SecKeyRef privKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)keyAttrs, &cfErr);
+        SecKeyRef privKey = nullptr;
+
+        /* Prefer Apple Silicon hardware Secure Enclave P-256 non-exportable signing key */
+        SecAccessControlRef seAccess = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            kSecAccessControlPrivateKeyUsage,
+            &cfErr);
+        if (seAccess) {
+            NSDictionary* seAttrs = @{
+                (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
+                (__bridge id)kSecAttrKeySizeInBits: @256,
+                (__bridge id)kSecAttrTokenID: (__bridge id)kSecAttrTokenIDSecureEnclave,
+                (__bridge id)kSecPrivateKeyAttrs: @{
+                    (__bridge id)kSecAttrIsPermanent: @NO,
+                    (__bridge id)kSecAttrAccessControl: (__bridge id)seAccess,
+                },
+            };
+            cfErr = nullptr;
+            privKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)seAttrs, &cfErr);
+            CFRelease(seAccess);
+            if (privKey) {
+                keyClass = @"secure-enclave";
+            } else if (cfErr) {
+                CFRelease(cfErr);
+                cfErr = nullptr;
+            }
+        }
+        if (!privKey) {
+            keyAttrs = @{
+                (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
+                (__bridge id)kSecAttrKeySizeInBits: @256,
+                (__bridge id)kSecAttrIsPermanent: @NO,
+            };
+            cfErr = nullptr;
+            privKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)keyAttrs, &cfErr);
+        }
         if (!privKey) {
             NSError* e = (__bridge_transfer NSError*)cfErr;
             set_err(err_buf, err_buf_cap, e ? e.localizedDescription.UTF8String : "SecKeyCreateRandomKey failed");
@@ -217,15 +250,23 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
         NSISO8601DateFormatter* isoFmt = [[NSISO8601DateFormatter alloc] init];
         NSString* ts = [isoFmt stringFromDate:[NSDate date]];
 
+        char boot_uuid[128] = {0};
+        read_sysctl_str("kern.bootsessionuuid", boot_uuid, sizeof(boot_uuid));
+        BOOL dcDeviceSupported = [[DCDevice currentDevice] isSupported];
+        uint32_t dyldCount = _dyld_image_count();
+
         NSDictionary* claims = @{
             @"nonce": [NSString stringWithUTF8String:nonce_hex],
             @"timestamp_utc": ts ?: @"",
             @"macos_version": [NSString stringWithUTF8String:status->macos_version],
             @"macos_build": [NSString stringWithUTF8String:status->macos_build],
             @"hardware_model": [NSString stringWithUTF8String:status->hardware_model],
+            @"boot_session_uuid": [NSString stringWithUTF8String:boot_uuid],
             @"sip_enabled": @(status->sip_enabled),
             @"ssv_sealed": @(status->ssv_sealed),
+            @"dc_device_supported": @(dcDeviceSupported),
             @"dc_app_attest_supported": @(status->dc_app_attest_supported),
+            @"dyld_image_count": @(dyldCount),
             @"code_signed": @(status->code_signed),
             @"hardened_runtime": @(status->hardened_runtime),
             @"sandbox_active": @(status->sandbox_active),
@@ -259,8 +300,9 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
         }
 
         NSDictionary* bundle = @{
-            @"schema": @"directmetal.attestation.v1",
+            @"schema": @"directmetal.attestation.v2",
             @"algorithm": @"ECDSA-P256-SHA256-X962",
+            @"key_class": keyClass,
             @"public_key_x963_b64": [pubRaw base64EncodedStringWithOptions:0],
             @"key_id_sha256": sha256_hex_nsdata(pubRaw),
             @"signature_b64": [sig base64EncodedStringWithOptions:0],
@@ -303,7 +345,8 @@ bool dm_attestation_verify_bundle(const char* json_bundle,
         NSString* sigB64 = bundle[@"signature_b64"];
         NSString* canonical = bundle[@"payload_canonical"];
         NSDictionary* claims = bundle[@"claims"];
-        if (![schema isEqualToString:@"directmetal.attestation.v1"] ||
+        if ((![schema isEqualToString:@"directmetal.attestation.v1"] &&
+             ![schema isEqualToString:@"directmetal.attestation.v2"]) ||
             ![pubB64 isKindOfClass:[NSString class]] ||
             ![sigB64 isKindOfClass:[NSString class]] ||
             ![canonical isKindOfClass:[NSString class]] ||

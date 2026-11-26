@@ -50,11 +50,34 @@ codesign --force --sign - "${REPO_ROOT}/build/dm_vk_compat/libdm_vk_compat_layer
 cp "${REPO_ROOT}/build/dm_vk_compat/libdm_vk_compat_layer.dylib" "${CONTENTS}/Resources/vulkan-layers/"
 cp "${REPO_ROOT}/build/dm_vk_compat/VK_LAYER_DIRECTMETAL_mvk_compat.json" "${CONTENTS}/Resources/vulkan-layers/"
 
+D3D12_GUARD_DLL="${REPO_ROOT}/build/dm_d3d12_placed_guard/d3d12_x64.dll"
+MINGW_CLANG=""
+if [[ -x "${REPO_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang" ]]; then
+  MINGW_CLANG="${REPO_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang"
+elif command -v x86_64-w64-mingw32-clang >/dev/null 2>&1; then
+  MINGW_CLANG="$(command -v x86_64-w64-mingw32-clang)"
+fi
+if [[ -n "${MINGW_CLANG}" && -f "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d12_guard.c" ]]; then
+  echo "[DirectMetal] Building D3D12 Placed-Resource Alignment Guard (d3d12_x64.dll)..."
+  mkdir -p "${REPO_ROOT}/build/dm_d3d12_placed_guard"
+  "${MINGW_CLANG}" -O2 -shared \
+    "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d12_guard.c" \
+    "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d12_guard.def" \
+    -o "${D3D12_GUARD_DLL}"
+fi
+
 echo "[DirectMetal] Cloning self-contained Wine + Mullion runtime via APFS CoW..."
 cp -Rc "${RUNTIME_SRC}/wine-dist" "${CONTENTS}/Runtime/wine-dist"
 cp -Rc "${RUNTIME_SRC}/mullion-dist" "${CONTENTS}/Runtime/mullion-dist"
 cp -Rc "${RUNTIME_SRC}/base-prefix" "${CONTENTS}/Runtime/base-prefix"
 cp "${REPO_ROOT}/runtime/config/mullion.conf" "${CONTENTS}/Runtime/mullion.conf"
+
+if [[ -f "${D3D12_GUARD_DLL}" && -f "${CONTENTS}/Runtime/base-prefix/drive_c/windows/system32/d3d12.dll" ]]; then
+  echo "[DirectMetal] Installing D3D12 Alignment Guard into Rosetta base-prefix..."
+  cp "${CONTENTS}/Runtime/base-prefix/drive_c/windows/system32/d3d12.dll" \
+     "${CONTENTS}/Runtime/base-prefix/drive_c/windows/system32/d3d12_mullion.dll"
+  cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime/base-prefix/drive_c/windows/system32/d3d12.dll"
+fi
 
 # Strip unused build/dev/legacy bloat from bundled Rosetta runtime copy (non-destructive to build/)
 WINE_REL="$(cd "${CONTENTS}/Runtime" && find wine-dist -maxdepth 6 -type f -name wine -path "*/bin/wine" | head -n 1 | sed 's|/bin/wine$||')"
@@ -93,6 +116,13 @@ if [[ -d "${ARM64EC_SRC}/base-prefix" ]]; then
     # Disable FEX ProfileStats in bundled Config.json (avoids per-frame profiling CPU overhead)
     if [[ -f "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json" ]]; then
       sed -i '' 's/"ProfileStats":[[:space:]]*"1"/"ProfileStats": "0"/g' "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json"
+    fi
+    # Install D3D12 Placed-Resource Alignment Guard into ARM64EC base-prefix (proxies to Mullion's ARM64X d3d12.dll)
+    if [[ -f "${D3D12_GUARD_DLL}" && -f "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" ]]; then
+      echo "[DirectMetal] Installing D3D12 Alignment Guard into ARM64EC base-prefix..."
+      cp "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" \
+         "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12_mullion.dll"
+      cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12.dll"
     fi
   fi
 fi

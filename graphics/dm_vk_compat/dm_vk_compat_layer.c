@@ -428,6 +428,7 @@ static VkResult dm_vkCreateDevice(
             VkPhysicalDeviceRobustness2FeaturesEXT* r2 = (VkPhysicalDeviceRobustness2FeaturesEXT*)node;
             r2->robustBufferAccess2 = 0;
             r2->robustImageAccess2 = 0;
+            r2->nullDescriptor = 0;
         }
         node = node->pNext;
     }

@@ -18,11 +18,11 @@ private func printUsage() {
       DirectMetal cache import <path_or_url> [--force]
                                          Import local or cloud HTTPS shader cache archive with SHA-256 verification
       DirectMetal cache clear            Clear pre-compiled shader cache
-      DirectMetal attest [--nonce <hex>] [--sandbox] [--target <path>]
-                                         Collect signed platform attestation JSON (opt-in)
+      DirectMetal attest [--nonce <hex>] [--sandbox] [--target <path>] [--pid <pid>]
+                                         Collect hardware Secure Enclave attestation v2 JSON (opt-in)
       DirectMetal verify-attest <bundle.json> [--nonce <hex>]
-                                         Verify a signed DirectMetal attestation bundle JSON
-      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance] [-- <args...>]
+                                         Verify a signed DirectMetal attestation bundle JSON (v1/v2)
+      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--perf-mode balanced|ultra] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance|ultra_performance] [-- <args...>]
     """)
 }
 
@@ -250,6 +250,7 @@ private func runCLI(args: [String]) -> Int32 {
         var nonceHex = String(format: "%016llx", UInt64.random(in: 0...UInt64.max))
         var sandboxActive = false
         var targetPath: String? = nil
+        var targetPid: Int32? = nil
         var idx = 1
         while idx < args.count {
             let a = args[idx]
@@ -258,6 +259,9 @@ private func runCLI(args: [String]) -> Int32 {
                 idx += 2
             } else if a == "--target", idx + 1 < args.count {
                 targetPath = args[idx + 1]
+                idx += 2
+            } else if a == "--pid", idx + 1 < args.count {
+                targetPid = Int32(args[idx + 1])
                 idx += 2
             } else if a == "--sandbox" {
                 sandboxActive = true
@@ -268,7 +272,11 @@ private func runCLI(args: [String]) -> Int32 {
         }
         let status = DirectMetalAttestation.collectStatus(targetBinaryPath: targetPath, sandboxActive: sandboxActive)
         do {
-            let (json, verified) = try DirectMetalAttestation.generateSignedBundle(status: status, nonceHex: nonceHex)
+            let (json, verified) = try DirectMetalAttestation.generateSignedBundle(
+                status: status,
+                nonceHex: nonceHex,
+                targetPid: targetPid
+            )
             print(json)
             if !verified {
                 fputs("error: self-verification of ECDSA attestation failed\n", stderr)
@@ -297,6 +305,7 @@ private func runCLI(args: [String]) -> Int32 {
         var engine: ExecutionEngine = .auto
         var fexTSO = true
         var dx9Backend: DX9Backend = .auto
+        var perfProfile: PerfProfile = .balanced
         var virtualDesktop: String? = nil
         var childArgs: [String] = []
 
@@ -320,6 +329,9 @@ private func runCLI(args: [String]) -> Int32 {
                 i += 2
             } else if a == "--dx9-backend", i + 1 < args.count {
                 dx9Backend = DX9Backend(rawValue: args[i + 1].lowercased()) ?? .auto
+                i += 2
+            } else if a == "--perf-mode", i + 1 < args.count {
+                perfProfile = PerfProfile(rawValue: args[i + 1].lowercased()) ?? .balanced
                 i += 2
             } else if a == "--desktop", i + 1 < args.count {
                 virtualDesktop = args[i + 1]
@@ -357,6 +369,7 @@ private func runCLI(args: [String]) -> Int32 {
                 engine: engine,
                 fexTSO: fexTSO,
                 dx9Backend: dx9Backend,
+                perfProfile: perfProfile,
                 virtualDesktop: virtualDesktop,
                 sandboxed: sandboxed,
                 sandboxOffline: sandboxOffline,

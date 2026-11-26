@@ -14,14 +14,20 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var enableSandbox: Bool = false
     @Published var upscaleMode: String = "off"
     @Published var selectedEngine: ExecutionEngine = .auto
+    @Published var selectedPerfProfile: PerfProfile = .balanced
+    @Published var selectedDX9Backend: DX9Backend = .auto
     @Published var cacheSummary: ShaderCacheSummary = RuntimeLauncher.queryShaderCache()
-    @Published var statusMessage: String = "Ready — drop a DirectX 10/11/12 .exe to inspect and launch."
+    @Published var attestationStatus: AttestationStatus?
+    @Published var attestationKeyId: String = ""
+    @Published var attestationVerified: Bool = false
+    @Published var statusMessage: String = "Ready — drop a DirectX 9/10/11/12 .exe to inspect and launch."
     @Published var isRunning: Bool = false
 
     private let prefixManager = PrefixManager()
 
     init() {
         refreshPrefixes()
+        runAttestationCheck()
     }
 
     func refreshPrefixes() {
@@ -33,6 +39,60 @@ final class DirectMetalViewModel: ObservableObject {
         try? RuntimeLauncher.clearShaderCache()
         cacheSummary = RuntimeLauncher.queryShaderCache()
         statusMessage = "Cleared pre-compiled shader cache."
+    }
+
+    func exportShaderCache() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "directmetal-shaders-\(gpuInfo.cacheKey).dmcache.tar.gz"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let res = try ShaderCacheManager.exportArchive(to: url.path)
+            let mb = Double(res.archiveBytes) / (1024.0 * 1024.0)
+            statusMessage = String(
+                format: "Exported %d shader files (%.2f MiB, SHA-256: %@…)",
+                res.fileCount, mb, String(res.manifestSha256.prefix(12))
+            )
+        } catch {
+            statusMessage = "Cache export failed: \(error)"
+        }
+    }
+
+    func importShaderCache() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let res = try ShaderCacheManager.importArchive(from: url.path)
+            cacheSummary = RuntimeLauncher.queryShaderCache()
+            statusMessage = "Imported & verified \(res.verifiedFiles) shader files (\(res.gpuFamily)/\(res.macosBuild))."
+        } catch {
+            statusMessage = "Cache import failed: \(error)"
+        }
+    }
+
+    func runAttestationCheck() {
+        let sandbox = enableSandbox
+        DispatchQueue.global(qos: .userInitiated).async {
+            let st = DirectMetalAttestation.collectStatus(sandboxActive: sandbox)
+            let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+            let bundleResult = try? DirectMetalAttestation.generateSignedBundle(status: st, nonceHex: nonce)
+            var keyId = ""
+            if let json = bundleResult?.json,
+               let data = json.data(using: .utf8),
+               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+               let k = obj["key_id_sha256"] as? String {
+                keyId = k
+            }
+            let ok = bundleResult?.verified ?? false
+            DispatchQueue.main.async {
+                self.attestationStatus = st
+                self.attestationKeyId = keyId
+                self.attestationVerified = ok
+            }
+        }
     }
 
     func selectExe(path: String) {
@@ -72,6 +132,8 @@ final class DirectMetalViewModel: ObservableObject {
         let sandbox = enableSandbox
         let upscale = upscaleMode
         let engine = selectedEngine
+        let perf = selectedPerfProfile
+        let dx9 = selectedDX9Backend
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -82,14 +144,16 @@ final class DirectMetalViewModel: ObservableObject {
                     enableHUD: hud,
                     upscaleMode: upscale,
                     engine: engine,
+                    dx9Backend: dx9,
+                    perfProfile: perf,
                     sandboxed: sandbox
                 )
                 DispatchQueue.main.async {
                     self.isRunning = false
                     self.refreshPrefixes()
                     self.statusMessage = String(
-                        format: "Finished (exit=%d) in %.2f s [CoW clone: %.2f ms]",
-                        result.exitCode, result.elapsedSeconds, result.cloneMs
+                        format: "Finished (exit=%d) in %.2f s [engine=%@, CoW=%.2f ms]",
+                        result.exitCode, result.elapsedSeconds, result.activeEngine, result.cloneMs
                     )
                 }
             } catch {
@@ -106,12 +170,12 @@ struct DirectMetalContentView: View {
     @StateObject private var vm = DirectMetalViewModel()
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("DirectMetal")
                         .font(.largeTitle.bold())
-                    Text("Apple Silicon–First DirectX 10/11/12 Runtime")
+                    Text("Apple Silicon–First DirectX 9/10/11/12 Runtime")
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -171,26 +235,42 @@ struct DirectMetalContentView: View {
                 return true
             }
 
-            HStack {
-                Text("APFS CoW Prefix:")
+            HStack(spacing: 10) {
+                Text("Prefix:")
                 TextField("Prefix name", text: $vm.prefixName)
                     .textFieldStyle(.roundedBorder)
-                    .frame(width: 140)
+                    .frame(width: 120)
                 Picker("Engine:", selection: $vm.selectedEngine) {
                     Text("Auto").tag(ExecutionEngine.auto)
                     Text("ARM64EC+FEX").tag(ExecutionEngine.arm64ec)
                     Text("Rosetta 2").tag(ExecutionEngine.rosetta)
                 }
                 .frame(width: 165)
+                Picker("Perf:", selection: $vm.selectedPerfProfile) {
+                    Text("Balanced").tag(PerfProfile.balanced)
+                    Text("Ultra").tag(PerfProfile.ultra)
+                }
+                .frame(width: 135)
+                Picker("DX9:", selection: $vm.selectedDX9Backend) {
+                    Text("Auto").tag(DX9Backend.auto)
+                    Text("DXVK").tag(DX9Backend.dxvk)
+                    Text("WineD3D").tag(DX9Backend.wined3d)
+                }
+                .frame(width: 130)
+                Spacer()
+            }
+
+            HStack(spacing: 12) {
                 Picker("MetalFX:", selection: $vm.upscaleMode) {
                     Text("Off").tag("off")
                     Text("Quality (1.5x)").tag("quality")
                     Text("Balanced (1.7x)").tag("balanced")
                     Text("Perf (2.0x)").tag("performance")
+                    Text("Ultra Perf (2.5x)").tag("ultra_performance")
                 }
-                .frame(width: 170)
-                Toggle("HUD", isOn: $vm.enableMetalHUD)
-                Toggle("Sandbox", isOn: $vm.enableSandbox)
+                .frame(width: 210)
+                Toggle("Metal HUD", isOn: $vm.enableMetalHUD)
+                Toggle("Seatbelt Sandbox", isOn: $vm.enableSandbox)
                 Spacer()
                 Button(vm.isRunning ? "Running…" : "Launch") {
                     vm.launchSelected()
@@ -199,12 +279,44 @@ struct DirectMetalContentView: View {
                 .disabled(vm.exePath.isEmpty || vm.isRunning || vm.runtimePaths == nil)
             }
 
+            GroupBox("Hardware Security & Secure Enclave Attestation") {
+                HStack {
+                    if let st = vm.attestationStatus {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("SE: \(st.secureEnclaveAvailable ? "Active" : "Unavailable") • SIP: \(st.sipEnabled ? "ON" : "OFF") • SSV: \(st.ssvSealed ? "Sealed" : "Open") • Hardened: \(st.hardenedRuntime ? "ON" : "OFF") • DCDevice: \(st.dcDeviceSupported ? "Yes" : "No")")
+                                .font(.caption)
+                            Text("Key ID: \(vm.attestationKeyId.isEmpty ? "—" : String(vm.attestationKeyId.prefix(24)) + "…") • Self-Verify: \(vm.attestationVerified ? "PASS" : "PENDING") • CS Flags: \(st.csStatusFlagsHex)")
+                                .font(.caption.monospaced())
+                                .foregroundStyle(.secondary)
+                        }
+                    } else {
+                        Text("Collecting hardware attestation telemetry…")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    Button("Run Attestation") {
+                        vm.runAttestationCheck()
+                    }
+                    .font(.caption)
+                }
+                .padding(4)
+            }
+
             HStack {
                 let mb = Double(vm.cacheSummary.totalBytes) / (1024.0 * 1024.0)
                 Text("Shader Cache: \(vm.cacheSummary.entryCount) titles, \(vm.cacheSummary.fileCount) files (\(mb, specifier: "%.2f") MiB)")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Spacer()
+                Button("Export Cache…") {
+                    vm.exportShaderCache()
+                }
+                .font(.caption)
+                Button("Import Cache…") {
+                    vm.importShaderCache()
+                }
+                .font(.caption)
                 Button("Clear Cache") {
                     vm.clearShaderCache()
                 }
@@ -219,7 +331,7 @@ struct DirectMetalContentView: View {
             Spacer()
         }
         .padding(20)
-        .frame(minWidth: 640, minHeight: 380)
+        .frame(minWidth: 740, minHeight: 460)
     }
 }
 

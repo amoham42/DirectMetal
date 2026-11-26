@@ -68,16 +68,16 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 
 | Suite | Reference Mean (ms) | Reference FPS | Reference 1%-Low FPS | DirectMetal Mean (ms) | DirectMetal FPS | DirectMetal 1%-Low FPS | M1 Pro / RTX 3070 FPS |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.315 | 3176.9 | 1265.9 | 14.5% |
-| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.350 | 2860.7 | 1796.6 | 31.0% |
-| `eng_bench_deferred_pbr` | 0.248 | 4030.9 | 2153.8 | 0.736 | 1358.4 | 892.3 | 33.7% |
+| `d3d11_bench_frame` | 0.045 | 21962.6 | 3397.3 | 0.315 | 3176.2 | 2010.1 | 14.5% |
+| `d3d12_bench_frame` | 0.108 | 9227.2 | 3641.0 | 0.362 | 2765.2 | 2020.2 | 30.0% |
+| `eng_bench_deferred_pbr` | 0.248 | 4030.9 | 2153.8 | 0.678 | 1475.1 | 720.1 | 36.6% |
 
 ## Native ARM64 Host Subsystem Microbenchmarks
 
-- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 224.05 ms total | 1.120 us/wakeup
-- **POSIX Baseline (pthread_cond):** pthread_cond            : 270.68 ms total | 1.353 us/wakeup (1.21x vs os_sync)
-- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 304.05 ms total | 1.520 us/wakeup (1.36x vs os_sync)
-- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.431 ms
+- **NT Sync (os_sync_wait_on_address):** os_sync_wait_on_address : 237.78 ms total | 1.189 us/wakeup
+- **POSIX Baseline (pthread_cond):** pthread_cond            : 271.87 ms total | 1.359 us/wakeup (1.14x vs os_sync)
+- **IPC Baseline (unix pipe):** unix pipe (IPC baseline): 308.98 ms total | 1.545 us/wakeup (1.30x vs os_sync)
+- **APFS CoW Prefix (clonefile):** [dm_prefix_test] APFS CoW clonefile time: 0.409 ms
 
 ## Phase 2 — Apple Silicon Deep Optimizations (M1 Pro)
 
@@ -110,5 +110,5 @@ Automated pixel-level accuracy (`PSNR` / `SSIM`) and frame-time comparison betwe
 | 1024x1024 Deferred PBR Benchmark | Mean Frame Time | FPS | 1%-Low FPS | GPU Mean (ms) | Throughput (MP/s) |
 | :--- | ---: | ---: | ---: | ---: | ---: |
 | **Windows RTX 3070** (Native SM 6.0) | 0.248 ms | 4030.9 | 2153.8 | 0.114 ms | 4226.7 |
-| **M1 Pro Rosetta 2** (Mullion DXIL->Metal) | 0.732 ms | 1367.1 | 266.9 | 0.281 ms | 1433.5 |
-| **M1 Pro ARM64EC+FEX (Sandboxed)** | 0.627 ms | 1595.4 | 1149.3 | 0.281 ms | 1672.9 |
+| **M1 Pro Rosetta 2** (Mullion DXIL->Metal) | 0.737 ms | 1357.1 | 259.5 | 0.298 ms | 1423.0 |
+| **M1 Pro ARM64EC+FEX (Sandboxed)** | 0.638 ms | 1566.3 | 753.8 | 0.301 ms | 1642.4 |
