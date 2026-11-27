@@ -4,10 +4,18 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 APP_SRC="${REPO_ROOT}/app/DirectMetalApp"
-RUNTIME_SRC="${REPO_ROOT}/build/runtime"
-ARM64EC_SRC="${REPO_ROOT}/build/runtime-arm64ec"
+RUNTIME_SRC="${DIRECTMETAL_RUNTIME_SRC:-${REPO_ROOT}/build/runtime}"
+ARM64EC_SRC="${DIRECTMETAL_ARM64EC_SRC:-${REPO_ROOT}/build/runtime-arm64ec}"
 APP_BUNDLE="${REPO_ROOT}/dist/DirectMetal.app"
 CONTENTS="${APP_BUNDLE}/Contents"
+
+STAGE_PREFIX_ROOT=""
+cleanup() {
+  if [[ -n "${STAGE_PREFIX_ROOT}" && -d "${STAGE_PREFIX_ROOT}" ]]; then
+    rm -rf "${STAGE_PREFIX_ROOT}"
+  fi
+}
+trap cleanup EXIT
 
 INCLUDE_ROSETTA="${DIRECTMETAL_INCLUDE_ROSETTA:-0}"
 SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:--}"
@@ -173,21 +181,45 @@ if [[ "${BUNDLE_ROSETTA}" == "1" ]]; then
 fi
 
 if [[ "${HAS_ARM64EC}" == "1" ]]; then
-  echo "[DirectMetal] Cloning self-contained ARM64EC + FEX-Emu runtime via APFS CoW..."
-  cp -Rc "${ARM64EC_SRC}" "${CONTENTS}/Runtime-ARM64EC"
-  MSW_APP="${CONTENTS}/Runtime-ARM64EC/wine-dist/MetalSharp-Wine.app"
-  if [[ -d "${MSW_APP}" ]]; then
+  echo "[DirectMetal] Packaging ARM64EC + FEX-Emu runtime with dehydrated base-prefix..."
+  mkdir -p "${CONTENTS}/Runtime-ARM64EC/wine-dist" "${REPO_ROOT}/build"
+  STAGE_PREFIX_ROOT="$(mktemp -d "${REPO_ROOT}/build/.stage-arm64ec-prefix.XXXXXX")"
+  STAGE_BASE_PREFIX="${STAGE_PREFIX_ROOT}/base-prefix"
+  if ! cp -Rc "${ARM64EC_SRC}/base-prefix" "${STAGE_BASE_PREFIX}" 2>/dev/null; then
+    cp -R "${ARM64EC_SRC}/base-prefix" "${STAGE_BASE_PREFIX}"
+  fi
+
+  if [[ -d "${ARM64EC_SRC}/wine-dist/MetalSharp-Wine.app" ]]; then
+    MSW_APP="${CONTENTS}/Runtime-ARM64EC/wine-dist/MetalSharp-Wine.app"
     # Keep MetalSharp-Wine.app 100% untouched so its Apple Developer ID signature,
     # notarization, and com.apple.developer.cross-architecture-support entitlement remain valid!
+    if ! cp -Rc "${ARM64EC_SRC}/wine-dist/MetalSharp-Wine.app" "${MSW_APP}" 2>/dev/null; then
+      cp -R "${ARM64EC_SRC}/wine-dist/MetalSharp-Wine.app" "${MSW_APP}"
+    fi
+    ln -sfn "wine-dist/MetalSharp-Wine.app/Contents/MacOS" "${CONTENTS}/Runtime-ARM64EC/bin"
     echo "[DirectMetal] Preserving signed MetalSharp-Wine.app (verifying signature & cross-arch profile)..."
     codesign --verify --strict --deep "${MSW_APP}"
     if [[ -f "${D3D12_GUARD_DLL}" && -f "${MSW_APP}/Contents/lib/mullion/aarch64-windows/d3d12.dll" ]]; then
-      echo "[DirectMetal] Installing D3D12 Alignment Guard into ARM64EC base-prefix..."
+      echo "[DirectMetal] Installing D3D12 Alignment Guard into staged ARM64EC base-prefix..."
+      rm -f "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12_mullion.dll" \
+            "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12.dll"
       cp "${MSW_APP}/Contents/lib/mullion/aarch64-windows/d3d12.dll" \
-         "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12_mullion.dll"
-      cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12.dll"
+         "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12_mullion.dll"
+      cp "${D3D12_GUARD_DLL}" \
+         "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12.dll"
     fi
+    python3 "${SCRIPT_DIR}/dehydrate_base_prefix.py" \
+      --base-prefix "${STAGE_BASE_PREFIX}" \
+      --wine-app-contents "${MSW_APP}/Contents" \
+      --out-dir "${CONTENTS}/Runtime-ARM64EC/base-prefix-dehydrated"
   else
+    rm -rf "${CONTENTS}/Runtime-ARM64EC/wine-dist"
+    if ! cp -Rc "${ARM64EC_SRC}/wine-dist" "${CONTENTS}/Runtime-ARM64EC/wine-dist" 2>/dev/null; then
+      cp -R "${ARM64EC_SRC}/wine-dist" "${CONTENTS}/Runtime-ARM64EC/wine-dist"
+    fi
+    if [[ -L "${ARM64EC_SRC}/bin" ]]; then
+      ln -sfn "$(readlink "${ARM64EC_SRC}/bin")" "${CONTENTS}/Runtime-ARM64EC/bin"
+    fi
     MSW_BUNDLE_ROOT="$(find "${CONTENTS}/Runtime-ARM64EC/wine-dist" -maxdepth 2 -type d -name "metalsharp-wine-*" | head -n 1 || true)"
     if [[ -n "${MSW_BUNDLE_ROOT}" ]]; then
       echo "[DirectMetal] Stripping unused bloat from bundled ARM64EC runtime..."
@@ -208,14 +240,27 @@ if [[ "${HAS_ARM64EC}" == "1" ]]; then
         sed -i '' 's/"ProfileStats":[[:space:]]*"1"/"ProfileStats": "0"/g' "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json"
       fi
       if [[ -f "${D3D12_GUARD_DLL}" && -f "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" ]]; then
-        echo "[DirectMetal] Installing D3D12 Alignment Guard into ARM64EC base-prefix..."
+        echo "[DirectMetal] Installing D3D12 Alignment Guard into staged ARM64EC base-prefix..."
+        rm -f "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12_mullion.dll" \
+              "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12.dll"
         cp "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" \
-           "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12_mullion.dll"
-        cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12.dll"
+           "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12_mullion.dll"
+        cp "${D3D12_GUARD_DLL}" \
+           "${STAGE_BASE_PREFIX}/drive_c/windows/system32/d3d12.dll"
       fi
+      python3 "${SCRIPT_DIR}/dehydrate_base_prefix.py" \
+        --base-prefix "${STAGE_BASE_PREFIX}" \
+        --wine-app-contents "${MSW_BUNDLE_ROOT}" \
+        --out-dir "${CONTENTS}/Runtime-ARM64EC/base-prefix-dehydrated"
     fi
   fi
+
+  rm -rf "${STAGE_PREFIX_ROOT}"
+  STAGE_PREFIX_ROOT=""
 fi
+
+echo "[DirectMetal] Stripping local debug symbols from DirectMetal executable..."
+strip -x "${CONTENTS}/MacOS/DirectMetal"
 
 xattr -dr com.apple.quarantine "${APP_BUNDLE}" 2>/dev/null || true
 if [[ "${SIGN_IDENTITY}" != "-" ]]; then
