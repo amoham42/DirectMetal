@@ -22,7 +22,7 @@ private func printUsage() {
                                          Collect hardware Secure Enclave attestation v2 JSON (opt-in)
       DirectMetal verify-attest <bundle.json> [--nonce <hex>]
                                          Verify a signed DirectMetal attestation bundle JSON (v1/v2)
-      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--perf-mode balanced|ultra] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance|ultra_performance] [-- <args...>]
+      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--perf-mode balanced|ultra] [--retina|--no-retina] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance|ultra_performance] [-- <args...>]
     """)
 }
 
@@ -306,6 +306,7 @@ private func runCLI(args: [String]) -> Int32 {
         var fexTSO = true
         var dx9Backend: DX9Backend = .auto
         var perfProfile: PerfProfile = .balanced
+        var retinaMode: Bool? = nil
         var virtualDesktop: String? = nil
         var childArgs: [String] = []
 
@@ -333,6 +334,12 @@ private func runCLI(args: [String]) -> Int32 {
             } else if a == "--perf-mode", i + 1 < args.count {
                 perfProfile = PerfProfile(rawValue: args[i + 1].lowercased()) ?? .balanced
                 i += 2
+            } else if a == "--retina" {
+                retinaMode = true
+                i += 1
+            } else if a == "--no-retina" {
+                retinaMode = false
+                i += 1
             } else if a == "--desktop", i + 1 < args.count {
                 virtualDesktop = args[i + 1]
                 i += 2
@@ -370,6 +377,7 @@ private func runCLI(args: [String]) -> Int32 {
                 fexTSO: fexTSO,
                 dx9Backend: dx9Backend,
                 perfProfile: perfProfile,
+                retinaMode: retinaMode,
                 virtualDesktop: virtualDesktop,
                 sandboxed: sandboxed,
                 sandboxOffline: sandboxOffline,

@@ -11,6 +11,7 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var prefixName: String = "default"
     @Published var prefixes: [String] = []
     @Published var enableMetalHUD: Bool = true
+    @Published var enableRetinaHiDPI: Bool = true
     @Published var enableSandbox: Bool = false
     @Published var upscaleMode: String = "off"
     @Published var selectedEngine: ExecutionEngine = .auto
@@ -129,6 +130,7 @@ final class DirectMetalViewModel: ObservableObject {
         let targetExe = exePath
         let targetPrefix = prefixName
         let hud = enableMetalHUD
+        let retina = enableRetinaHiDPI
         let sandbox = enableSandbox
         let upscale = upscaleMode
         let engine = selectedEngine
@@ -146,6 +148,7 @@ final class DirectMetalViewModel: ObservableObject {
                     engine: engine,
                     dx9Backend: dx9,
                     perfProfile: perf,
+                    retinaMode: retina,
                     sandboxed: sandbox
                 )
                 DispatchQueue.main.async {
@@ -269,6 +272,7 @@ struct DirectMetalContentView: View {
                     Text("Ultra Perf (2.5x)").tag("ultra_performance")
                 }
                 .frame(width: 210)
+                Toggle("Retina PPI", isOn: $vm.enableRetinaHiDPI)
                 Toggle("Metal HUD", isOn: $vm.enableMetalHUD)
                 Toggle("Seatbelt Sandbox", isOn: $vm.enableSandbox)
                 Spacer()

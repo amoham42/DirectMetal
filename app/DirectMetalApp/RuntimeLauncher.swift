@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Metal
 import MetalFX
@@ -303,6 +304,84 @@ enum RuntimeLauncher {
         }
     }
 
+    static func queryDisplayMetrics() -> (logicalW: Int, logicalH: Int, pixelW: Int, pixelH: Int, scale: Double, dpi: Int) {
+        let mainId = CGMainDisplayID()
+        if let mode = CGDisplayCopyDisplayMode(mainId) {
+            let lw = max(mode.width, 1)
+            let lh = max(mode.height, 1)
+            let pw = max(mode.pixelWidth, lw)
+            let ph = max(mode.pixelHeight, lh)
+            let scale = max(Double(pw) / Double(lw), 1.0)
+            let dpi = max(96, Int((96.0 * scale).rounded()))
+            return (lw, lh, pw, ph, scale, dpi)
+        }
+        return (1512, 982, 1512, 982, 1.0, 96)
+    }
+
+    private static func upsertRegSectionValue(
+        in content: inout String,
+        sectionEscapedRegex: String,
+        sectionLiteral: String,
+        key: String,
+        valueExpr: String,
+        unixTs: Int
+    ) {
+        let headerPattern = "\\[\(sectionEscapedRegex)\\][^\\n]*"
+        if let headerRegex = try? NSRegularExpression(pattern: headerPattern),
+           let match = headerRegex.firstMatch(in: content, range: NSRange(content.startIndex..., in: content)),
+           let matchRange = Range(match.range, in: content) {
+            let afterHeader = content[matchRange.upperBound...]
+            let nextSectionIdx = afterHeader.range(of: "\n[")?.lowerBound ?? content.endIndex
+            let sectionBody = String(content[matchRange.upperBound..<nextSectionIdx])
+            let keyPattern = "\"\(NSRegularExpression.escapedPattern(for: key))\"=[^\\n]*"
+            let updatedBody: String
+            if let keyRegex = try? NSRegularExpression(pattern: keyPattern),
+               keyRegex.firstMatch(in: sectionBody, range: NSRange(sectionBody.startIndex..., in: sectionBody)) != nil {
+                updatedBody = keyRegex.stringByReplacingMatches(
+                    in: sectionBody,
+                    range: NSRange(sectionBody.startIndex..., in: sectionBody),
+                    withTemplate: "\"\(key)\"=\(valueExpr)"
+                )
+            } else {
+                updatedBody = "\n\"\(key)\"=\(valueExpr)" + sectionBody
+            }
+            content.replaceSubrange(matchRange.upperBound..<nextSectionIdx, with: updatedBody)
+        } else {
+            content += "\n[\(sectionLiteral)] \(unixTs)\n\"\(key)\"=\(valueExpr)\n"
+        }
+    }
+
+    /// Configures Wine's Mac Driver Retina backing scale (`RetinaMode=y|n`) and Windows system PPI (`LogPixels`)
+    /// directly in the prefix's `user.reg` (~0.2 ms) so games respect macOS Retina PPI.
+    static func configurePrefixRetinaPPI(prefixURL: URL, enableRetina: Bool, dpi: Int) {
+        let userRegURL = prefixURL.appendingPathComponent("user.reg")
+        guard var content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return }
+
+        let targetDpi = enableRetina ? dpi : 96
+        let dpiHex = String(format: "%08x", targetDpi)
+        let retinaVal = enableRetina ? "y" : "n"
+        let unixTs = Int(Date().timeIntervalSince1970)
+
+        upsertRegSectionValue(
+            in: &content,
+            sectionEscapedRegex: #"Control Panel\\\\Desktop"#,
+            sectionLiteral: #"Control Panel\\Desktop"#,
+            key: "LogPixels",
+            valueExpr: "dword:\(dpiHex)",
+            unixTs: unixTs
+        )
+        upsertRegSectionValue(
+            in: &content,
+            sectionEscapedRegex: #"Software\\\\Wine\\\\Mac Driver"#,
+            sectionLiteral: #"Software\\Wine\\Mac Driver"#,
+            key: "RetinaMode",
+            valueExpr: "\"\(retinaVal)\"",
+            unixTs: unixTs
+        )
+
+        try? content.write(to: userRegURL, atomically: true, encoding: .utf8)
+    }
+
     static func runExecutable(
         exePath: String,
         prefixName: String,
@@ -314,6 +393,7 @@ enum RuntimeLauncher {
         fexTSO: Bool = true,
         dx9Backend: DX9Backend = .auto,
         perfProfile: PerfProfile = .balanced,
+        retinaMode: Bool? = nil,
         virtualDesktop: String? = nil,
         sandboxed: Bool = false,
         sandboxOffline: Bool = false,
@@ -374,6 +454,11 @@ enum RuntimeLauncher {
             shaderCacheKey: "\(buildHash)_\(hw.cacheKey)",
             forceReset: resetPrefix
         )
+
+        // Apply native macOS Retina PPI & HiDPI scaling to the prefix before launch
+        let display = queryDisplayMetrics()
+        let useRetina = retinaMode ?? (display.scale > 1.0)
+        configurePrefixRetinaPPI(prefixURL: prefixURL, enableRetina: useRetina, dpi: display.dpi)
 
         var env = ProcessInfo.processInfo.environment
         env["WINEPREFIX"] = prefixURL.path
@@ -557,13 +642,17 @@ enum RuntimeLauncher {
             }
         }
 
-        // Legacy 32-bit DX9 games calling ChangeDisplaySettings hit DISP_CHANGE_BADMODE on Retina displays;
-        // auto-enable a 1280x720 Wine Virtual Desktop for 32-bit pure D3D9 games unless --desktop is specified.
+        // Legacy 32-bit DX9 games under Rosetta 2 calling ChangeDisplaySettings hit DISP_CHANGE_BADMODE;
+        // on native ARM64EC+FEX (WineMetalGL 4.6), run natively at full Retina PPI unless --desktop is explicitly set.
         let effectiveDesktop: String?
         if let vd = virtualDesktop?.lowercased() {
             effectiveDesktop = (vd == "off" || vd == "none" || vd.isEmpty) ? nil : vd
+        } else if isPureD3D9 && !is64BitExe && !useARM64EC {
+            effectiveDesktop = useRetina
+                ? "\(display.pixelW)x\(display.pixelH)"
+                : "\(display.logicalW)x\(display.logicalH)"
         } else {
-            effectiveDesktop = (isPureD3D9 && !(profile?.is64Bit ?? true)) ? "1280x720" : nil
+            effectiveDesktop = nil
         }
 
         let wineArgs: [String]
