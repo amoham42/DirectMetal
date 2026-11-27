@@ -2,10 +2,10 @@ import Foundation
 
 private func printUsage() {
     print("""
-    DirectMetal — Apple Silicon DirectX 10/11/12 Runtime
+    DirectMetal — Apple Silicon DirectX 9/10/11/12 Runtime
 
     Usage:
-      DirectMetal                        Launch desktop GUI
+      DirectMetal                        Launch desktop GUI (game library launcher)
       DirectMetal info                   Show Apple Silicon GPU, Metal 4, and runtime info
       DirectMetal inspect <exe>          Inspect PE headers, architecture, and DirectX/upscaler APIs
       DirectMetal prefix list            List APFS CoW game prefixes
@@ -23,7 +23,228 @@ private func printUsage() {
       DirectMetal verify-attest <bundle.json> [--nonce <hex>]
                                          Verify a signed DirectMetal attestation bundle JSON (v1/v2)
       DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--perf-mode balanced|ultra] [--retina|--no-retina] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance|ultra_performance] [-- <args...>]
+      DirectMetal library list [--json]  List saved games and their per-game settings
+      DirectMetal library scan [dir...]  Auto-scan prefixes, Steam libraries, DIRECTMETAL_SCAN_DIR,
+                                         ./.directmetal_cache/games and the given folders
+      DirectMetal library add <exe> [--title <name>]
+                                         Add (or refresh) a game in the library
+      DirectMetal library remove <id_or_title>
+                                         Remove a game (scans will not re-add it)
+      DirectMetal library show <id_or_title>
+                                         Print a saved game entry as JSON
+      DirectMetal library set <id_or_title> <key>=<value>...
+                                         Update per-game settings (title, prefix, engine, perf, dx9,
+                                         upscale, retina, hud, sandbox, args)
+      DirectMetal library play <id_or_title> [-- <args...>]
+                                         Launch a saved game with its per-game settings
     """)
+}
+
+private func printLibraryJSON<T: Encodable>(_ value: T) {
+    let enc = JSONEncoder()
+    enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    if let data = try? enc.encode(value), let str = String(data: data, encoding: .utf8) {
+        print(str)
+    }
+}
+
+private func printLibraryTable(_ entries: [GameLibraryEntry]) {
+    guard !entries.isEmpty else {
+        print("Library is empty. Run `DirectMetal library scan` or `DirectMetal library add <exe>`.")
+        return
+    }
+    func col(_ s: String, _ width: Int) -> String {
+        let t = s.count > width - 1 ? String(s.prefix(width - 2)) + "…" : s
+        return t.padding(toLength: width, withPad: " ", startingAt: 0)
+    }
+    print(col("ID", 14) + col("TITLE", 34) + col("ARCH", 9) + col("APIS", 26) + col("ENGINE", 9) + col("PLAYS", 7) + "LAST PLAYED")
+    for e in entries {
+        let apis = e.detectedAPIs.isEmpty ? "-" : e.detectedAPIs.joined(separator: "+")
+        print(col(e.id, 14) + col(e.title, 34) + col(e.architecture, 9) + col(apis, 26)
+            + col(e.engine.rawValue, 9) + col(String(e.playCount), 7) + (e.lastPlayedUtc ?? "never"))
+    }
+    print("\n\(entries.count) game(s) • \(GameLibraryManager().libraryURL.path)")
+}
+
+private func parseBool(_ s: String) -> Bool? {
+    switch s.lowercased() {
+    case "1", "true", "yes", "on", "y": return true
+    case "0", "false", "no", "off", "n": return false
+    default: return nil
+    }
+}
+
+private func runLibraryCLI(args: [String]) -> Int32 {
+    let mgr = GameLibraryManager()
+    guard let sub = args.first else {
+        fputs("error: library requires subcommand (list|scan|add|remove|show|set|play)\n", stderr)
+        return 1
+    }
+    let rest = Array(args.dropFirst())
+
+    switch sub {
+    case "list", "ls":
+        let entries = mgr.load()
+        if rest.contains("--json") {
+            printLibraryJSON(entries)
+        } else {
+            printLibraryTable(entries)
+        }
+        return 0
+
+    case "scan":
+        let before = Set(mgr.load().map(\.id))
+        let entries = mgr.scanKnownLocations(extraDirs: rest.filter { $0 != "--json" })
+        if rest.contains("--json") {
+            printLibraryJSON(entries)
+        } else {
+            let added = entries.filter { !before.contains($0.id) }
+            for e in added {
+                print("+ \(e.title)  [\(e.architecture) \(e.detectedAPIs.joined(separator: "+"))]  \(e.exePath)")
+            }
+            print("scan complete: \(added.count) new, \(entries.count) total\n")
+            printLibraryTable(entries)
+        }
+        return 0
+
+    case "add":
+        guard let exe = rest.first, !exe.hasPrefix("--") else {
+            fputs("error: library add requires <exe> [--title <name>]\n", stderr)
+            return 1
+        }
+        var title: String? = nil
+        if let i = rest.firstIndex(of: "--title"), i + 1 < rest.count {
+            title = rest[i + 1]
+        }
+        do {
+            let entry = try mgr.addOrUpdate(exePath: exe, customTitle: title)
+            print("added id=\(entry.id) title=\"\(entry.title)\" arch=\(entry.architecture) apis=\(entry.detectedAPIs.joined(separator: "+")) prefix=\(entry.prefixName)")
+            return 0
+        } catch {
+            fputs("library add failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "remove", "rm":
+        guard !rest.isEmpty else {
+            fputs("error: library remove requires <id_or_title>\n", stderr)
+            return 1
+        }
+        let key = rest.joined(separator: " ")
+        guard let entry = mgr.entry(idOrTitle: key), mgr.remove(idOrTitle: entry.id) else {
+            fputs("library remove failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        print("removed id=\(entry.id) title=\"\(entry.title)\"")
+        return 0
+
+    case "show":
+        let key = rest.joined(separator: " ")
+        guard let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library show failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        printLibraryJSON(entry)
+        return 0
+
+    case "set":
+        guard rest.count >= 2 else {
+            fputs("error: library set requires <id_or_title> <key>=<value>...\n", stderr)
+            return 1
+        }
+        var entries = mgr.load()
+        guard let target = GameLibraryManager.find(rest[0], in: entries),
+              let idx = entries.firstIndex(where: { $0.id == target.id }) else {
+            fputs("library set failed: no unique game matches \"\(rest[0])\"\n", stderr)
+            return 1
+        }
+        for pair in rest.dropFirst() {
+            guard let eq = pair.firstIndex(of: "=") else {
+                fputs("error: expected <key>=<value>, got \"\(pair)\"\n", stderr)
+                return 1
+            }
+            let key = pair[..<eq].lowercased()
+            let value = String(pair[pair.index(after: eq)...])
+            var ok = true
+            switch key {
+            case "title": entries[idx].title = value
+            case "prefix", "prefixname": entries[idx].prefixName = value
+            case "engine":
+                if let v = ExecutionEngine(rawValue: value.lowercased()) { entries[idx].engine = v } else { ok = false }
+            case "perf", "perf-mode", "perfprofile":
+                if let v = PerfProfile(rawValue: value.lowercased()) { entries[idx].perfProfile = v } else { ok = false }
+            case "dx9", "dx9-backend", "dx9backend":
+                if let v = DX9Backend(rawValue: value.lowercased()) { entries[idx].dx9Backend = v } else { ok = false }
+            case "upscale", "metalfx", "upscalemode":
+                let v = value.lowercased()
+                if ["off", "quality", "balanced", "performance", "ultra_performance"].contains(v) {
+                    entries[idx].upscaleMode = v
+                } else { ok = false }
+            case "retina":
+                if let v = parseBool(value) { entries[idx].retinaMode = v } else { ok = false }
+            case "hud":
+                if let v = parseBool(value) { entries[idx].enableHUD = v } else { ok = false }
+            case "sandbox":
+                if let v = parseBool(value) { entries[idx].enableSandbox = v } else { ok = false }
+            case "args", "extra-args", "extraargs": entries[idx].extraArgs = value
+            default:
+                fputs("error: unknown setting \"\(key)\"\n", stderr)
+                return 1
+            }
+            if !ok {
+                fputs("error: invalid value \"\(value)\" for \(key)\n", stderr)
+                return 1
+            }
+        }
+        mgr.save(entries)
+        printLibraryJSON(entries[idx])
+        return 0
+
+    case "play", "run":
+        var keyParts: [String] = []
+        var passthrough: [String] = []
+        if let dd = rest.firstIndex(of: "--") {
+            keyParts = Array(rest[..<dd])
+            passthrough = Array(rest[(dd + 1)...])
+        } else {
+            keyParts = rest
+        }
+        let key = keyParts.joined(separator: " ")
+        guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library play failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        guard FileManager.default.fileExists(atPath: entry.exePath) else {
+            fputs("library play failed: executable missing at \(entry.exePath)\n", stderr)
+            return 1
+        }
+        mgr.recordLaunch(id: entry.id)
+        fputs("[DirectMetal] playing \"\(entry.title)\" (id=\(entry.id) prefix=\(entry.launchPrefixName) engine=\(entry.engine.rawValue) perf=\(entry.perfProfile.rawValue) dx9=\(entry.dx9Backend.rawValue) metalfx=\(entry.upscaleMode) retina=\(entry.retinaMode) hud=\(entry.enableHUD) sandbox=\(entry.enableSandbox))\n", stderr)
+        do {
+            let res = try RuntimeLauncher.runExecutable(
+                exePath: entry.exePath,
+                prefixName: entry.launchPrefixName,
+                extraArgs: entry.extraArgList + passthrough,
+                enableHUD: entry.enableHUD,
+                upscaleMode: entry.launchUpscaleMode,
+                engine: entry.engine,
+                dx9Backend: entry.dx9Backend,
+                perfProfile: entry.perfProfile,
+                retinaMode: entry.retinaMode,
+                sandboxed: entry.enableSandbox
+            )
+            let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
+            fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath)\n", stderr)
+            return res.exitCode
+        } catch {
+            fputs("library play failed: \(error)\n", stderr)
+            return 1
+        }
+
+    default:
+        fputs("unknown library subcommand: \(sub)\n", stderr)
+        return 1
+    }
 }
 
 private func runCLI(args: [String]) -> Int32 {
@@ -213,6 +434,9 @@ private func runCLI(args: [String]) -> Int32 {
             fputs("unknown cache subcommand: \(sub)\n", stderr)
             return 1
         }
+
+    case "library":
+        return runLibraryCLI(args: Array(args.dropFirst()))
 
     case "verify-attest":
         guard args.count >= 2 else {
