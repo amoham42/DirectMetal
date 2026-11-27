@@ -15,6 +15,8 @@ struct AttestationStatus: Codable {
     let secureEnclaveAvailable: Bool
     let dcDeviceSupported: Bool
     let dcAppAttestSupported: Bool
+    let teamIdentifier: String
+    let appAttestProvisioned: Bool
     let codeSigned: Bool
     let hardenedRuntime: Bool
     let csStatusFlagsHex: String
@@ -40,6 +42,8 @@ struct AttestationStatus: Codable {
         case secureEnclaveAvailable = "secure_enclave_available"
         case dcDeviceSupported = "dc_device_supported"
         case dcAppAttestSupported = "dc_app_attest_supported"
+        case teamIdentifier = "team_identifier"
+        case appAttestProvisioned = "app_attest_provisioned"
         case codeSigned = "code_signed"
         case hardenedRuntime = "hardened_runtime"
         case csStatusFlagsHex = "cs_status_flags_hex"
@@ -198,6 +202,7 @@ enum DirectMetalAttestation {
         var codeSigned = false
         var hardenedRuntime = false
         var codeIdentifier = ""
+        var teamIdentifier = ""
         var cdhashHex = ""
 
         var staticCode: SecStaticCode?
@@ -212,6 +217,9 @@ enum DirectMetalAttestation {
                     codeSigned = true
                     codeIdentifier = ident
                 }
+                if let team = dict[kSecCodeInfoTeamIdentifier as String] as? String {
+                    teamIdentifier = team
+                }
                 if let sigFlags = dict[kSecCodeInfoFlags as String] as? UInt32 {
                     hardenedRuntime = (sigFlags & 0x0001_0000) != 0
                 }
@@ -221,6 +229,7 @@ enum DirectMetalAttestation {
             }
         }
 
+        let appAttestProvisioned = dcAppAttestSupported && !teamIdentifier.isEmpty
         let dynCS = collectDynamicCSStatus()
         let imgs = collectLoadedImages()
 
@@ -234,6 +243,8 @@ enum DirectMetalAttestation {
             secureEnclaveAvailable: seAvail,
             dcDeviceSupported: dcDevSupported,
             dcAppAttestSupported: dcAppAttestSupported,
+            teamIdentifier: teamIdentifier,
+            appAttestProvisioned: appAttestProvisioned,
             codeSigned: codeSigned,
             hardenedRuntime: hardenedRuntime,
             csStatusFlagsHex: String(format: "0x%08x", dynCS.flags),
@@ -291,6 +302,47 @@ enum DirectMetalAttestation {
         )
     }
 
+    /// Attempts Apple's `DCAppAttestService.shared.generateKey` + `attestKey` when the app is signed
+    /// with a real Apple Developer Team ID & App Attest provisioning profile on macOS 27+.
+    /// Never spoofs results: returns `(nil, nil, reason)` cleanly on ad-hoc builds.
+    static func tryAppleAppAttest(clientDataHash: Data) -> (keyId: String?, attestationB64: String?, status: String) {
+        let svc = DCAppAttestService.shared
+        guard svc.isSupported else {
+            return (nil, nil, "unsupported-by-os")
+        }
+        let sem = DispatchSemaphore(value: 0)
+        var outKeyId: String? = nil
+        var outAttestB64: String? = nil
+        var outStatus = "timeout"
+
+        svc.generateKey { keyId, err in
+            if let err = err {
+                outStatus = "generateKey-error:\(err.localizedDescription)"
+                sem.signal()
+                return
+            }
+            guard let keyId = keyId else {
+                outStatus = "generateKey-nil"
+                sem.signal()
+                return
+            }
+            outKeyId = keyId
+            svc.attestKey(keyId, clientDataHash: clientDataHash) { attestData, attestErr in
+                if let attestErr = attestErr {
+                    outStatus = "attestKey-error:\(attestErr.localizedDescription)"
+                } else if let attestData = attestData {
+                    outAttestB64 = attestData.base64EncodedString()
+                    outStatus = "attested"
+                } else {
+                    outStatus = "attestKey-nil"
+                }
+                sem.signal()
+            }
+        }
+        _ = sem.wait(timeout: .now() + 8)
+        return (outKeyId, outAttestB64, outStatus)
+    }
+
     static func generateSignedBundle(
         status: AttestationStatus,
         nonceHex: String,
@@ -321,6 +373,8 @@ enum DirectMetalAttestation {
             "secure_enclave_available": status.secureEnclaveAvailable,
             "dc_device_supported": status.dcDeviceSupported,
             "dc_app_attest_supported": status.dcAppAttestSupported,
+            "team_identifier": status.teamIdentifier,
+            "app_attest_provisioned": status.appAttestProvisioned,
             "code_signed": status.codeSigned,
             "hardened_runtime": status.hardenedRuntime,
             "cs_status_flags_hex": status.csStatusFlagsHex,
@@ -346,6 +400,18 @@ enum DirectMetalAttestation {
             claims["target_pid_cs_debugged"] = child.csDebugged
             claims["target_pid_code_identifier"] = child.codeIdentifier
             claims["target_pid_cdhash"] = child.cdhash
+        }
+
+        if status.appAttestProvisioned {
+            let hash = Data(SHA256.hash(data: Data(nonceHex.utf8)))
+            let res = tryAppleAppAttest(clientDataHash: hash)
+            claims["app_attest_status"] = res.status
+            if let k = res.keyId { claims["app_attest_key_id"] = k }
+            if let a = res.attestationB64 { claims["app_attest_object_b64"] = a }
+        } else {
+            claims["app_attest_status"] = status.dcAppAttestSupported
+                ? "ready-needs-developer-id-team"
+                : "unsupported-by-os"
         }
 
         let canonicalData = try JSONSerialization.data(

@@ -418,12 +418,25 @@ final class DirectMetalViewModel: ObservableObject {
             return
         }
         let allowCross = importAllowCrossBuild
+        let selectedHash = selectedEntry?.buildHash ?? ""
+        let isIndex = lower.hasSuffix(".json")
         isCacheBusy = true
-        statusMessage = lower.hasPrefix("https://") ? "Downloading & verifying shader cache…" : "Verifying & importing shader cache…"
+        statusMessage = isIndex
+            ? "Syncing matching GPU/OS shader cache from index…"
+            : (lower.hasPrefix("https://") ? "Downloading & verifying shader cache…" : "Verifying & importing shader cache…")
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                let res = try ShaderCacheManager.importArchive(from: resolved, allowCrossBuild: allowCross)
-                let msg = "Imported & verified \(res.verifiedFiles) shader files (\(res.gpuFamily)/\(res.macosBuild))."
+                let res: ShaderCacheImportResult
+                if isIndex, !selectedHash.isEmpty {
+                    res = try ShaderCacheManager.syncFromIndex(
+                        indexSource: resolved,
+                        buildHash: selectedHash,
+                        allowCrossBuild: allowCross
+                    )
+                } else {
+                    res = try ShaderCacheManager.importArchive(from: resolved, allowCrossBuild: allowCross)
+                }
+                let msg = "Synced & verified \(res.verifiedFiles) shader files (\(res.gpuFamily)/\(res.macosBuild))."
                 DispatchQueue.main.async {
                     self.isCacheBusy = false
                     self.cacheSummary = RuntimeLauncher.queryShaderCache()
@@ -945,7 +958,11 @@ struct GameDetailView: View {
                         StatusPill(title: "SIP", value: st.sipEnabled ? "Enabled" : "Disabled", ok: st.sipEnabled)
                         StatusPill(title: "SSV", value: st.ssvSealed ? "Sealed" : "Open", ok: st.ssvSealed)
                         StatusPill(title: "Hardened Runtime", value: st.hardenedRuntime ? "On" : "Off", ok: st.hardenedRuntime)
-                        StatusPill(title: "DCAppAttest", value: st.dcAppAttestSupported ? "Supported" : "Unsupported", ok: st.dcAppAttestSupported)
+                        StatusPill(
+                            title: "DCAppAttest",
+                            value: st.appAttestProvisioned ? "Provisioned" : (st.dcAppAttestSupported ? "OS Ready (Dev ID)" : "Unsupported"),
+                            ok: st.dcAppAttestSupported
+                        )
                         StatusPill(title: "DCDevice", value: st.dcDeviceSupported ? "Supported" : "Unsupported", ok: st.dcDeviceSupported)
                     }
                     Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
@@ -1084,12 +1101,12 @@ struct CacheImportSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Label("Import Shader Cache", systemImage: "square.and.arrow.down")
                 .font(.title2.bold())
-            Text("Paste an https:// URL to a .dmcache.tar.gz archive, or choose a local file. Every archive is SHA-256 verified against its manifest before it is installed.")
+            Text("Paste an https:// URL to a cloud index.json or .dmcache.tar.gz archive, or choose a local file. Archives and every individual shader file are SHA-256 verified before installation.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                TextField("https://example.com/shaders.dmcache.tar.gz  or  /path/to/cache.dmcache.tar.gz",
+                TextField("https://example.com/index.json  or  /path/to/cache.dmcache.tar.gz",
                           text: $vm.importSource)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit(submit)

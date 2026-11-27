@@ -46,9 +46,9 @@ enum PerfProfile: String, Codable {
 
 struct RuntimePaths {
     let runtimeRoot: URL
-    let wineBin: URL
-    let wineserverBin: URL
-    let basePrefix: URL
+    let wineBin: URL?
+    let wineserverBin: URL?
+    let basePrefix: URL?
     let mullionConfig: URL?
     let vkCompatLayerDir: URL?
     let arm64ecRoot: URL?
@@ -213,38 +213,43 @@ enum RuntimeLauncher {
 
         let arm64ec = resolveARM64ECRuntime()
 
+        func resolveSharedResources(runtimeRoot: URL?) -> (conf: URL?, vkCompatDir: URL?) {
+            var conf: URL? = nil
+            let bundleConf = Bundle.main.resourceURL?.appendingPathComponent("mullion.conf")
+            let runtimeConf = runtimeRoot?.appendingPathComponent("mullion.conf")
+            let repoConf = cwd.appendingPathComponent("runtime/config/mullion.conf")
+            if let bc = bundleConf, fm.fileExists(atPath: bc.path) {
+                conf = bc
+            } else if let rc = runtimeConf, fm.fileExists(atPath: rc.path) {
+                conf = rc
+            } else if fm.fileExists(atPath: repoConf.path) {
+                conf = repoConf
+            }
+            var vkCompatDir: URL? = nil
+            let bundleVK = Bundle.main.resourceURL?.appendingPathComponent("vulkan-layers", isDirectory: true)
+            let buildVK = cwd.appendingPathComponent("build/dm_vk_compat", isDirectory: true)
+            if let bvk = bundleVK, fm.fileExists(atPath: bvk.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
+                vkCompatDir = bvk
+            } else if fm.fileExists(atPath: buildVK.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
+                vkCompatDir = buildVK
+            }
+            return (conf, vkCompatDir)
+        }
+
         for root in candidates {
             let wine = root.appendingPathComponent("wine/bin/wine")
             let wineserver = root.appendingPathComponent("wine/bin/wineserver")
             let basePrefix = root.appendingPathComponent("base-prefix", isDirectory: true)
             if fm.isExecutableFile(atPath: wine.path) &&
                fm.fileExists(atPath: basePrefix.appendingPathComponent("system.reg").path) {
-                var conf: URL? = nil
-                let bundleConf = Bundle.main.resourceURL?.appendingPathComponent("mullion.conf")
-                let runtimeConf = root.appendingPathComponent("mullion.conf")
-                let repoConf = cwd.appendingPathComponent("runtime/config/mullion.conf")
-                if let bc = bundleConf, fm.fileExists(atPath: bc.path) {
-                    conf = bc
-                } else if fm.fileExists(atPath: runtimeConf.path) {
-                    conf = runtimeConf
-                } else if fm.fileExists(atPath: repoConf.path) {
-                    conf = repoConf
-                }
-                var vkCompatDir: URL? = nil
-                let bundleVK = Bundle.main.resourceURL?.appendingPathComponent("vulkan-layers", isDirectory: true)
-                let buildVK = cwd.appendingPathComponent("build/dm_vk_compat", isDirectory: true)
-                if let bvk = bundleVK, fm.fileExists(atPath: bvk.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
-                    vkCompatDir = bvk
-                } else if fm.fileExists(atPath: buildVK.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
-                    vkCompatDir = buildVK
-                }
+                let res = resolveSharedResources(runtimeRoot: root)
                 return RuntimePaths(
                     runtimeRoot: root,
                     wineBin: wine,
                     wineserverBin: wineserver,
                     basePrefix: basePrefix,
-                    mullionConfig: conf,
-                    vkCompatLayerDir: vkCompatDir,
+                    mullionConfig: res.conf,
+                    vkCompatLayerDir: res.vkCompatDir,
                     arm64ecRoot: arm64ec?.root,
                     arm64ecWineBin: arm64ec?.wine,
                     arm64ecWineserverBin: arm64ec?.wineserver,
@@ -254,8 +259,26 @@ enum RuntimeLauncher {
             }
         }
 
+        // Slim 100% post-Rosetta ARM64EC-only bundle support (Contents/Runtime omitted)
+        if let arm = arm64ec {
+            let res = resolveSharedResources(runtimeRoot: arm.root)
+            return RuntimePaths(
+                runtimeRoot: arm.root,
+                wineBin: nil,
+                wineserverBin: nil,
+                basePrefix: nil,
+                mullionConfig: res.conf,
+                vkCompatLayerDir: res.vkCompatDir,
+                arm64ecRoot: arm.root,
+                arm64ecWineBin: arm.wine,
+                arm64ecWineserverBin: arm.wineserver,
+                arm64ecBasePrefix: arm.basePrefix,
+                arm64ecKosmicKrispICD: arm.kosmicICD
+            )
+        }
+
         throw LauncherError.runtimeNotFound(
-            "DirectMetal Wine+Mullion runtime not found. Run scripts/setup_runtime.sh or package DirectMetal.app."
+            "DirectMetal Wine+Mullion runtime not found. Run scripts/setup_runtime_arm64ec.sh or package DirectMetal.app."
         )
     }
 
@@ -423,6 +446,7 @@ enum RuntimeLauncher {
         }()
         let arm64ecSupports32Bit = hasARM64EC && isMacOS26_4Plus && hasCrossArchProfile
 
+        let hasRosetta = (paths.wineBin != nil && paths.basePrefix != nil)
         let useARM64EC: Bool
         switch engine {
         case .arm64ec:
@@ -431,14 +455,23 @@ enum RuntimeLauncher {
             }
             useARM64EC = true
         case .rosetta:
+            guard hasRosetta else {
+                throw LauncherError.runtimeNotFound("Legacy Rosetta 2 runtime is not bundled in this slim DirectMetal.app. Re-package with --include-rosetta or use --engine arm64ec.")
+            }
             useARM64EC = false
         case .auto:
             let is64 = profile?.is64Bit ?? true
-            useARM64EC = hasARM64EC && (is64 || arm64ecSupports32Bit)
+            if hasARM64EC && (is64 || arm64ecSupports32Bit || !hasRosetta) {
+                useARM64EC = true
+            } else if hasRosetta {
+                useARM64EC = false
+            } else {
+                throw LauncherError.runtimeNotFound("No compatible DirectMetal runtime found.")
+            }
         }
 
-        let selectedWine = useARM64EC ? paths.arm64ecWineBin! : paths.wineBin
-        let selectedBasePrefix = useARM64EC ? paths.arm64ecBasePrefix! : paths.basePrefix
+        let selectedWine = useARM64EC ? paths.arm64ecWineBin! : paths.wineBin!
+        let selectedBasePrefix = useARM64EC ? paths.arm64ecBasePrefix! : paths.basePrefix!
         let activeEngine = useARM64EC ? "arm64ec-fex" : "rosetta2"
 
         let shaderCacheDir = shaderCacheRoot()

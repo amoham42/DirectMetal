@@ -17,6 +17,8 @@ private func printUsage() {
                                          Export portable SHA-256 verified shader cache archive
       DirectMetal cache import <path_or_url> [--force]
                                          Import local or cloud HTTPS shader cache archive with SHA-256 verification
+      DirectMetal cache sync <index_url_or_path> (--build-hash <hash> | --exe <path>) [--force]
+                                         Sync matching GPU/OS shader cache from a cloud or local index.json (double SHA-256 verified)
       DirectMetal cache clear            Clear pre-compiled shader cache
       DirectMetal attest [--nonce <hex>] [--sandbox] [--target <path>] [--pid <pid>]
                                          Collect hardware Secure Enclave attestation v2 JSON (opt-in)
@@ -258,7 +260,7 @@ private func runCLI(args: [String]) -> Int32 {
     case "info":
         let hw = RuntimeLauncher.queryHardwareInfo()
         let resolved = try? RuntimeLauncher.resolveRuntimePaths()
-        let runtimeStatus = resolved != nil ? "ready (\(resolved!.runtimeRoot.path))" : "uninitialized"
+        let rosettaStatus = resolved?.wineBin != nil ? "ready (\(resolved!.runtimeRoot.path))" : "omitted (slim arm64ec-only)"
         let arm64ecStatus = resolved?.arm64ecRoot != nil ? "ready (\(resolved!.arm64ecRoot!.path))" : "uninitialized"
         let infoPayload: [String: Any] = [
             "gpu_name": hw.gpuName,
@@ -274,7 +276,7 @@ private func runCLI(args: [String]) -> Int32 {
             "supports_metalfx_spatial": hw.supportsMetalFXSpatial,
             "supports_metalfx_temporal": hw.supportsMetalFXTemporal,
             "supports_metal4fx": hw.supportsMetal4FX,
-            "runtime": runtimeStatus,
+            "runtime": rosettaStatus,
             "arm64ec_fex_runtime": arm64ecStatus,
             "vk_compat_layer": resolved?.vkCompatLayerDir?.path ?? "unavailable",
             "kosmickrisp_icd": resolved?.arm64ecKosmicKrispICD?.path ?? "unavailable",
@@ -325,10 +327,13 @@ private func runCLI(args: [String]) -> Int32 {
             }
             do {
                 let paths = try RuntimeLauncher.resolveRuntimePaths()
+                guard let base = paths.arm64ecBasePrefix ?? paths.basePrefix else {
+                    throw LauncherError.runtimeNotFound("No base-prefix available in DirectMetal runtime")
+                }
                 let hw = RuntimeLauncher.queryHardwareInfo()
                 let res = try mgr.createOrEnsure(
                     name: args[2],
-                    basePrefix: paths.basePrefix,
+                    basePrefix: base,
                     shaderCacheKey: hw.cacheKey,
                     forceReset: (sub == "reset")
                 )
@@ -361,7 +366,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "cache":
         guard args.count >= 2 else {
-            fputs("error: cache requires subcommand (status|export|import|clear)\n", stderr)
+            fputs("error: cache requires subcommand (status|export|import|sync|clear)\n", stderr)
             return 1
         }
         let sub = args[1]
@@ -419,6 +424,55 @@ private func runCLI(args: [String]) -> Int32 {
                 return 0
             } catch {
                 fputs("cache import failed: \(error)\n", stderr)
+                return 1
+            }
+        case "sync":
+            guard args.count >= 3 else {
+                fputs("error: cache sync requires <index_url_or_path> (--build-hash <hash> | --exe <path>) [--force]\n", stderr)
+                return 1
+            }
+            let indexSrc = args[2]
+            var buildHash: String? = nil
+            var exePath: String? = nil
+            var force = false
+            var idx = 3
+            while idx < args.count {
+                if args[idx] == "--build-hash", idx + 1 < args.count {
+                    buildHash = args[idx + 1]
+                    idx += 2
+                } else if args[idx] == "--exe", idx + 1 < args.count {
+                    exePath = args[idx + 1]
+                    idx += 2
+                } else if args[idx] == "--force" {
+                    force = true
+                    idx += 1
+                } else {
+                    idx += 1
+                }
+            }
+            do {
+                let resolvedHash: String
+                if let h = buildHash, !h.isEmpty {
+                    resolvedHash = h
+                } else if let exe = exePath {
+                    resolvedHash = try PEInspector.inspect(exePath: exe).buildHash
+                } else {
+                    fputs("error: cache sync requires either --build-hash <hash> or --exe <path>\n", stderr)
+                    return 1
+                }
+                let res = try ShaderCacheManager.syncFromIndex(
+                    indexSource: indexSrc,
+                    buildHash: resolvedHash,
+                    allowCrossBuild: force
+                )
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? enc.encode(res), let str = String(data: data, encoding: .utf8) {
+                    print(str)
+                }
+                return 0
+            } catch {
+                fputs("cache sync failed: \(error)\n", stderr)
                 return 1
             }
         case "clear":
