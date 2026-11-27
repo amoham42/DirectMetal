@@ -11,6 +11,7 @@ SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:--}"
 NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
 REQUEST_SIGN=0
 REPACKAGE=0
+DMG_FORMAT="ULFO"
 PACKAGE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
@@ -35,6 +36,10 @@ while [[ $# -gt 0 ]]; do
       PACKAGE_ARGS+=(--include-rosetta)
       shift
       ;;
+    --ultra-compress)
+      DMG_FORMAT="ULMO"
+      shift
+      ;;
     --sign)
       REQUEST_SIGN=1
       if [[ $# -ge 2 && "$2" != --* ]]; then
@@ -52,7 +57,7 @@ while [[ $# -gt 0 ]]; do
       cat <<EOF
 Usage: $(basename "$0") [options]
 
-Builds a compressed macOS arm64 DMG installer (UDZO) + SHA-256 checksum,
+Builds a compressed macOS arm64 DMG installer (default ULFO / Apple LZFSE, or ULMO / LZMA) + SHA-256 checksum,
 with optional Apple Developer ID code signing, Notarytool submission, and Ticket Stapling.
 
 Options:
@@ -61,6 +66,7 @@ Options:
   --volname <name>          Mounted volume name (default: DirectMetal)
   --repackage               Force running scripts/package_app.sh before building the DMG
   --include-rosetta         Include legacy Rosetta 2 runtime if packaging DirectMetal.app
+  --ultra-compress          Use ULMO (LZMA) instead of default ULFO (LZFSE) for maximum release compression
   --sign [<identity>]       Sign DMG with Developer ID (uses APPLE_SIGN_IDENTITY if <identity> omitted)
   --notary-profile <name>   Submit to Apple Notary Service & staple ticket (or set APPLE_NOTARY_PROFILE)
   -h, --help                Show this help message
@@ -159,15 +165,19 @@ if [[ -n "${ICON_CANDIDATE}" ]]; then
 fi
 
 rm -f "${DMG_PATH}" "${SHA_PATH}"
-echo "[DirectMetal] Building compressed UDZO disk image: ${DMG_PATH}..."
+echo "[DirectMetal] Building compressed ${DMG_FORMAT} disk image: ${DMG_PATH}..."
+DMG_T0="$(python3 -c 'import time; print(f"{time.monotonic():.6f}")')"
 hdiutil create \
   -volname "${VOL_NAME}" \
   -srcfolder "${STAGE_DIR}" \
   -fs HFS+ \
   -ov \
-  -format UDZO \
-  -imagekey zlib-level=9 \
+  -format "${DMG_FORMAT}" \
   "${DMG_PATH}" >/dev/null
+DMG_ELAPSED="$(python3 -c "import time; print(f'{time.monotonic() - ${DMG_T0}:.2f}')")"
+
+echo "[DirectMetal] Verifying disk image integrity (hdiutil verify)..."
+hdiutil verify "${DMG_PATH}" >/dev/null
 
 if [[ -n "${SIGN_IDENTITY}" && "${SIGN_IDENTITY}" != "-" ]]; then
   echo "[DirectMetal] Signing DMG with Developer ID: ${SIGN_IDENTITY}..."
@@ -200,8 +210,10 @@ EOF
 fi
 
 (cd "${OUT_DIR}" && shasum -a 256 "${DMG_FILENAME}") > "${SHA_PATH}"
+DMG_BYTES="$(stat -f%z "${DMG_PATH}")"
+DMG_MIB="$(python3 -c "print(f'{${DMG_BYTES} / (1024 * 1024):.1f}')")"
 DMG_SIZE="$(du -sh "${DMG_PATH}" | awk '{print $1}')"
 DMG_SHA="$(awk '{print $1}' "${SHA_PATH}")"
 
-echo "[DirectMetal] Built ${DMG_PATH} (${DMG_SIZE})"
+echo "[DirectMetal] Built ${DMG_PATH} (format: ${DMG_FORMAT}, size: ${DMG_MIB} MiB / ${DMG_SIZE} / ${DMG_BYTES} bytes, build time: ${DMG_ELAPSED}s)"
 echo "[DirectMetal] SHA-256: ${DMG_SHA} -> ${SHA_PATH}"
