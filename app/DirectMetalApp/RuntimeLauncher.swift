@@ -489,7 +489,18 @@ enum RuntimeLauncher {
                 env["MULLION_CONFIG"] = joined
             }
         }
-        if enableHUD {
+        let is64BitExe = profile?.is64Bit ?? true
+        let useDXVKForD3D9: Bool = {
+            guard isPureD3D9 || dx9Backend != .auto else { return false }
+            switch dx9Backend {
+            case .dxvk: return true
+            case .wined3d: return false
+            case .auto: return useARM64EC && (is64BitExe || arm64ecSupports32Bit)
+            }
+        }()
+        // On 32-bit DXVK+KosmicKrisp swapchains, macOS 27.2's libMTLHud throws NSInvalidArgumentException;
+        // use DXVK's native Vulkan HUD instead of MTL_HUD_ENABLED on that path.
+        if enableHUD && !(useDXVKForD3D9 && useARM64EC && !is64BitExe) {
             env["MTL_HUD_ENABLED"] = "1"
         }
 
