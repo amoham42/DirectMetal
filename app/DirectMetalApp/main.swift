@@ -582,6 +582,7 @@ private func runCLI(args: [String]) -> Int32 {
         var upscaleMode: String? = nil
         var engine: ExecutionEngine = .auto
         var fexTSO = true
+        var fexTSOOverride: Bool? = nil
         var dx9Backend: DX9Backend = .auto
         var perfProfile: PerfProfile = .balanced
         var retinaMode: Bool? = nil
@@ -604,7 +605,9 @@ private func runCLI(args: [String]) -> Int32 {
                 engine = ExecutionEngine(rawValue: args[i + 1].lowercased()) ?? .auto
                 i += 2
             } else if a == "--fex-tso", i + 1 < args.count {
-                fexTSO = (args[i + 1].lowercased() != "off" && args[i + 1] != "0")
+                let parsed = (args[i + 1].lowercased() != "off" && args[i + 1] != "0")
+                fexTSO = parsed
+                fexTSOOverride = parsed
                 i += 2
             } else if a == "--dx9-backend", i + 1 < args.count {
                 dx9Backend = DX9Backend(rawValue: args[i + 1].lowercased()) ?? .auto
@@ -659,7 +662,8 @@ private func runCLI(args: [String]) -> Int32 {
                 virtualDesktop: virtualDesktop,
                 sandboxed: sandboxed,
                 sandboxOffline: sandboxOffline,
-                sandboxOutputDir: sandboxOutDir
+                sandboxOutputDir: sandboxOutDir,
+                fexTSOOverride: fexTSOOverride
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)
