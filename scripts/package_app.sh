@@ -95,34 +95,44 @@ ARM64EC_SRC="${REPO_ROOT}/build/runtime-arm64ec"
 if [[ -d "${ARM64EC_SRC}/base-prefix" ]]; then
   echo "[DirectMetal] Cloning self-contained ARM64EC + FEX-Emu runtime via APFS CoW..."
   cp -Rc "${ARM64EC_SRC}" "${CONTENTS}/Runtime-ARM64EC"
-  # Keep native ARM64X DXVK 3.1.1 (loaded via GRAPHICS_BACKEND=dxvk) instead of overwriting system32/d3d9.dll with x86_64 DXVK 1.10.3
-  # Strip unused archives/installers/headers/VR/legacy translators from bundled ARM64EC copy
-  MSW_BUNDLE_ROOT="$(find "${CONTENTS}/Runtime-ARM64EC/wine-dist" -maxdepth 2 -type d -name "metalsharp-wine-*" | head -n 1 || true)"
-  if [[ -n "${MSW_BUNDLE_ROOT}" ]]; then
-    echo "[DirectMetal] Stripping unused bloat from bundled ARM64EC runtime..."
-    rm -rf "${MSW_BUNDLE_ROOT}/include" \
-           "${MSW_BUNDLE_ROOT}/share/man" \
-           "${MSW_BUNDLE_ROOT}/share/doc" \
-           "${MSW_BUNDLE_ROOT}/share/wine/mono" \
-           "${MSW_BUNDLE_ROOT}/share/wine/gecko" \
-           "${MSW_BUNDLE_ROOT}/share/metalsharp/archives" \
-           "${MSW_BUNDLE_ROOT}/share/metalsharp/assets" \
-           "${MSW_BUNDLE_ROOT}/share/metalsharp/redist" \
-           "${MSW_BUNDLE_ROOT}/lib/vkd3d-proton" \
-           "${MSW_BUNDLE_ROOT}/lib/zink" \
-           "${MSW_BUNDLE_ROOT}/lib/metalvr" \
-           "${MSW_BUNDLE_ROOT}/bin/metalvrd" 2>/dev/null || true
-    find "${MSW_BUNDLE_ROOT}/lib/wine" -type f -name "*.a" -delete 2>/dev/null || true
-    # Disable FEX ProfileStats in bundled Config.json (avoids per-frame profiling CPU overhead)
-    if [[ -f "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json" ]]; then
-      sed -i '' 's/"ProfileStats":[[:space:]]*"1"/"ProfileStats": "0"/g' "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json"
-    fi
-    # Install D3D12 Placed-Resource Alignment Guard into ARM64EC base-prefix (proxies to Mullion's ARM64X d3d12.dll)
-    if [[ -f "${D3D12_GUARD_DLL}" && -f "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" ]]; then
+  MSW_APP="${CONTENTS}/Runtime-ARM64EC/wine-dist/MetalSharp-Wine.app"
+  if [[ -d "${MSW_APP}" ]]; then
+    # Keep MetalSharp-Wine.app 100% untouched so its Apple Developer ID signature,
+    # notarization, and com.apple.developer.cross-architecture-support entitlement remain valid!
+    echo "[DirectMetal] Preserving signed MetalSharp-Wine.app (verifying signature & cross-arch profile)..."
+    codesign --verify --strict --deep "${MSW_APP}"
+    if [[ -f "${D3D12_GUARD_DLL}" && -f "${MSW_APP}/Contents/lib/mullion/aarch64-windows/d3d12.dll" ]]; then
       echo "[DirectMetal] Installing D3D12 Alignment Guard into ARM64EC base-prefix..."
-      cp "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" \
+      cp "${MSW_APP}/Contents/lib/mullion/aarch64-windows/d3d12.dll" \
          "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12_mullion.dll"
       cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12.dll"
+    fi
+  else
+    MSW_BUNDLE_ROOT="$(find "${CONTENTS}/Runtime-ARM64EC/wine-dist" -maxdepth 2 -type d -name "metalsharp-wine-*" | head -n 1 || true)"
+    if [[ -n "${MSW_BUNDLE_ROOT}" ]]; then
+      echo "[DirectMetal] Stripping unused bloat from bundled ARM64EC runtime..."
+      rm -rf "${MSW_BUNDLE_ROOT}/include" \
+             "${MSW_BUNDLE_ROOT}/share/man" \
+             "${MSW_BUNDLE_ROOT}/share/doc" \
+             "${MSW_BUNDLE_ROOT}/share/wine/mono" \
+             "${MSW_BUNDLE_ROOT}/share/wine/gecko" \
+             "${MSW_BUNDLE_ROOT}/share/metalsharp/archives" \
+             "${MSW_BUNDLE_ROOT}/share/metalsharp/assets" \
+             "${MSW_BUNDLE_ROOT}/share/metalsharp/redist" \
+             "${MSW_BUNDLE_ROOT}/lib/vkd3d-proton" \
+             "${MSW_BUNDLE_ROOT}/lib/zink" \
+             "${MSW_BUNDLE_ROOT}/lib/metalvr" \
+             "${MSW_BUNDLE_ROOT}/bin/metalvrd" 2>/dev/null || true
+      find "${MSW_BUNDLE_ROOT}/lib/wine" -type f -name "*.a" -delete 2>/dev/null || true
+      if [[ -f "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json" ]]; then
+        sed -i '' 's/"ProfileStats":[[:space:]]*"1"/"ProfileStats": "0"/g' "${MSW_BUNDLE_ROOT}/share/fex-emu/Config.json"
+      fi
+      if [[ -f "${D3D12_GUARD_DLL}" && -f "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" ]]; then
+        echo "[DirectMetal] Installing D3D12 Alignment Guard into ARM64EC base-prefix..."
+        cp "${MSW_BUNDLE_ROOT}/lib/mullion/aarch64-windows/d3d12.dll" \
+           "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12_mullion.dll"
+        cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime-ARM64EC/base-prefix/drive_c/windows/system32/d3d12.dll"
+      fi
     fi
   fi
 fi

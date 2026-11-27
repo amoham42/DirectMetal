@@ -332,6 +332,17 @@ enum RuntimeLauncher {
         let buildHash = profile?.buildHash ?? "unknown"
 
         let hasARM64EC = (paths.arm64ecWineBin != nil && paths.arm64ecBasePrefix != nil)
+        let osVer = ProcessInfo.processInfo.operatingSystemVersion
+        let isMacOS26_4Plus = (osVer.majorVersion > 26) || (osVer.majorVersion == 26 && osVer.minorVersion >= 4)
+        let hasCrossArchProfile: Bool = {
+            guard let wineBin = paths.arm64ecWineBin else { return false }
+            let appContents = wineBin.resolvingSymlinksInPath()
+                .deletingLastPathComponent()
+                .deletingLastPathComponent()
+            return fm.fileExists(atPath: appContents.appendingPathComponent("embedded.provisionprofile").path)
+        }()
+        let arm64ecSupports32Bit = hasARM64EC && isMacOS26_4Plus && hasCrossArchProfile
+
         let useARM64EC: Bool
         switch engine {
         case .arm64ec:
@@ -342,7 +353,8 @@ enum RuntimeLauncher {
         case .rosetta:
             useARM64EC = false
         case .auto:
-            useARM64EC = hasARM64EC && (profile?.is64Bit ?? true)
+            let is64 = profile?.is64Bit ?? true
+            useARM64EC = hasARM64EC && (is64 || arm64ecSupports32Bit)
         }
 
         let selectedWine = useARM64EC ? paths.arm64ecWineBin! : paths.wineBin
@@ -406,15 +418,10 @@ enum RuntimeLauncher {
 
         var extraMullionCfg: [String] = []
         if perfProfile == .ultra {
-            // Skip per-frame GPU counter/timestamp passes & enable parallel D3D12 command encoding for peak FPS/1%-lows
+            // Skip per-frame GPU counter/timestamp passes for peak FPS & 1%-lows
+            // (Keep single-queue command encoding on Mullion 2702d6e1+: MULLION_D3D12_PARALLEL_COMMANDS=1 adds thread-dispatch overhead on sub-ms frames)
             extraMullionCfg.append("d3d11.timestampQueries=False")
             extraMullionCfg.append("d3d12.timestampQueries=False")
-            if env["MULLION_D3D12_PARALLEL_COMMANDS"] == nil {
-                env["MULLION_D3D12_PARALLEL_COMMANDS"] = "1"
-            }
-            if env["MULLION_D3D12_ENCODE_THREADS"] == nil {
-                env["MULLION_D3D12_ENCODE_THREADS"] = "4"
-            }
         }
         // Enable our D3D12 Placed-Resource Alignment Guard when bundled in prefix (guards UE5 32KB offsets with 0% overhead on valid calls)
         if env["DIRECTMETAL_DISABLE_D3D12_GUARD"] != "1" {
@@ -487,9 +494,9 @@ enum RuntimeLauncher {
         }
 
         if isPureD3D9 || dx9Backend != .auto {
-            // 64-bit D3D9 games on ARM64EC+FEX run hardware-accelerated DXVK -> Vulkan 1.4 -> Mesa KosmicKrisp -> Metal.
-            // 32-bit D3D9 games default to WineD3D GL + Virtual Desktop (since 32-bit Wine 11.21 winevulkan lacks
-            // VK_EXT_external_memory_host on MoltenVK). Explicit --dx9-backend dxvk/wined3d always wins.
+            // On ARM64EC+FEX (64-bit always, and 32-bit on macOS 26.4+ with cross-arch profile),
+            // run MetalVulkan 7.0 DXVK 3.1.1 -> Vulkan 1.4 -> Mesa KosmicKrisp -> Metal.
+            // On Rosetta 2 (32-bit fallback on macOS < 26.4), default to WineD3D GL + Virtual Desktop.
             let is64 = profile?.is64Bit ?? true
             let useDXVK: Bool
             switch dx9Backend {
@@ -498,7 +505,7 @@ enum RuntimeLauncher {
             case .wined3d:
                 useDXVK = false
             case .auto:
-                useDXVK = is64 && useARM64EC
+                useDXVK = useARM64EC && (is64 || arm64ecSupports32Bit)
             }
             if !(useDXVK && useARM64EC) {
                 let overrideEntry = useDXVK ? "d3d9=n,b" : "d3d9=b"
@@ -515,8 +522,9 @@ enum RuntimeLauncher {
                     env["DXVK_LOG_PATH"] = "none"
                 }
                 if useARM64EC {
-                    // Use native ARM64X DXVK 3.1.1 (MetalVulkan) + Mesa KosmicKrisp Vulkan 1.4
+                    // Use MetalVulkan 7.0 DXVK 3.1.1 + Mesa KosmicKrisp Vulkan 1.4
                     env["GRAPHICS_BACKEND"] = "dxvk"
+                    env["SharpVK_Switch"] = "1"
                     if let kkICD = paths.arm64ecKosmicKrispICD {
                         env["VK_DRIVER_FILES"] = kkICD.path
                         env["VK_ICD_FILENAMES"] = kkICD.path
