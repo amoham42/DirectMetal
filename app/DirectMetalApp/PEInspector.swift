@@ -63,8 +63,149 @@ private extension Data {
     }
 }
 
+/// Disk-backed memo of `PEInspector` results at `~/Library/Caches/DirectMetal/pe_inspect_cache.json`.
+///
+/// Keyed by canonical (`realpath`) EXE path and validated with a handful of `stat(2)` calls:
+///   * EXE `(mtime, size)`
+///   * mtimes of every directory whose listing feeds detection (EXE dir, Source `bin/`, `bin/x64/`,
+///     UE `Engine/Plugins/Marketplace`), so newly dropped DLSS/FSR/XeSS plugins invalidate cleanly.
+/// `DIRECTMETAL_PE_CACHE_PATH` overrides the location; `DIRECTMETAL_DISABLE_PE_CACHE=1` bypasses it.
+private final class PEInspectCache: @unchecked Sendable {
+    struct Entry: Codable {
+        let mtime: Double
+        let size: UInt64
+        let dirMtimes: [Double]
+        let profile: PEProfile
+    }
+
+    static let shared = PEInspectCache()
+    static let schemaVersion = 1
+
+    private struct DiskFormat: Codable {
+        let version: Int
+        let entries: [String: Entry]
+    }
+
+    private let lock = NSLock()
+    private var entries: [String: Entry]?
+    let disabled: Bool
+    let fileURL: URL
+
+    private init() {
+        let env = ProcessInfo.processInfo.environment
+        disabled = env["DIRECTMETAL_DISABLE_PE_CACHE"] == "1"
+        if let p = env["DIRECTMETAL_PE_CACHE_PATH"], !p.isEmpty {
+            fileURL = URL(fileURLWithPath: p)
+        } else {
+            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            fileURL = caches.appendingPathComponent("DirectMetal/pe_inspect_cache.json")
+        }
+    }
+
+    static func canonicalPath(_ path: String) -> String {
+        guard let resolved = realpath(path, nil) else {
+            return URL(fileURLWithPath: path).standardizedFileURL.path
+        }
+        defer { free(resolved) }
+        return String(cString: resolved)
+    }
+
+    /// Returns `(mtime, size)` for a file, or nil if it cannot be stat'ed.
+    static func statFile(_ path: String) -> (mtime: Double, size: UInt64)? {
+        var st = stat()
+        guard stat(path, &st) == 0 else { return nil }
+        let mt = Double(st.st_mtimespec.tv_sec) + Double(st.st_mtimespec.tv_nsec) / 1_000_000_000.0
+        return (mt, UInt64(st.st_size))
+    }
+
+    /// Mtimes of the directories `inspectUncached` lists (same derivation as the uncached scan).
+    static func neighborhoodMtimes(exePath: String) -> [Double] {
+        let exeDir = (exePath as NSString).deletingLastPathComponent
+        // UE5 layout: <GameRoot>/<Project>/Binaries/Win64/<Game>.exe -> <GameRoot>/Engine/Plugins/Marketplace
+        var ueRoot = exeDir
+        for _ in 0..<3 { ueRoot = (ueRoot as NSString).deletingLastPathComponent }
+        let dirs = [
+            exeDir,
+            exeDir + "/bin",
+            exeDir + "/bin/x64",
+            ueRoot + "/Engine/Plugins/Marketplace",
+        ]
+        return dirs.map { statFile($0)?.mtime ?? 0 }
+    }
+
+    private func loadLocked() -> [String: Entry] {
+        if let e = entries { return e }
+        var loaded: [String: Entry] = [:]
+        if let data = try? Data(contentsOf: fileURL),
+           let disk = try? JSONDecoder().decode(DiskFormat.self, from: data),
+           disk.version == Self.schemaVersion {
+            loaded = disk.entries
+        }
+        entries = loaded
+        return loaded
+    }
+
+    func lookup(key: String, mtime: Double, size: UInt64, dirMtimes: [Double]) -> PEProfile? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let e = loadLocked()[key],
+              e.mtime == mtime, e.size == size, e.dirMtimes == dirMtimes else { return nil }
+        return e.profile
+    }
+
+    func store(key: String, entry: Entry) {
+        lock.lock()
+        defer { lock.unlock() }
+        var all = loadLocked()
+        all[key] = entry
+        if all.count > 4096 {
+            all = all.filter { access($0.key, F_OK) == 0 }
+        }
+        entries = all
+        let disk = DiskFormat(version: Self.schemaVersion, entries: all)
+        guard let data = try? JSONEncoder().encode(disk) else { return }
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true
+        )
+        try? data.write(to: fileURL, options: .atomic)
+    }
+}
+
 enum PEInspector {
     static func inspect(exePath: String) throws -> PEProfile {
+        let cache = PEInspectCache.shared
+        guard !cache.disabled else { return try inspectUncached(exePath: exePath) }
+
+        let url = URL(fileURLWithPath: exePath)
+        let key = PEInspectCache.canonicalPath(url.path)
+        guard let st = PEInspectCache.statFile(key) else {
+            return try inspectUncached(exePath: exePath)
+        }
+        let dirMtimes = PEInspectCache.neighborhoodMtimes(exePath: url.path)
+
+        if let hit = cache.lookup(key: key, mtime: st.mtime, size: st.size, dirMtimes: dirMtimes) {
+            // Preserve caller-visible path fields exactly as an uncached inspect would report them.
+            if hit.path == url.path { return hit }
+            return PEProfile(
+                path: url.path,
+                fileName: url.lastPathComponent,
+                architecture: hit.architecture,
+                is64Bit: hit.is64Bit,
+                timeDateStamp: hit.timeDateStamp,
+                sizeOfImage: hit.sizeOfImage,
+                buildHash: hit.buildHash,
+                importedDLLs: hit.importedDLLs,
+                detectedAPIs: hit.detectedAPIs,
+                detectedUpscalers: hit.detectedUpscalers
+            )
+        }
+
+        let profile = try inspectUncached(exePath: exePath)
+        cache.store(key: key, entry: .init(mtime: st.mtime, size: st.size, dirMtimes: dirMtimes, profile: profile))
+        return profile
+    }
+
+    private static func inspectUncached(exePath: String) throws -> PEProfile {
         let url = URL(fileURLWithPath: exePath)
         guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
             throw PEInspectError.unreadableFile("Cannot open PE binary at \(exePath)")

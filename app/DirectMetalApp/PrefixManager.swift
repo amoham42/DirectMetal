@@ -59,12 +59,24 @@ final class PrefixManager {
                         shaderCacheKey: String = "",
                         forceReset: Bool = false) throws -> (url: URL, clonedNow: Bool, cloneMs: Double) {
         let fm = FileManager.default
-        guard fm.fileExists(atPath: basePrefix.appendingPathComponent("system.reg").path) else {
+        let dest = prefixURL(named: name)
+
+        // Hot path: existing prefix -> a single access(2), no base-prefix probing / hydration at all.
+        if !forceReset && access(dest.path, F_OK) == 0 {
+            return (dest, false, 0.0)
+        }
+
+        // Accept a slim `base-prefix-dehydrated/` bundle transparently (hydrates once per runtime fingerprint).
+        var basePrefix = basePrefix
+        if access(basePrefix.appendingPathComponent("system.reg").path, F_OK) != 0,
+           BasePrefixHydrator.isDehydratedBundle(basePrefix) {
+            basePrefix = try BasePrefixHydrator.resolveOrHydrate(dehydratedDir: basePrefix)
+        }
+        guard access(basePrefix.appendingPathComponent("system.reg").path, F_OK) == 0 else {
             throw PrefixError.missingBasePrefix("Golden base prefix not initialized at \(basePrefix.path). Run scripts/setup_runtime.sh first.")
         }
         try fm.createDirectory(at: prefixRoot, withIntermediateDirectories: true)
 
-        let dest = prefixURL(named: name)
         if forceReset && fm.fileExists(atPath: dest.path) {
             try fm.removeItem(at: dest)
         }
@@ -73,14 +85,9 @@ final class PrefixManager {
             return (dest, false, 0.0)
         }
 
-        let start = DispatchTime.now().uptimeNanoseconds
-        let rc = Darwin.clonefile(basePrefix.path, dest.path, UInt32(CLONE_NOFOLLOW))
-        let elapsedMs = Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
-
-        if rc != 0 {
-            let errStr = String(cString: strerror(errno))
-            throw PrefixError.cloneFailed("APFS clonefile(\(basePrefix.path) -> \(dest.path)) failed: \(errStr)")
-        }
+        let elapsedMs = try Self.cloneTree(from: basePrefix, to: dest)
+        // Hydration marker belongs to the shared golden prefix only.
+        unlink(dest.appendingPathComponent(BasePrefixHydrator.markerFileName).path)
 
         let formatter = ISO8601DateFormatter()
         let meta = PrefixMetadata(
@@ -96,6 +103,30 @@ final class PrefixManager {
         }
 
         return (dest, true, elapsedMs)
+    }
+
+    /// Clones a whole directory tree with a single Darwin `clonefile(2)` syscall (APFS copy-on-write,
+    /// no `/bin/cp` fork/exec). Falls back to `FileManager.copyItem` only when the source lives on a
+    /// different volume (`EXDEV`) or the filesystem lacks clone support (`ENOTSUP`).
+    /// Returns elapsed milliseconds.
+    @discardableResult
+    static func cloneTree(from src: URL, to dst: URL) throws -> Double {
+        let start = DispatchTime.now().uptimeNanoseconds
+        if Darwin.clonefile(src.path, dst.path, UInt32(CLONE_NOFOLLOW)) != 0 {
+            let err = errno
+            guard err == EXDEV || err == ENOTSUP else {
+                throw PrefixError.cloneFailed(
+                    "APFS clonefile(\(src.path) -> \(dst.path)) failed: \(String(cString: strerror(err)))"
+                )
+            }
+            do {
+                try FileManager.default.copyItem(at: src, to: dst)
+            } catch {
+                try? FileManager.default.removeItem(at: dst)
+                throw PrefixError.cloneFailed("Cross-volume copy \(src.path) -> \(dst.path) failed: \(error)")
+            }
+        }
+        return Double(DispatchTime.now().uptimeNanoseconds - start) / 1_000_000.0
     }
 
     func listPrefixes() -> [String] {

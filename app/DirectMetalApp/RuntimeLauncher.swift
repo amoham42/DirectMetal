@@ -90,7 +90,15 @@ enum RuntimeLauncher {
         return String(cString: buf)
     }
 
+    /// GPU family, Metal 4 / MetalFX capabilities and the macOS build never change during a process
+    /// lifetime: probe once (MTLDevice creation + sysctl) and reuse everywhere (GUI, CLI, shader cache, launch).
+    static let cachedHardwareInfo: MetalHardwareInfo = probeHardwareInfo()
+
     static func queryHardwareInfo() -> MetalHardwareInfo {
+        return cachedHardwareInfo
+    }
+
+    private static func probeHardwareInfo() -> MetalHardwareInfo {
         let osVer = ProcessInfo.processInfo.operatingSystemVersion
         let osStr = "\(osVer.majorVersion).\(osVer.minorVersion).\(osVer.patchVersion)"
         let buildStr = sysctlString("kern.osversion")
@@ -155,6 +163,9 @@ enum RuntimeLauncher {
         )
     }
 
+    /// Resolves the ARM64EC runtime without hydrating anything (keeps `DirectMetal info` instant).
+    /// `basePrefix` is either the unpacked `base-prefix/` or the slim `base-prefix-dehydrated/` bundle;
+    /// call `ensureBasePrefix(paths:)` / `BasePrefixHydrator.resolveOrHydrate` before cloning from it.
     static func resolveARM64ECRuntime() -> (root: URL, wine: URL, wineserver: URL, basePrefix: URL, kosmicICD: URL?)? {
         let fm = FileManager.default
         var candidates: [URL] = []
@@ -177,9 +188,17 @@ enum RuntimeLauncher {
                 ? wineLauncher
                 : root.appendingPathComponent("bin/wine")
             let ws = root.appendingPathComponent("bin/wineserver")
-            let basePrefix = root.appendingPathComponent("base-prefix", isDirectory: true)
-            if fm.isExecutableFile(atPath: wine.path) &&
-               fm.fileExists(atPath: basePrefix.appendingPathComponent("system.reg").path) {
+            let unpacked = root.appendingPathComponent(BasePrefixHydrator.unpackedDirName, isDirectory: true)
+            let dehydrated = root.appendingPathComponent(BasePrefixHydrator.dehydratedDirName, isDirectory: true)
+            let basePrefix: URL
+            if fm.fileExists(atPath: unpacked.appendingPathComponent("system.reg").path) {
+                basePrefix = unpacked
+            } else if BasePrefixHydrator.isDehydratedBundle(dehydrated) {
+                basePrefix = dehydrated
+            } else {
+                continue
+            }
+            if fm.isExecutableFile(atPath: wine.path) {
                 let icdCandidate = wine.resolvingSymlinksInPath()
                     .deletingLastPathComponent()
                     .deletingLastPathComponent()
@@ -282,6 +301,20 @@ enum RuntimeLauncher {
         )
     }
 
+    /// Returns a ready-to-clone ARM64EC golden prefix, hydrating the slim `base-prefix-dehydrated/` bundle
+    /// on first use (once per runtime fingerprint, APFS clonefile => ~zero extra disk). `nil` without ARM64EC.
+    static func ensureBasePrefix(paths: RuntimePaths) throws -> URL? {
+        guard let root = paths.arm64ecRoot, let wine = paths.arm64ecWineBin, paths.arm64ecBasePrefix != nil else {
+            return nil
+        }
+        let res = try BasePrefixHydrator.resolveOrHydrate(runtimeRoot: root, wineBin: wine)
+        if res.hydratedNow {
+            fputs(String(format: "DirectMetal: hydrated ARM64EC base prefix in %.1f ms -> %@\n",
+                         res.hydrateMs, res.basePrefix.path), stderr)
+        }
+        return res.basePrefix
+    }
+
     static func shaderCacheRoot() -> URL {
         let fm = FileManager.default
         let cachesDir = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
@@ -376,9 +409,11 @@ enum RuntimeLauncher {
 
     /// Configures Wine's Mac Driver Retina backing scale (`RetinaMode=y|n`) and Windows system PPI (`LogPixels`)
     /// directly in the prefix's `user.reg` (~0.2 ms) so games respect macOS Retina PPI.
+    /// Dirty-checked: when both values are already current, the (multi-MB) hive is not rewritten at all.
     static func configurePrefixRetinaPPI(prefixURL: URL, enableRetina: Bool, dpi: Int) {
         let userRegURL = prefixURL.appendingPathComponent("user.reg")
-        guard var content = try? String(contentsOf: userRegURL, encoding: .utf8) else { return }
+        guard let original = try? String(contentsOf: userRegURL, encoding: .utf8) else { return }
+        var content = original
 
         let targetDpi = enableRetina ? dpi : 96
         let dpiHex = String(format: "%08x", targetDpi)
@@ -402,6 +437,7 @@ enum RuntimeLauncher {
             unixTs: unixTs
         )
 
+        guard content != original else { return }
         try? content.write(to: userRegURL, atomically: true, encoding: .utf8)
     }
 
@@ -420,7 +456,8 @@ enum RuntimeLauncher {
         virtualDesktop: String? = nil,
         sandboxed: Bool = false,
         sandboxOffline: Bool = false,
-        sandboxOutputDir: String? = nil
+        sandboxOutputDir: String? = nil,
+        fexTSOOverride: Bool? = nil
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -471,7 +508,8 @@ enum RuntimeLauncher {
         }
 
         let selectedWine = useARM64EC ? paths.arm64ecWineBin! : paths.wineBin!
-        let selectedBasePrefix = useARM64EC ? paths.arm64ecBasePrefix! : paths.basePrefix!
+        // Slim bundles ship `base-prefix-dehydrated/`: hydrate lazily here (once per runtime fingerprint).
+        let selectedBasePrefix = useARM64EC ? (try ensureBasePrefix(paths: paths))! : paths.basePrefix!
         let activeEngine = useARM64EC ? "arm64ec-fex" : "rosetta2"
 
         let shaderCacheDir = shaderCacheRoot()
@@ -497,7 +535,19 @@ enum RuntimeLauncher {
         env["WINEPREFIX"] = prefixURL.path
         env["WINEMSYNC"] = "1"
         if useARM64EC {
-            env["FEX_TSOENABLED"] = fexTSO ? "1" : "0"
+            // TSO emulation: `fexTSOOverride` always wins.
+            // `ultra` defaults TSO off unless FEX_TSOENABLED is set explicitly in the environment
+            // (+4-7% 1%-lows on D3D11/D3D12/Deferred PBR, M1 Pro / Mullion 2702d6e1);
+            // `balanced` keeps the `fexTSO` choice (default on) for thread-safety on titles like RDR2.
+            if let forced = fexTSOOverride {
+                env["FEX_TSOENABLED"] = forced ? "1" : "0"
+            } else if perfProfile == .ultra {
+                if env["FEX_TSOENABLED"] == nil {
+                    env["FEX_TSOENABLED"] = "0"
+                }
+            } else {
+                env["FEX_TSOENABLED"] = fexTSO ? "1" : "0"
+            }
             if env["FEX_PROFILESTATS"] == nil {
                 env["FEX_PROFILESTATS"] = "0"
             }
@@ -540,6 +590,13 @@ enum RuntimeLauncher {
             // (Keep single-queue command encoding on Mullion 2702d6e1+: MULLION_D3D12_PARALLEL_COMMANDS=1 adds thread-dispatch overhead on sub-ms frames)
             extraMullionCfg.append("d3d11.timestampQueries=False")
             extraMullionCfg.append("d3d12.timestampQueries=False")
+            // Measured on M1 Pro (macOS 27.2.1, Mullion 2702d6e1): SM 6.0 Deferred PBR 1%-low 919 -> 1,353 FPS (+47.2%).
+            if env["MULLION_D3D12_GPU_ERRORS"] == nil {
+                env["MULLION_D3D12_GPU_ERRORS"] = "0"
+            }
+            if env["MULLION_D3D12_NATIVE16"] == nil {
+                env["MULLION_D3D12_NATIVE16"] = "1"
+            }
         }
         // Enable our D3D12 Placed-Resource Alignment Guard when bundled in prefix (guards UE5 32KB offsets with 0% overhead on valid calls)
         if env["DIRECTMETAL_DISABLE_D3D12_GUARD"] != "1" {
