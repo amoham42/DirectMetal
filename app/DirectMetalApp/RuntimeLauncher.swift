@@ -495,7 +495,10 @@ enum RuntimeLauncher {
             switch dx9Backend {
             case .dxvk: return true
             case .wined3d: return false
-            case .auto: return useARM64EC && (is64BitExe || arm64ecSupports32Bit)
+            // 64-bit D3D9 (e.g. TF2) runs native ARM64X DXVK 3.1.1 + KosmicKrisp.
+            // 32-bit D3D9 (e.g. NFS11) defaults to native ARM64EC WineMetalGL 4.6 (wined3d):
+            // avoids MetalVulkan d7vk ddraw hangs and KosmicKrisp YUV video green tint while staying 100% post-Rosetta.
+            case .auto: return useARM64EC && is64BitExe
             }
         }()
         // On 32-bit DXVK+KosmicKrisp swapchains, macOS 27.2's libMTLHud throws NSInvalidArgumentException;
@@ -505,19 +508,10 @@ enum RuntimeLauncher {
         }
 
         if isPureD3D9 || dx9Backend != .auto {
-            // On ARM64EC+FEX (64-bit always, and 32-bit on macOS 26.4+ with cross-arch profile),
-            // run MetalVulkan 7.0 DXVK 3.1.1 -> Vulkan 1.4 -> Mesa KosmicKrisp -> Metal.
-            // On Rosetta 2 (32-bit fallback on macOS < 26.4), default to WineD3D GL + Virtual Desktop.
-            let is64 = profile?.is64Bit ?? true
-            let useDXVK: Bool
-            switch dx9Backend {
-            case .dxvk:
-                useDXVK = true
-            case .wined3d:
-                useDXVK = false
-            case .auto:
-                useDXVK = useARM64EC && (is64 || arm64ecSupports32Bit)
-            }
+            // 64-bit D3D9 on ARM64EC+FEX runs MetalVulkan 7.0 DXVK 3.1.1 -> Mesa KosmicKrisp -> Metal.
+            // 32-bit D3D9 on ARM64EC+FEX (macOS 26.4+) defaults to WineMetalGL 4.6 (wined3d on Metal)
+            // for full YUV video color accuracy and zero d7vk/ddraw freezes; --dx9-backend dxvk/wined3d always overrides.
+            let useDXVK = useDXVKForD3D9
             if !(useDXVK && useARM64EC) {
                 let overrideEntry = useDXVK ? "d3d9=n,b" : "d3d9=b"
                 if let existing = env["WINEDLLOVERRIDES"], !existing.isEmpty {
