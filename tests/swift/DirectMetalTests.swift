@@ -329,6 +329,12 @@ struct DirectMetalTests {
             ("GameLibraryManager & RuntimeLauncher: customEnv parsing, isolation blocklist & WINEDLLOVERRIDES merge", {
                 try testCustomEnvParsingAndMerging()
             }),
+            ("WineserverPool: effectiveWarmSeconds explicit flag & DIRECTMETAL_WARM_SERVER resolution", {
+                try testWineserverPoolEffectiveWarmSeconds()
+            }),
+            ("ShaderCacheManager: syncFromIndex double-SHA-256 verification & outer archive tamper rejection", {
+                try testShaderCacheSyncFromIndexAndTamperRejection(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -1724,5 +1730,121 @@ struct DirectMetalTests {
         try expectEqual(env["WINEDLLOVERRIDES"], "d3d12=n;version=n,b", "WINEDLLOVERRIDES must append rather than clobber d3d12=n")
         try expectEqual(env["DXVK_ASYNC"], "1")
         try expectEqual(env["LC_ALL"], "ja_JP.UTF-8")
+    }
+
+    private static func testWineserverPoolEffectiveWarmSeconds() throws {
+        defer { setEnv("DIRECTMETAL_WARM_SERVER", nil) }
+        setEnv("DIRECTMETAL_WARM_SERVER", nil)
+        try expectNil(WineserverPool.effectiveWarmSeconds(nil))
+        try expectNil(WineserverPool.effectiveWarmSeconds(0))
+        try expectEqual(WineserverPool.effectiveWarmSeconds(90), 90)
+
+        setEnv("DIRECTMETAL_WARM_SERVER", "1")
+        try expectEqual(WineserverPool.effectiveWarmSeconds(nil), WineserverPool.defaultPersistSeconds)
+        try expectNil(WineserverPool.effectiveWarmSeconds(0), "explicit 0 (--no-warm-server) must override env")
+
+        setEnv("DIRECTMETAL_WARM_SERVER", "300")
+        try expectEqual(WineserverPool.effectiveWarmSeconds(nil), 300)
+        setEnv("DIRECTMETAL_WARM_SERVER", "off")
+        try expectNil(WineserverPool.effectiveWarmSeconds(nil))
+    }
+
+    private static func testShaderCacheSyncFromIndexAndTamperRejection(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let srcRoot = tempRoot.appendingPathComponent("sync_src_cache", isDirectory: true)
+        let dstRoot = tempRoot.appendingPathComponent("sync_dst_cache", isDirectory: true)
+        let cdnDir = tempRoot.appendingPathComponent("sync_cdn", isDirectory: true)
+        for d in [srcRoot, dstRoot, cdnDir] {
+            try fm.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+
+        let hw = RuntimeLauncher.queryHardwareInfo()
+        let buildHash = "cafe01234567_1700000000_131072"
+        let entryDir = srcRoot.appendingPathComponent("\(buildHash)_\(hw.cacheKey)", isDirectory: true)
+        try fm.createDirectory(at: entryDir, withIntermediateDirectories: true)
+        for i in 0..<4 {
+            try Data("sync-pso-\(i)".utf8).write(to: entryDir.appendingPathComponent("pso_\(i).metallib"))
+        }
+
+        setEnv("DIRECTMETAL_SHADER_CACHE_ROOT", srcRoot.path)
+        defer { setEnv("DIRECTMETAL_SHADER_CACHE_ROOT", nil) }
+
+        let archiveName = "\(buildHash)_\(hw.cacheKey).dmcache.tar.gz"
+        let archiveURL = cdnDir.appendingPathComponent(archiveName)
+        let exported = try ShaderCacheManager.exportArchive(to: archiveURL.path, filterEntry: buildHash)
+
+        // Compute outer archive SHA-256
+        let archiveBytes = try Data(contentsOf: archiveURL)
+        var shaCmd = Data()
+        let digestHex: String = {
+            // Compute via /usr/bin/shasum for independent cross-check
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: "/usr/bin/shasum")
+            p.arguments = ["-a", "256", archiveURL.path]
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            try? p.run()
+            p.waitUntilExit()
+            shaCmd = pipe.fileHandleForReading.readDataToEndOfFile()
+            return String(decoding: shaCmd, as: UTF8.self).split(separator: " ").first.map(String.init) ?? ""
+        }()
+        try expectEqual(digestHex.count, 64, "outer archive sha256 must be 64 hex chars")
+
+        let validIndex = ShaderCacheIndex(
+            entries: [
+                ShaderCacheIndexEntry(
+                    buildHash: buildHash,
+                    gpuFamily: hw.gpuFamily,
+                    macosBuild: hw.macosBuild,
+                    title: "Sync Test Game",
+                    archiveUrl: archiveName,
+                    archiveSha256: digestHex,
+                    archiveBytes: UInt64(archiveBytes.count),
+                    fileCount: exported.fileCount,
+                    updatedUtc: "2026-11-27T00:00:00Z"
+                )
+            ]
+        )
+        let indexURL = cdnDir.appendingPathComponent("index.json")
+        try JSONEncoder().encode(validIndex).write(to: indexURL)
+
+        // 1. Valid sync into clean destination cache root succeeds
+        setEnv("DIRECTMETAL_SHADER_CACHE_ROOT", dstRoot.path)
+        let synced = try ShaderCacheManager.syncFromIndex(
+            indexSource: indexURL.path,
+            buildHash: buildHash,
+            allowCrossBuild: false
+        )
+        try expectEqual(synced.verifiedFiles, 4)
+        try expect(synced.compatible, "exact host match should be compatible")
+
+        // 2. Tampered outer archive_sha256 MUST fail before extraction
+        let badIndex = ShaderCacheIndex(
+            entries: [
+                ShaderCacheIndexEntry(
+                    buildHash: buildHash,
+                    gpuFamily: hw.gpuFamily,
+                    macosBuild: hw.macosBuild,
+                    title: "Sync Test Game",
+                    archiveUrl: archiveName,
+                    archiveSha256: String(repeating: "0", count: 64),
+                    archiveBytes: UInt64(archiveBytes.count),
+                    fileCount: exported.fileCount,
+                    updatedUtc: "2026-11-27T00:00:00Z"
+                )
+            ]
+        )
+        let badIndexURL = cdnDir.appendingPathComponent("bad_index.json")
+        try JSONEncoder().encode(badIndex).write(to: badIndexURL)
+        try expectThrows("mismatched outer archive_sha256 must throw checksumMismatch") {
+            try ShaderCacheManager.syncFromIndex(
+                indexSource: badIndexURL.path,
+                buildHash: buildHash,
+                allowCrossBuild: false
+            )
+        } verify: { err in
+            if case ShaderCacheError.checksumMismatch = err { return true }
+            return false
+        }
     }
 }
