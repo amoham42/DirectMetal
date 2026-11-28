@@ -537,17 +537,17 @@ struct FilterChip: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 3) {
+            HStack(spacing: 2.5) {
                 Text(title)
-                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                    .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                 Text("\(count)")
-                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .font(.system(size: 9, weight: .medium, design: .rounded))
                     .monospacedDigit()
                     .opacity(0.75)
             }
             .lineLimit(1)
             .fixedSize()
-            .padding(.horizontal, 7)
+            .padding(.horizontal, 6)
             .padding(.vertical, 2.5)
             .foregroundStyle(isSelected ? Color.white : (count == 0 ? Color.secondary : tint))
             .background(isSelected ? tint : tint.opacity(count == 0 ? 0.06 : 0.13), in: Capsule())

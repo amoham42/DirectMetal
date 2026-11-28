@@ -187,16 +187,19 @@ struct GamePosterCard: View {
                     .truncationMode(.tail)
                     .help(entry.title)
 
-                HStack(spacing: 4) {
-                    StorePill(source: entry.storeSource, gameID: entry.storeGameID)
-                    ForEach(badges) { badge in
-                        BadgeView(badge: badge)
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 4) {
+                        StorePill(source: entry.storeSource, gameID: entry.storeGameID)
+                            .fixedSize()
+                        ForEach(badges) { badge in
+                            BadgeView(badge: badge)
+                                .fixedSize()
+                        }
+                        ArchPill(architecture: entry.architecture)
+                            .fixedSize()
                     }
-                    ArchPill(architecture: entry.architecture)
-                    Spacer(minLength: 0)
                 }
                 .frame(height: 18, alignment: .leading)
-                .clipped()
 
                 HStack(spacing: 6) {
                     if let playtime = LauncherStyle.playtimeText(entry.totalPlaySeconds) {
