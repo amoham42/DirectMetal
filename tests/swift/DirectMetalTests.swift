@@ -347,6 +347,9 @@ struct DirectMetalTests {
             ("LaunchHistoryStore: JSONL append/load, malformed tolerance, 200-entry cap & redaction", {
                 try testLaunchHistoryStorePersistenceAndCap(tempRoot: tempRoot)
             }),
+            ("RuntimeManager: retryable HTTP 5xx/429 & transient URLError classification", {
+                try testRuntimeDownloadRetryClassification()
+            }),
         ]
 
         var passed = 0
@@ -2036,5 +2039,24 @@ struct DirectMetalTests {
         try expectEqual(capped.count, LaunchHistoryStore.maxEntries, "rolling cap must trim to maxEntries")
         try expectEqual(capped.first?.title, "Session 205", "newest entry preserved after trim")
         try expectEqual(capped.last?.title, "Session 6", "oldest 5 entries trimmed")
+    }
+
+    private static func testRuntimeDownloadRetryClassification() throws {
+        // Retryable HTTP statuses
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 429, urlErrorCode: nil, truncated: false), true)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 502, urlErrorCode: nil, truncated: false), true)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 503, urlErrorCode: nil, truncated: false), true)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 408, urlErrorCode: nil, truncated: false), true)
+        // Non-retryable client errors
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 404, urlErrorCode: nil, truncated: false), false)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 403, urlErrorCode: nil, truncated: false), false)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: 401, urlErrorCode: nil, truncated: false), false)
+        // Transient network / truncated body errors
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: .timedOut, truncated: false), true)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: .networkConnectionLost, truncated: false), true)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: nil, truncated: true), true)
+        // Non-retryable URL errors
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: .badURL, truncated: false), false)
+        try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: .serverCertificateUntrusted, truncated: false), false)
     }
 }

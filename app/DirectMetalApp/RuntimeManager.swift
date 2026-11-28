@@ -444,33 +444,73 @@ enum RuntimeManager {
         }
     }
 
+    /// Returns true for transient HTTP status codes or network errors where retrying the download is safe.
+    static func isRetryableDownloadFailure(httpStatus: Int?, urlErrorCode: URLError.Code?, truncated: Bool) -> Bool {
+        if truncated { return true }
+        if let code = httpStatus {
+            return code == 408 || code == 429 || (500...599).contains(code)
+        }
+        if let err = urlErrorCode {
+            switch err {
+            case .timedOut, .networkConnectionLost, .notConnectedToInternet,
+                 .cannotConnectToHost, .dnsLookupFailed, .cannotFindHost, .resourceUnavailable:
+                return true
+            default:
+                return false
+            }
+        }
+        return false
+    }
+
     /// `http(s)://` source: streaming `URLSession` data task, writing + hashing every chunk as it arrives.
-    private static func download(_ url: URL, to dst: URL, progress: ((RuntimeInstallProgress) -> Void)?) throws -> String {
-        let fd = open(dst.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
-        guard fd >= 0 else {
-            throw RuntimeInstallError.downloadFailed("open(\(dst.path)) failed: \(String(cString: strerror(errno)))")
+    /// Automatically retries transient network / HTTP 5xx / truncated transfers with exponential backoff.
+    private static func download(_ url: URL, to dst: URL, progress: ((RuntimeInstallProgress) -> Void)?,
+                                 maxAttempts: Int = 3) throws -> String {
+        var lastError = "unknown download error"
+        for attempt in 1...max(1, maxAttempts) {
+            let fd = open(dst.path, O_WRONLY | O_CREAT | O_TRUNC, 0o644)
+            guard fd >= 0 else {
+                throw RuntimeInstallError.downloadFailed("open(\(dst.path)) failed: \(String(cString: strerror(errno)))")
+            }
+            let delegate = StreamingDownloadDelegate(fd: fd, progress: progress)
+            let queue = OperationQueue()
+            queue.maxConcurrentOperationCount = 1
+            queue.qualityOfService = .userInitiated
+            let config = URLSessionConfiguration.ephemeral
+            config.timeoutIntervalForRequest = 60
+            config.timeoutIntervalForResource = 6 * 60 * 60
+            config.requestCachePolicy = .reloadIgnoringLocalCacheData
+            let session = URLSession(configuration: config, delegate: delegate, delegateQueue: queue)
+            var request = URLRequest(url: url)
+            request.setValue("DirectMetal/\(arm64ecVersion) (RuntimeManager)", forHTTPHeaderField: "User-Agent")
+            session.dataTask(with: request).resume()
+            delegate.done.wait()
+            session.finishTasksAndInvalidate()
+            close(fd)
+
+            if let err = delegate.failure {
+                lastError = err
+                let retryable = isRetryableDownloadFailure(
+                    httpStatus: delegate.httpStatusCode,
+                    urlErrorCode: delegate.urlErrorCode,
+                    truncated: delegate.wasTruncated
+                )
+                if retryable && attempt < maxAttempts {
+                    let delaySec = UInt32(1 << (attempt - 1)) // 1s, 2s
+                    progress?(RuntimeInstallProgress(
+                        phase: .downloading, bytesReceived: 0, totalBytes: delegate.expected, fraction: 0,
+                        message: "Download interrupted (\(err)); retrying attempt \(attempt + 1)/\(maxAttempts) in \(delaySec)s…"
+                    ))
+                    sleep(delaySec)
+                    continue
+                }
+                throw RuntimeInstallError.downloadFailed("Download of \(url.absoluteString) failed: \(err)")
+            }
+            progress?(RuntimeInstallProgress(phase: .downloading, bytesReceived: delegate.received,
+                                             totalBytes: delegate.expected, fraction: 1, message: "Download complete"))
+            return hex(delegate.finalDigest())
         }
-        defer { close(fd) }
-        let delegate = StreamingDownloadDelegate(fd: fd, progress: progress)
-        let queue = OperationQueue()
-        queue.maxConcurrentOperationCount = 1
-        queue.qualityOfService = .userInitiated
-        let config = URLSessionConfiguration.ephemeral
-        config.timeoutIntervalForRequest = 60
-        config.timeoutIntervalForResource = 6 * 60 * 60
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        let session = URLSession(configuration: config, delegate: delegate, delegateQueue: queue)
-        var request = URLRequest(url: url)
-        request.setValue("DirectMetal/\(arm64ecVersion) (RuntimeManager)", forHTTPHeaderField: "User-Agent")
-        session.dataTask(with: request).resume()
-        delegate.done.wait()
-        session.finishTasksAndInvalidate()
-        if let err = delegate.failure {
-            throw RuntimeInstallError.downloadFailed("Download of \(url.absoluteString) failed: \(err)")
-        }
-        progress?(RuntimeInstallProgress(phase: .downloading, bytesReceived: delegate.received,
-                                         totalBytes: delegate.expected, fraction: 1, message: "Download complete"))
-        return hex(delegate.finalDigest())
+        throw RuntimeInstallError.downloadFailed("Download of \(url.absoluteString) failed after \(maxAttempts) attempts: \(lastError)")
     }
 
     // MARK: - Base prefix
@@ -649,6 +689,9 @@ private final class StreamingDownloadDelegate: NSObject, URLSessionDataDelegate,
     private(set) var received: Int64 = 0
     private(set) var expected: Int64 = -1
     private(set) var failure: String?
+    private(set) var httpStatusCode: Int?
+    private(set) var urlErrorCode: URLError.Code?
+    private(set) var wasTruncated: Bool = false
     private var lastReport: UInt64 = 0
 
     init(fd: Int32, progress: ((RuntimeInstallProgress) -> Void)?) {
@@ -662,10 +705,13 @@ private final class StreamingDownloadDelegate: NSObject, URLSessionDataDelegate,
 
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse,
                     completionHandler: @escaping @Sendable (URLSession.ResponseDisposition) -> Void) {
-        if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
-            failure = "HTTP \(http.statusCode)"
-            completionHandler(.cancel)
-            return
+        if let http = response as? HTTPURLResponse {
+            httpStatusCode = http.statusCode
+            if !(200..<300).contains(http.statusCode) {
+                failure = "HTTP \(http.statusCode)"
+                completionHandler(.cancel)
+                return
+            }
         }
         expected = response.expectedContentLength
         completionHandler(.allow)
@@ -695,9 +741,13 @@ private final class StreamingDownloadDelegate: NSObject, URLSessionDataDelegate,
 
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         if let error, failure == nil {
+            if let urlErr = error as? URLError {
+                urlErrorCode = urlErr.code
+            }
             failure = error.localizedDescription
         }
         if failure == nil, expected > 0, received != expected {
+            wasTruncated = true
             failure = "truncated download (\(received) of \(expected) bytes)"
         }
         done.signal()
