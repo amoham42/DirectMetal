@@ -263,6 +263,7 @@ _directmetal() {
     'prefix:Create, list, reset or delete APFS CoW game prefixes'
     'cache:Inspect, export, import, sync or clear pre-compiled Metal shader caches'
     'controller:Configure global or per-game controller remapping and deadzones'
+    'hud:Configure Metal Performance HUD overlay preset, corner alignment, scale & opacity'
     'profiles:List bundled and custom community game profiles'
     'update:Check for or apply DirectMetal and MetalSharp-Wine updates'
     'attest:Collect Secure Enclave hardware attestation v2 JSON'
@@ -296,6 +297,10 @@ _directmetal() {
     controller)
       local -a sub=(list show set reset)
       _values 'controller subcommand' $sub
+      ;;
+    hud)
+      local -a sub=(show set reset)
+      _values 'hud subcommand' $sub
       ;;
     update)
       local -a sub=(check apply)
@@ -347,7 +352,7 @@ _directmetal_completions() {
   cmd="${COMP_WORDS[1]}"
 
   if [[ ${COMP_CWORD} -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "info doctor bench inspect run library history diagnose-log support-bundle runtime prefix cache controller profiles update attest verify-attest completions help" -- "${cur}") )
+    COMPREPLY=( $(compgen -W "info doctor bench inspect run library history diagnose-log support-bundle runtime prefix cache controller hud profiles update attest verify-attest completions help" -- "${cur}") )
     return 0
   fi
 
@@ -366,6 +371,9 @@ _directmetal_completions() {
       ;;
     controller)
       COMPREPLY=( $(compgen -W "list show set reset" -- "${cur}") )
+      ;;
+    hud)
+      COMPREPLY=( $(compgen -W "show set reset" -- "${cur}") )
       ;;
     update)
       COMPREPLY=( $(compgen -W "check apply" -- "${cur}") )

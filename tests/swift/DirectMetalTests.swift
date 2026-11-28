@@ -365,6 +365,9 @@ struct DirectMetalTests {
             ("SupportBundleExporter: redacted archive export & customEnv secret value omission", {
                 try testSupportBundleExporterPrivacy(tempRoot: tempRoot)
             }),
+            ("MetalHUDConfigManager: presets, clamping/NaN guards, MTL_HUD_* env & persistence", {
+                try testMetalHUDConfigPersistenceAndEnv(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2308,5 +2311,42 @@ struct DirectMetalTests {
 
         let historyJSON = try String(contentsOf: unpackDir.appendingPathComponent("launch_history.json"), encoding: .utf8)
         try expect(!historyJSON.contains("/Users/alice"), "launch_history.json must redact home path")
+    }
+
+    private static func testMetalHUDConfigPersistenceAndEnv(tempRoot: URL) throws {
+        let cfgPath = tempRoot.appendingPathComponent("hud_config_test.json")
+        setEnv("DIRECTMETAL_HUD_CONFIG", cfgPath.path)
+        defer { setEnv("DIRECTMETAL_HUD_CONFIG", nil) }
+
+        // Default config when missing
+        let def = MetalHUDConfigManager.load()
+        try expectEqual(def, MetalHUDConfiguration.defaultConfig)
+
+        // Clamping & NaN protection
+        let clamped = MetalHUDConfiguration(
+            preset: .detailed,
+            alignment: .bottomLeft,
+            scale: 9.5,
+            opacity: .nan,
+            showDXVKHudOnDX9: false
+        ).normalized()
+        try expectEqual(clamped.scale, 2.0, "scale > 2.0 must clamp to 2.0")
+        try expectEqual(clamped.opacity, MetalHUDConfiguration.defaultConfig.opacity, "NaN opacity falls back to default")
+
+        // Persistence round-trip & environment variable emission
+        try MetalHUDConfigManager.save(clamped)
+        let loaded = MetalHUDConfigManager.load()
+        try expectEqual(loaded, clamped)
+
+        let envOn = MetalHUDConfigManager.launchEnvironment(hudEnabled: true)
+        try expectEqual(envOn["MTL_HUD_ENABLED"], "1")
+        try expectEqual(envOn["MTL_HUD_ALIGNMENT"], "bottomleft")
+        try expectNil(envOn["DXVK_HUD"], "showDXVKHudOnDX9=false must omit DXVK_HUD")
+
+        let envOff = MetalHUDConfigManager.launchEnvironment(hudEnabled: false)
+        try expectEqual(envOff["MTL_HUD_ENABLED"], "0")
+
+        try MetalHUDConfigManager.reset()
+        try expectEqual(MetalHUDConfigManager.load(), MetalHUDConfiguration.defaultConfig)
     }
 }

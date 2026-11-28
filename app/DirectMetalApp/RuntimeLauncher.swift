@@ -506,8 +506,13 @@ enum RuntimeLauncher {
         }()
         // On 32-bit DXVK+KosmicKrisp swapchains, macOS 27.2's libMTLHud throws NSInvalidArgumentException;
         // use DXVK's native Vulkan HUD instead of MTL_HUD_ENABLED on that path.
+        let hudConfig = MetalHUDConfigManager.load()
         if enableHUD && !(useDXVKForD3D9 && useARM64EC && !is64BitExe) {
-            env["MTL_HUD_ENABLED"] = "1"
+            for (k, v) in hudConfig.environmentVariables(hudEnabled: true) where k != "DXVK_HUD" {
+                if env[k] == nil {
+                    env[k] = v
+                }
+            }
         }
 
         if isPureD3D9 || dx9Backend != .auto {
@@ -550,8 +555,8 @@ enum RuntimeLauncher {
                         env["DM_VK_COMPAT_ADVERTISE_FILLMODE"] = "1"
                     }
                 }
-                if enableHUD && env["DXVK_HUD"] == nil {
-                    env["DXVK_HUD"] = "fps,frametimes,devinfo,api"
+                if enableHUD && hudConfig.showDXVKHudOnDX9 && env["DXVK_HUD"] == nil {
+                    env["DXVK_HUD"] = hudConfig.preset.dxvkHudElements
                 }
             } else {
                 if env["WINE_D3D_CONFIG"] == nil {

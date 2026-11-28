@@ -844,6 +844,87 @@ private func runCLI(args: [String]) -> Int32 {
             return 1
         }
 
+    case "hud":
+        let rest = Array(args.dropFirst())
+        let sub = rest.first ?? "show"
+        let tail = Array(rest.dropFirst())
+        let asJSON = rest.contains("--json")
+        switch sub {
+        case "show", "status", "--json":
+            let cfg = MetalHUDConfigManager.load()
+            if asJSON || sub == "--json" {
+                struct HUDStatusJSON: Encodable {
+                    let config: MetalHUDConfiguration
+                    let environment: [String: String]
+                }
+                printLibraryJSON(HUDStatusJSON(config: cfg, environment: cfg.environmentVariables(hudEnabled: true)))
+            } else {
+                print("Metal Performance HUD Configuration")
+                print("  preset:    \(cfg.preset.rawValue) (\(cfg.preset.displayName))")
+                print("  alignment: \(cfg.alignment.rawValue) (\(cfg.alignment.displayName))")
+                print(String(format: "  scale:     %.2fx", cfg.scale))
+                print(String(format: "  opacity:   %.0f%%", cfg.opacity * 100))
+                print("  dxvk_hud:  \(cfg.showDXVKHudOnDX9)")
+            }
+            return 0
+        case "set":
+            let pairs = tail.filter { !$0.hasPrefix("--") }
+            guard !pairs.isEmpty else {
+                fputs("error: hud set requires <key>=<value> (preset|alignment|scale|opacity|dxvk-hud)\n", stderr)
+                return 1
+            }
+            var cfg = MetalHUDConfigManager.load()
+            for pair in pairs {
+                guard let eq = pair.firstIndex(of: "=") else {
+                    fputs("error: expected <key>=<value>, got \"\(pair)\"\n", stderr)
+                    return 1
+                }
+                let k = pair[..<eq].lowercased()
+                let v = String(pair[pair.index(after: eq)...])
+                var ok = true
+                switch k {
+                case "preset":
+                    if let p = MetalHUDPreset.parse(v) { cfg.preset = p } else { ok = false }
+                case "alignment", "corner", "position":
+                    if let a = MetalHUDAlignment.parse(v) { cfg.alignment = a } else { ok = false }
+                case "scale":
+                    if let d = Double(v) { cfg.scale = d } else { ok = false }
+                case "opacity":
+                    if let d = Double(v) { cfg.opacity = d > 1.0 ? d / 100.0 : d } else { ok = false }
+                case "dxvk-hud", "dxvk":
+                    if let b = parseBool(v) { cfg.showDXVKHudOnDX9 = b } else { ok = false }
+                default:
+                    fputs("error: unknown hud setting \"\(k)\"\n", stderr)
+                    return 1
+                }
+                if !ok {
+                    fputs("error: invalid value \"\(v)\" for \(k)\n", stderr)
+                    return 1
+                }
+            }
+            cfg = cfg.normalized()
+            do {
+                try MetalHUDConfigManager.save(cfg)
+                printLibraryJSON(cfg)
+                return 0
+            } catch {
+                fputs("hud set failed: \(error)\n", stderr)
+                return 1
+            }
+        case "reset":
+            do {
+                try MetalHUDConfigManager.reset()
+                print("Reset Metal Performance HUD configuration to defaults.")
+                return 0
+            } catch {
+                fputs("hud reset failed: \(error)\n", stderr)
+                return 1
+            }
+        default:
+            fputs("unknown hud subcommand: \(sub) (expected: show|set|reset)\n", stderr)
+            return 1
+        }
+
     default:
         fputs("unknown command: \(cmd)\n", stderr)
         printUsage()

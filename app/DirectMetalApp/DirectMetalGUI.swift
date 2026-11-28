@@ -72,6 +72,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showProfileBrowserSheet: Bool = false
     // Dry-run Launch Plan Inspector sheet (⇧⌘I)
     @Published var showLaunchPlanSheet: Bool = false
+    // Live Metal Performance HUD customizer sheet (⇧⌘M)
+    @Published var showHUDCustomizerSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -154,7 +156,7 @@ final class DirectMetalViewModel: ObservableObject {
     var isPresentingModal: Bool {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
             || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
-            || showProfileBrowserSheet || showLaunchPlanSheet || showRemoveConfirm
+            || showProfileBrowserSheet || showLaunchPlanSheet || showHUDCustomizerSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -216,6 +218,12 @@ final class DirectMetalViewModel: ObservableObject {
         guard selectedEntry != nil else { return }
         guard !isPresentingModal || showLaunchPlanSheet else { return }
         showLaunchPlanSheet = true
+    }
+
+    /// ⇧⌘M: open the Live Metal Performance HUD customizer sheet.
+    func openHUDCustomizer() {
+        guard !isPresentingModal || showHUDCustomizerSheet else { return }
+        showHUDCustomizerSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -689,6 +697,9 @@ struct DirectMetalContentView: View {
                 LaunchPlanSheet(entry: entry, vm: vm)
             }
         }
+        .sheet(isPresented: $vm.showHUDCustomizerSheet) {
+            MetalHUDCustomizerSheet(vm: vm)
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -747,6 +758,9 @@ struct DirectMetalCommands: Commands {
             Button("Community Game Profiles…") { vm?.openProfileBrowser() }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
                 .disabled(vm == nil || (modal && vm?.showProfileBrowserSheet != true))
+            Button("Metal Performance HUD…") { vm?.openHUDCustomizer() }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(vm == nil || (modal && vm?.showHUDCustomizerSheet != true))
         }
         CommandGroup(replacing: .appSettings) {
             Button("Controllers…") { vm?.openControllers() }

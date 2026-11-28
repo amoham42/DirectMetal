@@ -33,6 +33,6 @@
 - [x] Ship native **Poster Gallery (`⌘2`)**, **`⌘K` Quick-Launch Command Palette**, **Per-Game FPS Cap / ProMotion VRR frame-pacing** & sanitized custom env vars, **System Health, Shader Cache & Built-in Apple Silicon Benchmark Sheet (`⌘D`, `DirectMetal doctor`, `DirectMetal bench`)**, **APFS Prefix Manager & Orphaned Prefix Pruning (`⇧⌘P`, `prefix stats|prune`)**, **Structured Launch History (`⇧⌘H`, `DirectMetal history`)**, Homebrew Cask (`Casks/directmetal.rb`), root CMake superbuild (`10/10` CTest), and **GitHub Actions `macos-15` CI** (`76+` automated tests across Swift, Python, and C/Obj-C++).
 
 ## Phase 6 — Next Horizons
+- [x] Live Metal Performance HUD overlay layout customization inside the SwiftUI launcher (`⇧⌘M`, `DirectMetal hud`) + crash log triage (`diagnose-log`) & privacy-redacted diagnostics support bundle export (`support-bundle`).
 - [ ] Apple Developer ID notarization in automated GitHub Releases CI (zero quarantine prompt out of the box).
 - [ ] Expanded multi-chip community Cloud Shader Cache coverage (`Apple8` M2, `Apple9` M3/M4, `Apple10` M5) and automated game compatibility test reports.
-- [ ] Live Metal Performance HUD overlay layout customization inside the SwiftUI launcher.
