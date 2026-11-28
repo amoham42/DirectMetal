@@ -12,6 +12,7 @@ import SwiftUI
 enum SystemHealthTab: String, CaseIterable, Identifiable {
     case doctor = "System Doctor"
     case shaderCache = "Shader Cache"
+    case storage = "Storage"
     case benchmark = "Benchmark"
 
     var id: String { rawValue }
@@ -372,6 +373,10 @@ struct SystemHealthSheet: View {
     @State private var isPruningCaches: Bool = false
     @State private var cacheBanner: CacheBannerNotice?
 
+    // Storage footprint state
+    @State private var storageReport: StorageFootprintReport?
+    @State private var isLoadingStorage: Bool = false
+
     // Benchmark state
     @State private var benchmarkScorecard: BenchmarkScorecard?
     @State private var isRunningBenchmark: Bool = false
@@ -395,6 +400,12 @@ struct SystemHealthSheet: View {
                         isLoadingCaches: $isLoadingCaches,
                         isPruningCaches: $isPruningCaches,
                         cacheBanner: $cacheBanner
+                    )
+                case .storage:
+                    StorageFootprintTab(
+                        vm: vm,
+                        report: $storageReport,
+                        isLoading: $isLoadingStorage
                     )
                 case .benchmark:
                     AppleSiliconBenchmarkTab(
@@ -446,7 +457,7 @@ struct SystemHealthSheet: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 320)
+            .frame(width: 390)
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 16)
@@ -476,6 +487,17 @@ struct SystemHealthSheet: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+            case .storage:
+                if let rep = storageReport {
+                    Text("Total \(StorageFootprintAnalyzer.formatBytes(rep.totalBytes)) · Reclaimable \(StorageFootprintAnalyzer.formatBytes(rep.totalReclaimableBytes)) across \(rep.categories.count) categories")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                } else {
+                    Text("Symlink-safe disk footprint audit across prefixes, caches, backups & runtimes.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
             case .benchmark:
                 if let card = benchmarkScorecard {
                     HStack(spacing: 6) {
