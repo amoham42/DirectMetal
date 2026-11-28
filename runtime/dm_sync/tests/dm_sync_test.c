@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include "dm_sync.h"
 
 #include <assert.h>
@@ -191,19 +192,21 @@ static void sigusr1_test_handler(int sig) {
 
 typedef struct eintr_worker_ctx {
     pthread_t target_thread;
+    atomic_bool started;
     atomic_bool ready;
     atomic_bool done;
 } eintr_worker_ctx_t;
 
 static void *sigusr1_interrupter_thread(void *arg) {
     eintr_worker_ctx_t *ctx = (eintr_worker_ctx_t *)arg;
+    atomic_store_explicit(&ctx->started, true, memory_order_release);
     while (!atomic_load_explicit(&ctx->ready, memory_order_acquire) &&
            !atomic_load_explicit(&ctx->done, memory_order_acquire)) {
         struct timespec spin_ts = {0, 500000};  // 0.5 ms
         nanosleep(&spin_ts, NULL);
     }
-    for (int i = 0; i < 3; ++i) {
-        struct timespec ts = {0, 8000000};  // 8 ms between signals
+    for (int i = 0; i < 6; ++i) {
+        struct timespec ts = {0, 10000000};  // 10 ms between signals
         nanosleep(&ts, NULL);
         if (atomic_load_explicit(&ctx->done, memory_order_acquire)) {
             break;
@@ -220,7 +223,8 @@ static void test_sigusr1_eintr_timed_wait(void) {
     sa.sa_handler = sigusr1_test_handler;
     sigemptyset(&sa.sa_mask);
     sa.sa_flags = 0;  // Deliberately omit SA_RESTART so kernel wait sees EINTR
-    assert(sigaction(SIGUSR1, &sa, &old_sa) == 0);
+    const int sa_set_rc = sigaction(SIGUSR1, &sa, &old_sa);
+    assert(sa_set_rc == 0);
 
     g_sigusr1_hits = 0;
     dm_nt_event_t ev;
@@ -228,13 +232,22 @@ static void test_sigusr1_eintr_timed_wait(void) {
 
     eintr_worker_ctx_t ctx;
     ctx.target_thread = pthread_self();
+    atomic_init(&ctx.started, false);
     atomic_init(&ctx.ready, false);
     atomic_init(&ctx.done, false);
 
-    pthread_t sig_th;
-    assert(pthread_create(&sig_th, NULL, sigusr1_interrupter_thread, &ctx) == 0);
+    pthread_t sig_th = 0;
+    const int th_rc = pthread_create(&sig_th, NULL, sigusr1_interrupter_thread, &ctx);
+    assert(th_rc == 0);
 
-    const uint64_t timeout_ns = 50000000ULL;  // 50 ms
+    // Wait until the helper thread is actually scheduled before starting the timed wait
+    // (avoids pthread_create startup jitter on loaded CI VMs).
+    while (!atomic_load_explicit(&ctx.started, memory_order_acquire)) {
+        struct timespec spin_ts = {0, 500000};
+        nanosleep(&spin_ts, NULL);
+    }
+
+    const uint64_t timeout_ns = 100000000ULL;  // 100 ms
     const uint64_t t0 = uptime_ns();
     atomic_store_explicit(&ctx.ready, true, memory_order_release);
     const dm_wait_status_t status = dm_nt_event_wait(&ev, timeout_ns);
@@ -242,12 +255,13 @@ static void test_sigusr1_eintr_timed_wait(void) {
     atomic_store_explicit(&ctx.done, true, memory_order_release);
 
     pthread_join(sig_th, NULL);
-    assert(sigaction(SIGUSR1, &old_sa, NULL) == 0);
+    const int sa_restore_rc = sigaction(SIGUSR1, &old_sa, NULL);
+    assert(sa_restore_rc == 0);
 
     assert(status == DM_WAIT_TIMEOUT);
     assert(g_sigusr1_hits >= 1);
-    // Must complete near the 50ms deadline (neither aborting at 8ms nor looping indefinitely)
-    assert(elapsed_ns >= 45000000ULL && elapsed_ns < 500000000ULL);
+    // Must complete near the 100ms deadline (neither aborting at 10ms nor looping indefinitely)
+    assert(elapsed_ns >= 90000000ULL && elapsed_ns < 2000000000ULL);
     printf("[dm_sync_test] SIGUSR1 EINTR timed wait OK (%d signals, %.2f ms)\n",
            (int)g_sigusr1_hits, (double)elapsed_ns / 1000000.0);
 }
