@@ -5,14 +5,26 @@
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
 
-#include <assert.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <sys/stat.h>
 #include <time.h>
-#include <vector>
+
+#define DM_CHECK(expr)                                                                 \
+    do {                                                                               \
+        if (!(expr)) {                                                                 \
+            fprintf(stderr, "[dm_metalfx_bench] CHECK FAILED (%s:%d): %s\n",           \
+                    __FILE__, __LINE__, #expr);                                        \
+            std::exit(1);                                                              \
+        }                                                                              \
+    } while (0)
+
+static bool ctest_skip_allowed(void) {
+    const char *v = std::getenv("DM_CTEST_ALLOW_SKIP");
+    return v && v[0] && std::strcmp(v, "0") != 0;
+}
 
 static double now_ms(void) {
     struct timespec ts;
@@ -43,17 +55,23 @@ static float halton(int idx, int base) {
 static void save_private_tex_png(id<MTLDevice> dev, id<MTLCommandQueue> queue,
                                  id<MTLTexture> tex, id<MTLComputePipelineState> fp16_blit_pso,
                                  const std::string &path) {
+    DM_CHECK(dev != nil && queue != nil && tex != nil);
     const NSUInteger w = tex.width, h = tex.height;
     id<MTLTexture> rgba8_tex = tex;
 
     id<MTLCommandBuffer> cb = [queue commandBuffer];
+    DM_CHECK(cb != nil);
     if (tex.pixelFormat == MTLPixelFormatRGBA16Float) {
+        DM_CHECK(fp16_blit_pso != nil);
         MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                       width:w height:h mipmapped:NO];
+        DM_CHECK(td != nil);
         td.usage = MTLTextureUsageShaderWrite;
         td.storageMode = MTLStorageModePrivate;
         rgba8_tex = [dev newTextureWithDescriptor:td];
+        DM_CHECK(rgba8_tex != nil);
         id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+        DM_CHECK(ce != nil);
         [ce setComputePipelineState:fp16_blit_pso];
         [ce setTexture:tex atIndex:0];
         [ce setTexture:rgba8_tex atIndex:1];
@@ -64,7 +82,9 @@ static void save_private_tex_png(id<MTLDevice> dev, id<MTLCommandQueue> queue,
     const NSUInteger row_pitch = w * 4u;
     const NSUInteger total_bytes = row_pitch * h;
     id<MTLBuffer> rb = [dev newBufferWithLength:total_bytes options:MTLResourceStorageModeShared];
+    DM_CHECK(rb != nil && rb.contents != nullptr);
     id<MTLBlitCommandEncoder> be = [cb blitCommandEncoder];
+    DM_CHECK(be != nil);
     [be copyFromTexture:rgba8_tex
             sourceSlice:0
             sourceLevel:0
@@ -77,9 +97,10 @@ destinationBytesPerImage:total_bytes];
     [be endEncoding];
     [cb commit];
     [cb waitUntilCompleted];
+    DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
 
-    dm::write_png_rgba8(path, (uint32_t)w, (uint32_t)h,
-                        static_cast<const uint8_t *>(rb.contents), (uint32_t)row_pitch);
+    DM_CHECK(dm::write_png_rgba8(path, (uint32_t)w, (uint32_t)h,
+                                 static_cast<const uint8_t *>(rb.contents), (uint32_t)row_pitch));
 }
 
 int main(int argc, char **argv) {
@@ -92,21 +113,43 @@ int main(int argc, char **argv) {
             out_dir = argv[++i];
         }
     }
-    ensure_dir(out_dir);
 
     dm_metalfx_caps_t caps{};
-    assert(dm_metalfx_query_caps(&caps));
+    if (!dm_metalfx_query_caps(&caps)) {
+        if (ctest_skip_allowed()) {
+            printf("[dm_metalfx_bench] SKIP: no Metal device available in headless environment\n");
+            return 77;
+        }
+        fprintf(stderr, "[dm_metalfx_bench] FAIL: dm_metalfx_query_caps returned false\n");
+        return 1;
+    }
+
     printf("[dm_metalfx_bench] Spatial=%s Temporal=%s Metal4FX(S=%s,T=%s) Scale=[%.2f, %.2f]\n",
            caps.spatial_supported ? "yes" : "no",
            caps.temporal_supported ? "yes" : "no",
            caps.metal4fx_spatial ? "yes" : "no",
            caps.metal4fx_temporal ? "yes" : "no",
            caps.temporal_min_scale, caps.temporal_max_scale);
-    assert(caps.spatial_supported && caps.temporal_supported);
+
+    if ((!caps.spatial_supported || !caps.temporal_supported) && ctest_skip_allowed()) {
+        printf("[dm_metalfx_bench] SKIP: MetalFX Spatial/Temporal unsupported on paravirtualized GPU\n");
+        return 77;
+    }
+    DM_CHECK(caps.spatial_supported && caps.temporal_supported);
+
+    // Invalid input validation checks
+    DM_CHECK(dm_metalfx_spatial_create(0, 720, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(0, 720, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+
+    ensure_dir(out_dir);
 
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
+        DM_CHECK(dev != nil);
         id<MTLCommandQueue> queue = [dev newCommandQueue];
+        DM_CHECK(queue != nil);
 
         // Realistic pixel-shading heavy procedural scene + depth + zero-motion output
         NSString *msl = @R"(
@@ -172,16 +215,18 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
 )";
         NSError *err = nil;
         id<MTLLibrary> lib = [dev newLibraryWithSource:msl options:nil error:&err];
-        assert(lib != nil);
+        DM_CHECK(lib != nil);
 
         id<MTLFunction> vs = [lib newFunctionWithName:@"scene_vs"];
         id<MTLFunction> fs = [lib newFunctionWithName:@"scene_fs"];
         id<MTLFunction> blit_fn = [lib newFunctionWithName:@"fp16_to_rgba8"];
+        DM_CHECK(vs != nil && fs != nil && blit_fn != nil);
         id<MTLComputePipelineState> fp16_blit_pso = [dev newComputePipelineStateWithFunction:blit_fn error:&err];
-        assert(fp16_blit_pso != nil);
+        DM_CHECK(fp16_blit_pso != nil);
 
         auto build_scene_pso = [&](MTLPixelFormat col_fmt, bool with_motion) -> id<MTLRenderPipelineState> {
             MTLRenderPipelineDescriptor *rpd = [MTLRenderPipelineDescriptor new];
+            DM_CHECK(rpd != nil);
             rpd.vertexFunction = vs;
             rpd.fragmentFunction = fs;
             rpd.colorAttachments[0].pixelFormat = col_fmt;
@@ -191,7 +236,7 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
             }
             NSError *pe = nil;
             id<MTLRenderPipelineState> pso = [dev newRenderPipelineStateWithDescriptor:rpd error:&pe];
-            assert(pso != nil);
+            DM_CHECK(pso != nil);
             return pso;
         };
 
@@ -202,12 +247,16 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
         uint32_t q_w = 0, q_h = 0, p_w = 0, p_h = 0;
         dm_metalfx_resolve_render_size(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, kOutW, kOutH, &q_w, &q_h);
         dm_metalfx_resolve_render_size(DM_UPSCALER_FSR, DM_UPSCALE_PERFORMANCE, kOutW, kOutH, &p_w, &p_h);
+        DM_CHECK(q_w > 0 && q_h > 0 && p_w > 0 && p_h > 0);
 
         auto make_tex = [&](uint32_t w, uint32_t h, MTLPixelFormat fmt, MTLTextureUsage usage) -> id<MTLTexture> {
             MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:w height:h mipmapped:NO];
+            DM_CHECK(td != nil);
             td.usage = usage;
             td.storageMode = MTLStorageModePrivate;
-            return [dev newTextureWithDescriptor:td];
+            id<MTLTexture> t = [dev newTextureWithDescriptor:td];
+            DM_CHECK(t != nil);
+            return t;
         };
 
         // 1. Native 1080p baseline (RGBA8 + FP16)
@@ -226,6 +275,7 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
             for (int f = 0; f < kWarmup + kFrames; ++f) {
                 const double t0 = now_ms();
                 id<MTLCommandBuffer> cb = [queue commandBuffer];
+                DM_CHECK(cb != nil);
                 MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
                 rp.colorAttachments[0].texture = fp16 ? nat16_tex : nat8_tex;
                 rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -240,12 +290,14 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
                     rp.depthAttachment.clearDepth = 0.5;
                 }
                 id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rp];
+                DM_CHECK(re != nil);
                 [re setRenderPipelineState:(fp16 ? pso_fp16_mrt : pso_rgba8)];
                 [re setFragmentBytes:&uni length:sizeof(uni) atIndex:0];
                 [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
                 [re endEncoding];
                 [cb commit];
                 [cb waitUntilCompleted];
+                DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
                 const double t1 = now_ms();
                 if (f >= kWarmup) sum += (t1 - t0);
             }
@@ -259,7 +311,7 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
         // 2. MetalFX Spatial Quality (1280x720 -> 1920x1080) & Performance (960x540 -> 1920x1080)
         auto run_spatial = [&](uint32_t iw, uint32_t ih, const std::string &png_name) -> double {
             dm_metalfx_spatial_t *sc = dm_metalfx_spatial_create(iw, ih, kOutW, kOutH, MTLPixelFormatRGBA8Unorm, false);
-            assert(sc != nullptr);
+            DM_CHECK(sc != nullptr);
             id<MTLTexture> in_tex = make_tex(iw, ih, MTLPixelFormatRGBA8Unorm,
                                              MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
             id<MTLTexture> out_tex = make_tex(kOutW, kOutH, MTLPixelFormatRGBA8Unorm,
@@ -270,21 +322,24 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
             for (int f = 0; f < kWarmup + kFrames; ++f) {
                 const double t0 = now_ms();
                 id<MTLCommandBuffer> cb = [queue commandBuffer];
+                DM_CHECK(cb != nil);
                 MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
                 rp.colorAttachments[0].texture = in_tex;
                 rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
                 rp.colorAttachments[0].storeAction = MTLStoreActionStore;
                 id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rp];
+                DM_CHECK(re != nil);
                 [re setRenderPipelineState:pso_rgba8];
                 [re setFragmentBytes:&su length:sizeof(su) atIndex:0];
                 [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
                 [re endEncoding];
 
-                assert(dm_metalfx_spatial_encode(sc, (__bridge void *)cb,
-                                                 (__bridge void *)in_tex,
-                                                 (__bridge void *)out_tex, iw, ih));
+                DM_CHECK(dm_metalfx_spatial_encode(sc, (__bridge void *)cb,
+                                                   (__bridge void *)in_tex,
+                                                   (__bridge void *)out_tex, iw, ih));
                 [cb commit];
                 [cb waitUntilCompleted];
+                DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
                 const double t1 = now_ms();
                 if (f >= kWarmup) sum += (t1 - t0);
             }
@@ -301,7 +356,7 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
             q_w, q_h, kOutW, kOutH,
             MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
             MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float);
-        assert(tc != nullptr);
+        DM_CHECK(tc != nullptr);
         id<MTLTexture> t_in = make_tex(q_w, q_h, MTLPixelFormatRGBA16Float,
                                        MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
         id<MTLTexture> t_dep = make_tex(q_w, q_h, MTLPixelFormatDepth32Float,
@@ -319,6 +374,7 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
 
             const double t0 = now_ms();
             id<MTLCommandBuffer> cb = [queue commandBuffer];
+            DM_CHECK(cb != nil);
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
             rp.colorAttachments[0].texture = t_in;
             rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;
@@ -331,19 +387,21 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
             rp.depthAttachment.storeAction = MTLStoreActionStore;
             rp.depthAttachment.clearDepth = 0.5;
             id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rp];
+            DM_CHECK(re != nil);
             [re setRenderPipelineState:pso_fp16_mrt];
             [re setFragmentBytes:&tu length:sizeof(tu) atIndex:0];
             [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
             [re endEncoding];
 
-            assert(dm_metalfx_temporal_encode(tc, (__bridge void *)cb,
-                                              (__bridge void *)t_in,
-                                              (__bridge void *)t_dep,
-                                              (__bridge void *)t_mot,
-                                              (__bridge void *)t_out,
-                                              jx, jy, 1.0f, 1.0f, f == 0));
+            DM_CHECK(dm_metalfx_temporal_encode(tc, (__bridge void *)cb,
+                                                (__bridge void *)t_in,
+                                                (__bridge void *)t_dep,
+                                                (__bridge void *)t_mot,
+                                                (__bridge void *)t_out,
+                                                jx, jy, 1.0f, 1.0f, f == 0));
             [cb commit];
             [cb waitUntilCompleted];
+            DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
             const double t1 = now_ms();
             if (f >= kWarmup) temp_sum += (t1 - t0);
         }
@@ -351,21 +409,25 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
         save_private_tex_png(dev, queue, t_out, fp16_blit_pso, out_dir + "/metalfx_temporal_quality.png");
         dm_metalfx_temporal_destroy(tc);
 
-        const double sq_speedup = native8_ms / spatial_q_ms;
-        const double sp_speedup = native8_ms / spatial_p_ms;
-        const double tq_speedup = native16_ms / temporal_q_ms;
+        const double sq_speedup = spatial_q_ms > 0.0 ? (native8_ms / spatial_q_ms) : 0.0;
+        const double sp_speedup = spatial_p_ms > 0.0 ? (native8_ms / spatial_p_ms) : 0.0;
+        const double tq_speedup = temporal_q_ms > 0.0 ? (native16_ms / temporal_q_ms) : 0.0;
+        const double nat8_fps = native8_ms > 0.0 ? (1000.0 / native8_ms) : 0.0;
+        const double sq_fps = spatial_q_ms > 0.0 ? (1000.0 / spatial_q_ms) : 0.0;
+        const double sp_fps = spatial_p_ms > 0.0 ? (1000.0 / spatial_p_ms) : 0.0;
+        const double tq_fps = temporal_q_ms > 0.0 ? (1000.0 / temporal_q_ms) : 0.0;
 
-        printf("[dm_metalfx_bench] Native 1080p (RGBA8): %.3f ms (%.1f FPS)\n", native8_ms, 1000.0 / native8_ms);
+        printf("[dm_metalfx_bench] Native 1080p (RGBA8): %.3f ms (%.1f FPS)\n", native8_ms, nat8_fps);
         printf("[dm_metalfx_bench] Spatial Quality (%ux%u->1080p): %.3f ms (%.1f FPS, %.2fx)\n",
-               q_w, q_h, spatial_q_ms, 1000.0 / spatial_q_ms, sq_speedup);
+               q_w, q_h, spatial_q_ms, sq_fps, sq_speedup);
         printf("[dm_metalfx_bench] Spatial Perf    (%ux%u->1080p): %.3f ms (%.1f FPS, %.2fx)\n",
-               p_w, p_h, spatial_p_ms, 1000.0 / spatial_p_ms, sp_speedup);
+               p_w, p_h, spatial_p_ms, sp_fps, sp_speedup);
         printf("[dm_metalfx_bench] Temporal Quality (%ux%u->1080p): %.3f ms (%.1f FPS, %.2fx vs 1080p FP16 %.3f ms)\n",
-               q_w, q_h, temporal_q_ms, 1000.0 / temporal_q_ms, tq_speedup, native16_ms);
+               q_w, q_h, temporal_q_ms, tq_fps, tq_speedup, native16_ms);
 
         if (json_path) {
             FILE *jf = fopen(json_path, "w");
-            assert(jf != nullptr);
+            DM_CHECK(jf != nullptr);
             fprintf(jf,
                     "{\n"
                     "  \"spatial_supported\": %s,\n"
@@ -390,10 +452,10 @@ kernel void fp16_to_rgba8(texture2d<float, access::read> src [[texture(0)]],
                     caps.temporal_supported ? "true" : "false",
                     caps.metal4fx_spatial ? "true" : "false",
                     caps.metal4fx_temporal ? "true" : "false",
-                    native8_ms, 1000.0 / native8_ms, native16_ms,
-                    spatial_q_ms, 1000.0 / spatial_q_ms, sq_speedup,
-                    spatial_p_ms, 1000.0 / spatial_p_ms, sp_speedup,
-                    temporal_q_ms, 1000.0 / temporal_q_ms, tq_speedup,
+                    native8_ms, nat8_fps, native16_ms,
+                    spatial_q_ms, sq_fps, sq_speedup,
+                    spatial_p_ms, sp_fps, sp_speedup,
+                    temporal_q_ms, tq_fps, tq_speedup,
                     out_dir.c_str());
             fclose(jf);
         }

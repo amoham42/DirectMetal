@@ -3,14 +3,25 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
-#include <assert.h>
-#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <string>
 #include <time.h>
 #include <vector>
+
+#define DM_CHECK(expr)                                                                 \
+    do {                                                                               \
+        if (!(expr)) {                                                                 \
+            fprintf(stderr, "[dm_uma_bench] CHECK FAILED (%s:%d): %s\n",               \
+                    __FILE__, __LINE__, #expr);                                        \
+            return 1;                                                                  \
+        }                                                                              \
+    } while (0)
+
+static bool ctest_skip_allowed(void) {
+    const char *v = std::getenv("DM_CTEST_ALLOW_SKIP");
+    return v && v[0] && std::strcmp(v, "0") != 0;
+}
 
 static double now_ms(void) {
     struct timespec ts;
@@ -33,7 +44,11 @@ int main(int argc, char **argv) {
 
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-        assert(dev != nil && dev.hasUnifiedMemory);
+        if ((!dev || !dev.hasUnifiedMemory) && ctest_skip_allowed()) {
+            printf("[dm_uma_bench] SKIP: no Apple Silicon UMA Metal device in headless environment\n");
+            return 77;
+        }
+        DM_CHECK(dev != nil && dev.hasUnifiedMemory);
 
         NSString *msl = @R"(
 #include <metal_stdlib>
@@ -48,11 +63,13 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
 )";
         NSError *err = nil;
         id<MTLLibrary> lib = [dev newLibraryWithSource:msl options:nil error:&err];
-        assert(lib != nil);
+        DM_CHECK(lib != nil);
         id<MTLFunction> fn = [lib newFunctionWithName:@"reduce4"];
+        DM_CHECK(fn != nil);
         id<MTLComputePipelineState> cps = [dev newComputePipelineStateWithFunction:fn error:&err];
-        assert(cps != nil);
+        DM_CHECK(cps != nil);
         id<MTLCommandQueue> queue = [dev newCommandQueue];
+        DM_CHECK(queue != nil);
 
         const size_t in_bytes = kInCount * sizeof(uint32_t);
         const size_t out_bytes = kOutCount * sizeof(uint32_t);
@@ -65,6 +82,8 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
         id<MTLBuffer> priv_in = [dev newBufferWithLength:in_bytes options:MTLResourceStorageModePrivate];
         id<MTLBuffer> priv_out = [dev newBufferWithLength:out_bytes options:MTLResourceStorageModePrivate];
         id<MTLBuffer> stage_out = [dev newBufferWithLength:out_bytes options:MTLResourceStorageModeShared];
+        DM_CHECK(stage_in != nil && priv_in != nil && priv_out != nil && stage_out != nil);
+        DM_CHECK(stage_in.contents != nullptr && stage_out.contents != nullptr);
         const uint64_t gpu_alloc_discrete = dev.currentAllocatedSize - gpu_alloc_before_discrete;
         const size_t total_footprint_discrete = gpu_alloc_discrete + in_bytes + out_bytes;
 
@@ -78,11 +97,14 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
             std::memcpy(stage_in.contents, cpu_src.data(), in_bytes);
 
             id<MTLCommandBuffer> cb = [queue commandBuffer];
+            DM_CHECK(cb != nil);
             id<MTLBlitCommandEncoder> b1 = [cb blitCommandEncoder];
+            DM_CHECK(b1 != nil);
             [b1 copyFromBuffer:stage_in sourceOffset:0 toBuffer:priv_in destinationOffset:0 size:in_bytes];
             [b1 endEncoding];
 
             id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+            DM_CHECK(ce != nil);
             [ce setComputePipelineState:cps];
             [ce setBuffer:priv_in offset:0 atIndex:0];
             [ce setBuffer:priv_out offset:0 atIndex:1];
@@ -90,11 +112,13 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
             [ce endEncoding];
 
             id<MTLBlitCommandEncoder> b2 = [cb blitCommandEncoder];
+            DM_CHECK(b2 != nil);
             [b2 copyFromBuffer:priv_out sourceOffset:0 toBuffer:stage_out destinationOffset:0 size:out_bytes];
             [b2 endEncoding];
 
             [cb commit];
             [cb waitUntilCompleted];
+            DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
             std::memcpy(cpu_dst_discrete.data(), stage_out.contents, out_bytes);
             const double t1 = now_ms();
             if (f >= kWarmup) discrete_sum_ms += (t1 - t0);
@@ -102,25 +126,30 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
                 for (uint32_t i = 0; i < kOutCount; ++i) discrete_checksum += cpu_dst_discrete[i];
             }
         }
-        stage_in = nil; priv_in = nil; priv_out = nil; stage_out = nil;
+        stage_in = nil;
+        priv_in = nil;
+        priv_out = nil;
+        stage_out = nil;
 
         // --- Path B: DirectMetal UMA Zero-Copy (newBufferWithBytesNoCopy Shared Ring) ---
         const uint64_t gpu_alloc_before_uma = dev.currentAllocatedSize;
         dm_uma_ring_t *ring = dm_uma_ring_create(in_bytes + out_bytes + 65536u, DM_UMA_HEAP_UPLOAD);
-        assert(ring != nullptr);
+        DM_CHECK(ring != nullptr);
         const uint64_t gpu_alloc_uma = dev.currentAllocatedSize - gpu_alloc_before_uma;
         const size_t total_footprint_uma = gpu_alloc_uma;  // Zero separate CPU heap or private copy!
 
-        // Also test MTLHeap pool reuse
+        // Also test MTLHeap pool reuse + edge cases
+        DM_CHECK(dm_uma_ring_create(0, DM_UMA_HEAP_UPLOAD) == nullptr);
+        DM_CHECK(dm_uma_pool_create(0, DM_UMA_HEAP_DYNAMIC_CB) == nullptr);
         dm_uma_pool_t *pool = dm_uma_pool_create(2u * 1024u * 1024u, DM_UMA_HEAP_DYNAMIC_CB);
-        assert(pool != nullptr);
+        DM_CHECK(pool != nullptr);
         void *pool_cpu = nullptr;
         void *b_a = dm_uma_pool_acquire_buffer(pool, 65536, &pool_cpu);
-        assert(b_a != nullptr && pool_cpu != nullptr);
+        DM_CHECK(b_a != nullptr && pool_cpu != nullptr);
         dm_uma_pool_recycle_buffer(pool, b_a);
         void *b_b = dm_uma_pool_acquire_buffer(pool, 65536, &pool_cpu);
-        assert(b_b == b_a);
-        assert(dm_uma_pool_telemetry(pool).reuse_hits == 1);
+        DM_CHECK(b_b == b_a);
+        DM_CHECK(dm_uma_pool_telemetry(pool).reuse_hits == 1);
         dm_uma_pool_recycle_buffer(pool, b_b);
         dm_uma_pool_destroy(pool);
 
@@ -130,8 +159,8 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
         for (int f = 0; f < kWarmup + kFrames; ++f) {
             dm_uma_ring_reset(ring);
             dm_uma_slice_t in_slice{}, out_slice{};
-            assert(dm_uma_ring_alloc(ring, in_bytes, 256, &in_slice));
-            assert(dm_uma_ring_alloc(ring, out_bytes, 256, &out_slice));
+            DM_CHECK(dm_uma_ring_alloc(ring, in_bytes, 256, &in_slice));
+            DM_CHECK(dm_uma_ring_alloc(ring, out_bytes, 256, &out_slice));
             uint32_t *in_ptr = static_cast<uint32_t *>(in_slice.cpu_ptr);
             const uint32_t *out_ptr = static_cast<const uint32_t *>(out_slice.cpu_ptr);
 
@@ -141,7 +170,9 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
             }
             id<MTLBuffer> mtl_buf = (__bridge id<MTLBuffer>)in_slice.metal_buffer_bridge;
             id<MTLCommandBuffer> cb = [queue commandBuffer];
+            DM_CHECK(cb != nil);
             id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+            DM_CHECK(ce != nil);
             [ce setComputePipelineState:cps];
             [ce setBuffer:mtl_buf offset:in_slice.offset atIndex:0];
             [ce setBuffer:mtl_buf offset:out_slice.offset atIndex:1];
@@ -149,6 +180,7 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
             [ce endEncoding];
             [cb commit];
             [cb waitUntilCompleted];
+            DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
 
             uint64_t frame_sum = 0;
             for (uint32_t i = 0; i < kOutCount; ++i) {
@@ -161,18 +193,22 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
         }
         dm_uma_ring_destroy(ring);
 
-        assert(uma_checksum == discrete_checksum);
-        assert(std::memcmp(last_uma_out.data(), cpu_dst_discrete.data(), out_bytes) == 0);
+        DM_CHECK(uma_checksum == discrete_checksum);
+        DM_CHECK(std::memcmp(last_uma_out.data(), cpu_dst_discrete.data(), out_bytes) == 0);
 
         const double discrete_mean = discrete_sum_ms / kFrames;
         const double uma_mean = uma_sum_ms / kFrames;
-        const double speedup = discrete_mean / uma_mean;
+        const double speedup = uma_mean > 0.0 ? (discrete_mean / uma_mean) : 0.0;
         const double payload_gb = (double)(in_bytes + out_bytes) / (1024.0 * 1024.0 * 1024.0);
-        const double discrete_gbps = payload_gb / (discrete_mean / 1000.0);
-        const double uma_gbps = payload_gb / (uma_mean / 1000.0);
-        const double mem_reduction_pct = 100.0 * (1.0 - (double)total_footprint_uma / (double)total_footprint_discrete);
+        const double discrete_gbps = discrete_mean > 0.0 ? (payload_gb / (discrete_mean / 1000.0)) : 0.0;
+        const double uma_gbps = uma_mean > 0.0 ? (payload_gb / (uma_mean / 1000.0)) : 0.0;
+        const double mem_reduction_pct =
+            total_footprint_discrete > 0
+                ? (100.0 * (1.0 - (double)total_footprint_uma / (double)total_footprint_discrete))
+                : 0.0;
 
-        printf("[dm_uma_bench] Bit-exact verification PASSED (checksum=0x%llx)\n", uma_checksum);
+        printf("[dm_uma_bench] Bit-exact verification PASSED (checksum=0x%llx)\n",
+               (unsigned long long)uma_checksum);
         printf("[dm_uma_bench] Discrete Staging (2x copy+blit): %.3f ms/frame (%.2f GB/s, footprint=%.2f MiB)\n",
                discrete_mean, discrete_gbps, (double)total_footprint_discrete / (1024.0 * 1024.0));
         printf("[dm_uma_bench] DirectMetal UMA Zero-Copy     : %.3f ms/frame (%.2f GB/s, footprint=%.2f MiB)\n",
@@ -182,7 +218,7 @@ kernel void reduce4(device const uint* in_buf [[buffer(0)]],
 
         if (json_path) {
             FILE *jf = fopen(json_path, "w");
-            assert(jf != nullptr);
+            DM_CHECK(jf != nullptr);
             fprintf(jf,
                     "{\n"
                     "  \"bit_exact\": true,\n"

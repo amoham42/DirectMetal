@@ -1,8 +1,37 @@
 #include "dm_host_io.h"
 
-#include <assert.h>
 #include <cstdio>
 #include <cstring>
+#include <string>
+
+#define DM_CHECK(expr)                                                                 \
+    do {                                                                               \
+        if (!(expr)) {                                                                 \
+            fprintf(stderr, "[dm_host_io_test] CHECK FAILED (%s:%d): %s\n",            \
+                    __FILE__, __LINE__, #expr);                                        \
+            return 1;                                                                  \
+        }                                                                              \
+    } while (0)
+
+static std::string json_escape(const char *s) {
+    if (!s) return "";
+    std::string out;
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(s); *p; ++p) {
+        switch (*p) {
+            case '"':  out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (*p >= 0x20) {
+                    out.push_back(static_cast<char>(*p));
+                }
+                break;
+        }
+    }
+    return out;
+}
 
 int main(int argc, char **argv) {
 #if !defined(__aarch64__)
@@ -15,12 +44,15 @@ int main(int argc, char **argv) {
         }
     }
 
+    DM_CHECK(!dm_audio_probe(nullptr));
+    DM_CHECK(!dm_input_probe(nullptr));
+
     dm_audio_probe_result_t audio{};
-    assert(dm_audio_probe(&audio));
+    DM_CHECK(dm_audio_probe(&audio));
 
     dm_input_probe_result_t input{};
-    assert(dm_input_probe(&input));
-    assert(input.gamecontroller_framework_ok);
+    DM_CHECK(dm_input_probe(&input));
+    DM_CHECK(input.gamecontroller_framework_ok);
 
     printf("[dm_host_io_test] Arch: arm64 native\n");
     printf("[dm_host_io_test] CoreAudio: output=%s device=\"%s\" rate=%.0f Hz buf=%u frames safety=%u latency=%.2f ms\n",
@@ -38,7 +70,8 @@ int main(int argc, char **argv) {
 
     if (json_path) {
         FILE *jf = fopen(json_path, "w");
-        assert(jf != nullptr);
+        DM_CHECK(jf != nullptr);
+        const std::string esc_dev = json_escape(audio.device_name);
         fprintf(jf,
                 "{\n"
                 "  \"arch\": \"arm64\",\n"
@@ -51,7 +84,7 @@ int main(int argc, char **argv) {
                 "  \"connected_controllers\": %u\n"
                 "}\n",
                 audio.has_default_output ? "true" : "false",
-                audio.device_name,
+                esc_dev.c_str(),
                 audio.sample_rate_hz,
                 audio.buffer_frames,
                 audio.hardware_latency_ms,

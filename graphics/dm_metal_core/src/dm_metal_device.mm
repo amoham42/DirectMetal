@@ -4,17 +4,36 @@
 #import <Metal/Metal.h>
 
 #include <ctype.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/sysctl.h>
 
 static void query_macos_build(char *buf, size_t cap) {
-    size_t sz = cap;
-    if (sysctlbyname("kern.osversion", buf, &sz, NULL, 0) != 0 || sz == 0) {
+    if (!buf || cap == 0) return;
+    memset(buf, 0, cap);
+    size_t sz = cap - 1;
+    if (sysctlbyname("kern.osversion", buf, &sz, NULL, 0) != 0 || sz == 0 || buf[0] == '\0') {
         snprintf(buf, cap, "unknown");
     } else {
         buf[cap - 1] = '\0';
     }
+}
+
+__attribute__((format(printf, 3, 4)))
+static void set_smoke_err(char *buf, size_t cap, const char *fmt, ...) {
+    if (!buf || cap == 0) return;
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(buf, cap, fmt, ap);
+    va_end(ap);
+}
+
+static const char *nserror_cstr(NSError *err) {
+    if (err && err.localizedDescription && err.localizedDescription.UTF8String) {
+        return err.localizedDescription.UTF8String;
+    }
+    return "unknown Metal error";
 }
 
 bool dm_metal_query_device(dm_metal_device_info_t *out) {
@@ -25,7 +44,9 @@ bool dm_metal_query_device(dm_metal_device_info_t *out) {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev) return false;
 
-        snprintf(out->gpu_name, sizeof(out->gpu_name), "%s", dev.name.UTF8String);
+        const char *gpu_name = dev.name ? dev.name.UTF8String : NULL;
+        snprintf(out->gpu_name, sizeof(out->gpu_name), "%s",
+                 (gpu_name && gpu_name[0]) ? gpu_name : "Unknown Metal GPU");
         out->registry_id = dev.registryID;
         out->has_unified_memory = dev.hasUnifiedMemory;
         out->recommended_working_set_bytes = dev.recommendedMaxWorkingSetSize;
@@ -72,10 +93,14 @@ bool dm_metal_query_device(dm_metal_device_info_t *out) {
 }
 
 bool dm_metal_run_smoke_test(char *error_buf, size_t error_cap) {
+    if (error_buf && error_cap > 0) {
+        error_buf[0] = '\0';
+    }
+
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev) {
-            if (error_buf) snprintf(error_buf, error_cap, "MTLCreateSystemDefaultDevice returned nil");
+            set_smoke_err(error_buf, error_cap, "MTLCreateSystemDefaultDevice returned nil");
             return false;
         }
 
@@ -113,30 +138,35 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
         NSError *err = nil;
         id<MTLLibrary> lib = [dev newLibraryWithSource:msl options:nil error:&err];
         if (!lib) {
-            if (error_buf) snprintf(error_buf, error_cap, "Shader compile failed: %s",
-                                    err.localizedDescription.UTF8String);
+            set_smoke_err(error_buf, error_cap, "Shader compile failed: %s", nserror_cstr(err));
             return false;
         }
 
         id<MTLFunction> cs_fn = [lib newFunctionWithName:@"dm_compute_fill"];
         id<MTLFunction> vs_fn = [lib newFunctionWithName:@"dm_vs"];
         id<MTLFunction> fs_fn = [lib newFunctionWithName:@"dm_fs"];
+        if (!cs_fn || !vs_fn || !fs_fn) {
+            set_smoke_err(error_buf, error_cap, "Missing Metal smoke entry points in library");
+            return false;
+        }
 
         id<MTLComputePipelineState> cps = [dev newComputePipelineStateWithFunction:cs_fn error:&err];
         if (!cps) {
-            if (error_buf) snprintf(error_buf, error_cap, "Compute PSO failed: %s",
-                                    err.localizedDescription.UTF8String);
+            set_smoke_err(error_buf, error_cap, "Compute PSO failed: %s", nserror_cstr(err));
             return false;
         }
 
         MTLRenderPipelineDescriptor *rpd = [MTLRenderPipelineDescriptor new];
+        if (!rpd) {
+            set_smoke_err(error_buf, error_cap, "Failed to allocate MTLRenderPipelineDescriptor");
+            return false;
+        }
         rpd.vertexFunction = vs_fn;
         rpd.fragmentFunction = fs_fn;
         rpd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
         id<MTLRenderPipelineState> rps = [dev newRenderPipelineStateWithDescriptor:rpd error:&err];
         if (!rps) {
-            if (error_buf) snprintf(error_buf, error_cap, "Render PSO failed: %s",
-                                    err.localizedDescription.UTF8String);
+            set_smoke_err(error_buf, error_cap, "Render PSO failed: %s", nserror_cstr(err));
             return false;
         }
 
@@ -144,6 +174,10 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
                                                                                       width:64
                                                                                      height:64
                                                                                   mipmapped:NO];
+        if (!td) {
+            set_smoke_err(error_buf, error_cap, "Failed to allocate MTLTextureDescriptor");
+            return false;
+        }
         td.usage = MTLTextureUsageShaderWrite | MTLTextureUsageRenderTarget;
         td.storageMode = MTLStorageModeShared;
         id<MTLTexture> cs_tex = [dev newTextureWithDescriptor:td];
@@ -153,9 +187,17 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
                                                  options:MTLResourceStorageModeShared];
 
         id<MTLCommandQueue> q = [dev newCommandQueue];
-        id<MTLCommandBuffer> cb = [q commandBuffer];
+        id<MTLCommandBuffer> cb = q ? [q commandBuffer] : nil;
+        if (!cs_tex || !rt_tex || !uma_buf || !uma_buf.contents || !q || !cb) {
+            set_smoke_err(error_buf, error_cap, "Failed to allocate Metal resources or command buffer");
+            return false;
+        }
 
         id<MTLComputeCommandEncoder> ce = [cb computeCommandEncoder];
+        if (!ce) {
+            set_smoke_err(error_buf, error_cap, "Failed to create compute command encoder");
+            return false;
+        }
         [ce setComputePipelineState:cps];
         [ce setTexture:cs_tex atIndex:0];
         [ce setBuffer:uma_buf offset:0 atIndex:0];
@@ -163,11 +205,19 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
         [ce endEncoding];
 
         MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+        if (!pass) {
+            set_smoke_err(error_buf, error_cap, "Failed to create render pass descriptor");
+            return false;
+        }
         pass.colorAttachments[0].texture = rt_tex;
         pass.colorAttachments[0].loadAction = MTLLoadActionClear;
         pass.colorAttachments[0].storeAction = MTLStoreActionStore;
         pass.colorAttachments[0].clearColor = MTLClearColorMake(0.1, 0.1, 0.15, 1.0);
         id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:pass];
+        if (!re) {
+            set_smoke_err(error_buf, error_cap, "Failed to create render command encoder");
+            return false;
+        }
         [re setRenderPipelineState:rps];
         [re drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
         [re endEncoding];
@@ -175,7 +225,7 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
         [cb commit];
         [cb waitUntilCompleted];
         if (cb.status != MTLCommandBufferStatusCompleted) {
-            if (error_buf) snprintf(error_buf, error_cap, "Command buffer failed");
+            set_smoke_err(error_buf, error_cap, "Command buffer failed: %s", nserror_cstr(cb.error));
             return false;
         }
 
@@ -184,7 +234,7 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
             for (uint32_t x = 0; x < 64; ++x) {
                 uint32_t expected = (x * 31u) ^ (y * 17u);
                 if (ptr[y * 64 + x] != expected) {
-                    if (error_buf) snprintf(error_buf, error_cap, "UMA compute mismatch at (%u,%u)", x, y);
+                    set_smoke_err(error_buf, error_cap, "UMA compute mismatch at (%u,%u)", x, y);
                     return false;
                 }
             }
@@ -193,8 +243,8 @@ fragment float4 dm_fs(VOut in [[stage_in]]) {
         uint8_t center[4] = {0};
         [rt_tex getBytes:center bytesPerRow:64 * 4 fromRegion:MTLRegionMake2D(32, 32, 1, 1) mipmapLevel:0];
         if (center[0] < 40 || center[1] < 40 || center[2] < 40) {
-            if (error_buf) snprintf(error_buf, error_cap, "Render triangle center pixel invalid: %u,%u,%u",
-                                    center[0], center[1], center[2]);
+            set_smoke_err(error_buf, error_cap, "Render triangle center pixel invalid: %u,%u,%u",
+                          center[0], center[1], center[2]);
             return false;
         }
         return true;

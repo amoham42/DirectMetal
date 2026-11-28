@@ -1,11 +1,33 @@
 #include "dm_metal_core.h"
 
-#include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define DM_CHECK(expr)                                                                 \
+    do {                                                                               \
+        if (!(expr)) {                                                                 \
+            fprintf(stderr, "[dm_metal_probe] CHECK FAILED (%s:%d): %s\n",             \
+                    __FILE__, __LINE__, #expr);                                        \
+            return 1;                                                                  \
+        }                                                                              \
+    } while (0)
+
+static bool ctest_skip_allowed(void) {
+    const char *v = getenv("DM_CTEST_ALLOW_SKIP");
+    return v && v[0] && strcmp(v, "0") != 0;
+}
 
 int main(void) {
     dm_metal_device_info_t info;
-    assert(dm_metal_query_device(&info));
+    if (!dm_metal_query_device(&info)) {
+        if (ctest_skip_allowed()) {
+            printf("[dm_metal_probe] SKIP: no Metal device available in headless environment\n");
+            return 77;
+        }
+        fprintf(stderr, "[dm_metal_probe] FAIL: dm_metal_query_device returned false\n");
+        return 1;
+    }
 
     printf("[dm_metal_probe] GPU: %s\n", info.gpu_name);
     printf("[dm_metal_probe] Family: %s | Metal3: %s | Metal4: %s\n",
@@ -21,8 +43,13 @@ int main(void) {
            info.supports_raytracing ? "yes" : "no",
            info.supports_barycentrics ? "yes" : "no");
 
-    assert(info.has_unified_memory);
-    assert(info.supports_metal3);
+    if ((!info.has_unified_memory || !info.supports_metal3) && ctest_skip_allowed()) {
+        printf("[dm_metal_probe] SKIP: paravirtualized GPU lacks Apple Silicon UMA/Metal3\n");
+        return 77;
+    }
+
+    DM_CHECK(info.has_unified_memory);
+    DM_CHECK(info.supports_metal3);
 
     char err[256] = {0};
     if (!dm_metal_run_smoke_test(err, sizeof(err))) {

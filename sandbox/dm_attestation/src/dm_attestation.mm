@@ -8,6 +8,7 @@
 #include "dm_attestation.h"
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 static void set_err(char* buf, size_t cap, const char* msg) {
@@ -16,19 +17,44 @@ static void set_err(char* buf, size_t cap, const char* msg) {
     }
 }
 
+static void consume_cferror(CFErrorRef* cfErr, char* err_buf, size_t err_cap, const char* fallback) {
+    const char* msg = fallback;
+    NSError* nsErr = nil;
+    if (cfErr && *cfErr) {
+        nsErr = (__bridge_transfer NSError*)(*cfErr);
+        *cfErr = nullptr;
+        if (nsErr.localizedDescription && nsErr.localizedDescription.UTF8String) {
+            msg = nsErr.localizedDescription.UTF8String;
+        }
+    }
+    set_err(err_buf, err_cap, msg);
+}
+
+static NSString* safe_utf8_nsstring(const char* s) {
+    if (!s) return @"";
+    NSString* ns = [NSString stringWithUTF8String:s];
+    return ns ?: @"";
+}
+
 static void read_sysctl_str(const char* name, char* out, size_t cap) {
-    if (!out || cap == 0) return;
-    out[0] = '\0';
+    if (!name || !out || cap == 0) return;
+    memset(out, 0, cap);
     size_t sz = cap - 1;
     if (sysctlbyname(name, out, &sz, nullptr, 0) == 0) {
         out[cap - 1] = '\0';
+    } else {
+        out[0] = '\0';
     }
 }
 
 static NSString* run_capture_stdout(NSString* launchPath, NSArray<NSString*>* args, int* outStatus = nullptr) {
+    if (!launchPath || launchPath.length == 0) {
+        if (outStatus) *outStatus = -1;
+        return nil;
+    }
     NSTask* task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:launchPath];
-    task.arguments = args;
+    task.arguments = args ?: @[];
     NSPipe* pipe = [NSPipe pipe];
     task.standardOutput = pipe;
     task.standardError = pipe;
@@ -37,14 +63,18 @@ static NSString* run_capture_stdout(NSString* launchPath, NSArray<NSString*>* ar
         if (outStatus) *outStatus = -1;
         return nil;
     }
+    // Drain pipe BEFORE waitUntilExit to avoid 64 KiB pipe buffer deadlocks.
+    NSData* data = [[pipe fileHandleForReading] readDataToEndOfFile];
     [task waitUntilExit];
     if (outStatus) *outStatus = task.terminationStatus;
-    NSData* data = [[pipe fileHandleForReading] readDataToEndOfFile];
+    if (!data || data.length == 0) return @"";
     return [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] ?: @"";
 }
 
 static bool sha256_file_hex(const char* path, char out_hex[65]) {
+    if (!out_hex) return false;
     out_hex[0] = '\0';
+    if (!path || !path[0]) return false;
     FILE* fp = fopen(path, "rb");
     if (!fp) return false;
     CC_SHA256_CTX ctx;
@@ -54,7 +84,11 @@ static bool sha256_file_hex(const char* path, char out_hex[65]) {
     while ((n = fread(buf, 1, sizeof(buf), fp)) > 0) {
         CC_SHA256_Update(&ctx, buf, static_cast<CC_LONG>(n));
     }
+    const bool io_err = ferror(fp) != 0;
     fclose(fp);
+    if (io_err) {
+        return false;
+    }
     uint8_t digest[CC_SHA256_DIGEST_LENGTH];
     CC_SHA256_Final(digest, &ctx);
     for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
@@ -67,6 +101,7 @@ static bool sha256_file_hex(const char* path, char out_hex[65]) {
 static NSString* hex_from_nsdata(NSData* data) {
     if (!data || data.length == 0) return @"";
     const uint8_t* bytes = static_cast<const uint8_t*>(data.bytes);
+    if (!bytes) return @"";
     NSMutableString* hex = [NSMutableString stringWithCapacity:data.length * 2];
     for (NSUInteger i = 0; i < data.length; ++i) {
         [hex appendFormat:@"%02x", bytes[i]];
@@ -75,8 +110,10 @@ static NSString* hex_from_nsdata(NSData* data) {
 }
 
 static NSString* sha256_hex_nsdata(NSData* data) {
+    if (!data) return @"";
     uint8_t digest[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256(data.bytes, static_cast<CC_LONG>(data.length), digest);
+    const void* ptr = (data.length > 0 && data.bytes) ? data.bytes : "";
+    CC_SHA256(ptr, static_cast<CC_LONG>(data.length), digest);
     NSMutableString* hex = [NSMutableString stringWithCapacity:64];
     for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; ++i) {
         [hex appendFormat:@"%02x", digest[i]];
@@ -89,6 +126,9 @@ bool dm_attestation_collect_status(const char* target_binary_path,
                                    dm_attestation_status_t* out_status,
                                    char* err_buf,
                                    size_t err_buf_cap) {
+    if (err_buf && err_buf_cap > 0) {
+        err_buf[0] = '\0';
+    }
     if (!out_status) {
         set_err(err_buf, err_buf_cap, "null out_status");
         return false;
@@ -139,36 +179,39 @@ bool dm_attestation_collect_status(const char* target_binary_path,
         snprintf(out_status->binary_path, sizeof(out_status->binary_path), "%s", resolved_bin);
         if (resolved_bin[0]) {
             sha256_file_hex(resolved_bin, out_status->binary_sha256_hex);
-        }
 
-        /* SecStaticCode validation & CDHash inspection */
-        SecStaticCodeRef staticCode = nullptr;
-        NSURL* url = [NSURL fileURLWithPath:[NSString stringWithUTF8String:resolved_bin]];
-        if (url && SecStaticCodeCreateWithPath((__bridge CFURLRef)url, kSecCSDefaultFlags, &staticCode) == errSecSuccess) {
-            const OSStatus valStatus = SecStaticCodeCheckValidity(staticCode, kSecCSDefaultFlags, nullptr);
-            CFDictionaryRef info = nullptr;
-            if (SecCodeCopySigningInformation(staticCode,
-                                              static_cast<SecCSFlags>(kSecCSSigningInformation | kSecCSRequirementInformation),
-                                              &info) == errSecSuccess && info) {
-                NSDictionary* dict = (__bridge NSDictionary*)info;
-                NSString* ident = dict[(__bridge NSString*)kSecCodeInfoIdentifier];
-                if (ident && valStatus == errSecSuccess) {
-                    out_status->code_signed = true;
-                    snprintf(out_status->code_identifier, sizeof(out_status->code_identifier), "%s", ident.UTF8String);
+            /* SecStaticCode validation & CDHash inspection */
+            NSString* binPathStr = [NSString stringWithUTF8String:resolved_bin];
+            NSURL* url = (binPathStr && binPathStr.length > 0) ? [NSURL fileURLWithPath:binPathStr] : nil;
+            SecStaticCodeRef staticCode = nullptr;
+            if (url && SecStaticCodeCreateWithPath((__bridge CFURLRef)url, kSecCSDefaultFlags, &staticCode) == errSecSuccess && staticCode) {
+                const OSStatus valStatus = SecStaticCodeCheckValidity(staticCode, kSecCSDefaultFlags, nullptr);
+                CFDictionaryRef info = nullptr;
+                if (SecCodeCopySigningInformation(staticCode,
+                                                  static_cast<SecCSFlags>(kSecCSSigningInformation | kSecCSRequirementInformation),
+                                                  &info) == errSecSuccess && info) {
+                    NSDictionary* dict = (__bridge NSDictionary*)info;
+                    NSString* ident = dict[(__bridge NSString*)kSecCodeInfoIdentifier];
+                    if ([ident isKindOfClass:[NSString class]] && ident.UTF8String && valStatus == errSecSuccess) {
+                        out_status->code_signed = true;
+                        snprintf(out_status->code_identifier, sizeof(out_status->code_identifier), "%s", ident.UTF8String);
+                    }
+                    NSNumber* flagsNum = dict[(__bridge NSString*)kSecCodeInfoFlags];
+                    if ([flagsNum isKindOfClass:[NSNumber class]]) {
+                        const uint32_t flags = flagsNum.unsignedIntValue;
+                        out_status->hardened_runtime = (flags & kSecCodeSignatureRuntime) != 0;
+                    }
+                    NSData* cdhash = dict[(__bridge NSString*)kSecCodeInfoUnique];
+                    if ([cdhash isKindOfClass:[NSData class]]) {
+                        NSString* hex = hex_from_nsdata(cdhash);
+                        if (hex.UTF8String) {
+                            snprintf(out_status->cdhash_sha256_hex, sizeof(out_status->cdhash_sha256_hex), "%s", hex.UTF8String);
+                        }
+                    }
+                    CFRelease(info);
                 }
-                NSNumber* flagsNum = dict[(__bridge NSString*)kSecCodeInfoFlags];
-                if (flagsNum) {
-                    const uint32_t flags = flagsNum.unsignedIntValue;
-                    out_status->hardened_runtime = (flags & kSecCodeSignatureRuntime) != 0;
-                }
-                NSData* cdhash = dict[(__bridge NSString*)kSecCodeInfoUnique];
-                if (cdhash) {
-                    NSString* hex = hex_from_nsdata(cdhash);
-                    snprintf(out_status->cdhash_sha256_hex, sizeof(out_status->cdhash_sha256_hex), "%s", hex.UTF8String);
-                }
-                CFRelease(info);
+                CFRelease(staticCode);
             }
-            CFRelease(staticCode);
         }
         return true;
     }
@@ -180,12 +223,21 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
                                    size_t out_json_cap,
                                    char* err_buf,
                                    size_t err_buf_cap) {
+    if (err_buf && err_buf_cap > 0) {
+        err_buf[0] = '\0';
+    }
     if (!status || !nonce_hex || !nonce_hex[0] || !out_json || out_json_cap < 512) {
         set_err(err_buf, err_buf_cap, "invalid arguments to sign_challenge");
         return false;
     }
 
     @autoreleasepool {
+        NSString* nsNonce = [NSString stringWithUTF8String:nonce_hex];
+        if (!nsNonce || nsNonce.length == 0) {
+            set_err(err_buf, err_buf_cap, "invalid UTF-8 in nonce_hex");
+            return false;
+        }
+
         NSDictionary* keyAttrs = nil;
         NSString* keyClass = @"software-ephemeral";
         CFErrorRef cfErr = nullptr;
@@ -197,6 +249,10 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             kSecAccessControlPrivateKeyUsage,
             &cfErr);
+        if (cfErr) {
+            CFRelease(cfErr);
+            cfErr = nullptr;
+        }
         if (seAccess) {
             NSDictionary* seAttrs = @{
                 (__bridge id)kSecAttrKeyType: (__bridge id)kSecAttrKeyTypeECSECPrimeRandom,
@@ -207,7 +263,6 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
                     (__bridge id)kSecAttrAccessControl: (__bridge id)seAccess,
                 },
             };
-            cfErr = nullptr;
             privKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)seAttrs, &cfErr);
             CFRelease(seAccess);
             if (privKey) {
@@ -223,12 +278,10 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
                 (__bridge id)kSecAttrKeySizeInBits: @256,
                 (__bridge id)kSecAttrIsPermanent: @NO,
             };
-            cfErr = nullptr;
             privKey = SecKeyCreateRandomKey((__bridge CFDictionaryRef)keyAttrs, &cfErr);
         }
         if (!privKey) {
-            NSError* e = (__bridge_transfer NSError*)cfErr;
-            set_err(err_buf, err_buf_cap, e ? e.localizedDescription.UTF8String : "SecKeyCreateRandomKey failed");
+            consume_cferror(&cfErr, err_buf, err_buf_cap, "SecKeyCreateRandomKey failed");
             return false;
         }
         SecKeyRef pubKey = SecKeyCopyPublicKey(privKey);
@@ -242,8 +295,7 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
         CFRelease(pubKey);
         if (!pubRaw) {
             CFRelease(privKey);
-            NSError* e = (__bridge_transfer NSError*)cfErr;
-            set_err(err_buf, err_buf_cap, e ? e.localizedDescription.UTF8String : "SecKeyCopyExternalRepresentation failed");
+            consume_cferror(&cfErr, err_buf, err_buf_cap, "SecKeyCopyExternalRepresentation failed");
             return false;
         }
 
@@ -256,12 +308,12 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
         uint32_t dyldCount = _dyld_image_count();
 
         NSDictionary* claims = @{
-            @"nonce": [NSString stringWithUTF8String:nonce_hex],
+            @"nonce": nsNonce,
             @"timestamp_utc": ts ?: @"",
-            @"macos_version": [NSString stringWithUTF8String:status->macos_version],
-            @"macos_build": [NSString stringWithUTF8String:status->macos_build],
-            @"hardware_model": [NSString stringWithUTF8String:status->hardware_model],
-            @"boot_session_uuid": [NSString stringWithUTF8String:boot_uuid],
+            @"macos_version": safe_utf8_nsstring(status->macos_version),
+            @"macos_build": safe_utf8_nsstring(status->macos_build),
+            @"hardware_model": safe_utf8_nsstring(status->hardware_model),
+            @"boot_session_uuid": safe_utf8_nsstring(boot_uuid),
             @"sip_enabled": @(status->sip_enabled),
             @"ssv_sealed": @(status->ssv_sealed),
             @"dc_device_supported": @(dcDeviceSupported),
@@ -270,9 +322,9 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
             @"code_signed": @(status->code_signed),
             @"hardened_runtime": @(status->hardened_runtime),
             @"sandbox_active": @(status->sandbox_active),
-            @"code_identifier": [NSString stringWithUTF8String:status->code_identifier],
-            @"cdhash": [NSString stringWithUTF8String:status->cdhash_sha256_hex],
-            @"binary_sha256": [NSString stringWithUTF8String:status->binary_sha256_hex],
+            @"code_identifier": safe_utf8_nsstring(status->code_identifier),
+            @"cdhash": safe_utf8_nsstring(status->cdhash_sha256_hex),
+            @"binary_sha256": safe_utf8_nsstring(status->binary_sha256_hex),
         };
 
         NSError* jsonErr = nil;
@@ -281,10 +333,16 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
                                                                   error:&jsonErr];
         if (!canonicalData) {
             CFRelease(privKey);
-            set_err(err_buf, err_buf_cap, jsonErr ? jsonErr.localizedDescription.UTF8String : "JSON encode failed");
+            const char* jmsg = (jsonErr && jsonErr.localizedDescription) ? jsonErr.localizedDescription.UTF8String : nullptr;
+            set_err(err_buf, err_buf_cap, jmsg ? jmsg : "JSON encode failed");
             return false;
         }
         NSString* canonicalStr = [[NSString alloc] initWithData:canonicalData encoding:NSUTF8StringEncoding];
+        if (!canonicalStr) {
+            CFRelease(privKey);
+            set_err(err_buf, err_buf_cap, "canonical payload UTF-8 conversion failed");
+            return false;
+        }
 
         cfErr = nullptr;
         NSData* sig = (__bridge_transfer NSData*)SecKeyCreateSignature(
@@ -294,8 +352,7 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
             &cfErr);
         CFRelease(privKey);
         if (!sig) {
-            NSError* e = (__bridge_transfer NSError*)cfErr;
-            set_err(err_buf, err_buf_cap, e ? e.localizedDescription.UTF8String : "SecKeyCreateSignature failed");
+            consume_cferror(&cfErr, err_buf, err_buf_cap, "SecKeyCreateSignature failed");
             return false;
         }
 
@@ -303,16 +360,16 @@ bool dm_attestation_sign_challenge(const dm_attestation_status_t* status,
             @"schema": @"directmetal.attestation.v2",
             @"algorithm": @"ECDSA-P256-SHA256-X962",
             @"key_class": keyClass,
-            @"public_key_x963_b64": [pubRaw base64EncodedStringWithOptions:0],
+            @"public_key_x963_b64": [pubRaw base64EncodedStringWithOptions:0] ?: @"",
             @"key_id_sha256": sha256_hex_nsdata(pubRaw),
-            @"signature_b64": [sig base64EncodedStringWithOptions:0],
+            @"signature_b64": [sig base64EncodedStringWithOptions:0] ?: @"",
             @"payload_canonical": canonicalStr,
             @"claims": claims,
         };
         NSData* bundleData = [NSJSONSerialization dataWithJSONObject:bundle
                                                              options:NSJSONWritingPrettyPrinted | NSJSONWritingSortedKeys
                                                                error:&jsonErr];
-        if (!bundleData || bundleData.length + 1 >= out_json_cap) {
+        if (!bundleData || bundleData.length + 1 > out_json_cap) {
             set_err(err_buf, err_buf_cap, "bundle serialization failed or buffer too small");
             return false;
         }
@@ -326,6 +383,9 @@ bool dm_attestation_verify_bundle(const char* json_bundle,
                                   const char* expected_nonce_hex,
                                   char* err_buf,
                                   size_t err_buf_cap) {
+    if (err_buf && err_buf_cap > 0) {
+        err_buf[0] = '\0';
+    }
     if (!json_bundle || !json_bundle[0]) {
         set_err(err_buf, err_buf_cap, "empty bundle");
         return false;
@@ -339,32 +399,45 @@ bool dm_attestation_verify_bundle(const char* json_bundle,
             set_err(err_buf, err_buf_cap, "invalid JSON root");
             return false;
         }
-        NSString* schema = bundle[@"schema"];
-        NSString* pubB64 = bundle[@"public_key_x963_b64"];
-        NSString* keyId = bundle[@"key_id_sha256"];
-        NSString* sigB64 = bundle[@"signature_b64"];
-        NSString* canonical = bundle[@"payload_canonical"];
-        NSDictionary* claims = bundle[@"claims"];
-        if ((![schema isEqualToString:@"directmetal.attestation.v1"] &&
-             ![schema isEqualToString:@"directmetal.attestation.v2"]) ||
-            ![pubB64 isKindOfClass:[NSString class]] ||
-            ![sigB64 isKindOfClass:[NSString class]] ||
-            ![canonical isKindOfClass:[NSString class]] ||
-            ![claims isKindOfClass:[NSDictionary class]]) {
-            set_err(err_buf, err_buf_cap, "missing required bundle fields");
+        id schemaObj = bundle[@"schema"];
+        id pubB64Obj = bundle[@"public_key_x963_b64"];
+        id keyIdObj = bundle[@"key_id_sha256"];
+        id sigB64Obj = bundle[@"signature_b64"];
+        id canonicalObj = bundle[@"payload_canonical"];
+        id claimsObj = bundle[@"claims"];
+        if (![schemaObj isKindOfClass:[NSString class]] ||
+            ![pubB64Obj isKindOfClass:[NSString class]] ||
+            ![sigB64Obj isKindOfClass:[NSString class]] ||
+            ![canonicalObj isKindOfClass:[NSString class]] ||
+            ![claimsObj isKindOfClass:[NSDictionary class]]) {
+            set_err(err_buf, err_buf_cap, "missing or invalid required bundle fields");
+            return false;
+        }
+
+        NSString* schema = (NSString*)schemaObj;
+        NSString* pubB64 = (NSString*)pubB64Obj;
+        NSString* sigB64 = (NSString*)sigB64Obj;
+        NSString* canonical = (NSString*)canonicalObj;
+        NSDictionary* claims = (NSDictionary*)claimsObj;
+        if (![schema isEqualToString:@"directmetal.attestation.v1"] &&
+            ![schema isEqualToString:@"directmetal.attestation.v2"]) {
+            set_err(err_buf, err_buf_cap, "unsupported attestation schema");
             return false;
         }
 
         NSData* pubData = [[NSData alloc] initWithBase64EncodedString:pubB64 options:0];
         NSData* sigData = [[NSData alloc] initWithBase64EncodedString:sigB64 options:0];
         NSData* payloadData = [canonical dataUsingEncoding:NSUTF8StringEncoding];
-        if (!pubData || !sigData || !payloadData) {
+        if (!pubData || pubData.length == 0 || !sigData || sigData.length == 0 || !payloadData) {
             set_err(err_buf, err_buf_cap, "base64/UTF-8 decode failed");
             return false;
         }
-        if (keyId && ![sha256_hex_nsdata(pubData) isEqualToString:keyId]) {
-            set_err(err_buf, err_buf_cap, "key_id_sha256 mismatch");
-            return false;
+        if (keyIdObj != nil) {
+            if (![keyIdObj isKindOfClass:[NSString class]] ||
+                ![sha256_hex_nsdata(pubData) isEqualToString:(NSString*)keyIdObj]) {
+                set_err(err_buf, err_buf_cap, "key_id_sha256 mismatch");
+                return false;
+            }
         }
 
         /* Ensure claims dictionary inside bundle matches signed payload_canonical exactly */
@@ -374,8 +447,10 @@ bool dm_attestation_verify_bundle(const char* json_bundle,
             return false;
         }
         if (expected_nonce_hex && expected_nonce_hex[0]) {
-            NSString* gotNonce = signedClaims[@"nonce"];
-            if (![gotNonce isEqualToString:[NSString stringWithUTF8String:expected_nonce_hex]]) {
+            NSString* expNonce = [NSString stringWithUTF8String:expected_nonce_hex];
+            id gotNonceObj = signedClaims[@"nonce"];
+            if (!expNonce || ![gotNonceObj isKindOfClass:[NSString class]] ||
+                ![(NSString*)gotNonceObj isEqualToString:expNonce]) {
                 set_err(err_buf, err_buf_cap, "nonce mismatch");
                 return false;
             }
@@ -391,7 +466,7 @@ bool dm_attestation_verify_bundle(const char* json_bundle,
                                                 (__bridge CFDictionaryRef)pubAttrs,
                                                 &cfErr);
         if (!pubKey) {
-            set_err(err_buf, err_buf_cap, "SecKeyCreateWithData failed");
+            consume_cferror(&cfErr, err_buf, err_buf_cap, "SecKeyCreateWithData failed");
             return false;
         }
         const Boolean ok = SecKeyVerifySignature(
@@ -402,8 +477,11 @@ bool dm_attestation_verify_bundle(const char* json_bundle,
             &cfErr);
         CFRelease(pubKey);
         if (!ok) {
-            set_err(err_buf, err_buf_cap, "ECDSA signature verification failed");
+            consume_cferror(&cfErr, err_buf, err_buf_cap, "ECDSA signature verification failed");
             return false;
+        }
+        if (cfErr) {
+            CFRelease(cfErr);
         }
         return true;
     }

@@ -3,12 +3,26 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
-#include <assert.h>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <time.h>
 #include <vector>
+
+#define DM_CHECK(expr)                                                                 \
+    do {                                                                               \
+        if (!(expr)) {                                                                 \
+            fprintf(stderr, "[dm_tbdr_bench] CHECK FAILED (%s:%d): %s\n",              \
+                    __FILE__, __LINE__, #expr);                                        \
+            std::exit(1);                                                              \
+        }                                                                              \
+    } while (0)
+
+static bool ctest_skip_allowed(void) {
+    const char *v = std::getenv("DM_CTEST_ALLOW_SKIP");
+    return v && v[0] && std::strcmp(v, "0") != 0;
+}
 
 static double now_ms(void) {
     struct timespec ts;
@@ -32,17 +46,17 @@ static void run_unit_tests(void) {
     ops.push_back({DM_DX_OP_RESOLVE_MSAA, 0, 2, 1, UINT32_MAX, 0});
 
     dm_tbdr_optimized_plan_t plan{};
-    assert(dm_tbdr_optimize_passes(atts, 3, ops.data(), ops.size(), &plan));
-    assert(plan.original_pass_count == 9);
-    assert(plan.coalesced_pass_count == 1);
-    assert(plan.passes[0].color_load == DM_TBDR_LOAD_CLEAR);
-    assert(plan.passes[0].color_store == DM_TBDR_STORE_MULTISAMPLE_RESOLVE);
-    assert(plan.passes[0].depth_load == DM_TBDR_LOAD_CLEAR);
-    assert(plan.passes[0].depth_store == DM_TBDR_STORE_DONT_CARE);
-    assert(plan.passes[0].total_draws == 512);
-    assert(plan.attachments[0].promote_memoryless == true);
-    assert(plan.attachments[1].promote_memoryless == true);
-    assert(plan.attachments[2].promote_memoryless == false);
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, ops.data(), ops.size(), &plan));
+    DM_CHECK(plan.original_pass_count == 9);
+    DM_CHECK(plan.coalesced_pass_count == 1);
+    DM_CHECK(plan.passes[0].color_load == DM_TBDR_LOAD_CLEAR);
+    DM_CHECK(plan.passes[0].color_store == DM_TBDR_STORE_MULTISAMPLE_RESOLVE);
+    DM_CHECK(plan.passes[0].depth_load == DM_TBDR_LOAD_CLEAR);
+    DM_CHECK(plan.passes[0].depth_store == DM_TBDR_STORE_DONT_CARE);
+    DM_CHECK(plan.passes[0].total_draws == 512);
+    DM_CHECK(plan.attachments[0].promote_memoryless == true);
+    DM_CHECK(plan.attachments[1].promote_memoryless == true);
+    DM_CHECK(plan.attachments[2].promote_memoryless == false);
 
     // 2. Intervening SRV barrier must split pass into 2 and disable Memoryless for read target
     dm_dx_pass_op_t split_ops[4] = {
@@ -52,9 +66,17 @@ static void run_unit_tests(void) {
         {DM_DX_OP_DRAW_BATCH, 2, UINT32_MAX, UINT32_MAX, UINT32_MAX, 1},
     };
     dm_tbdr_optimized_plan_t split_plan{};
-    assert(dm_tbdr_optimize_passes(atts, 3, split_ops, 4, &split_plan));
-    assert(split_plan.coalesced_pass_count == 2);
-    assert(split_plan.attachments[0].promote_memoryless == false);
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, split_ops, 4, &split_plan));
+    DM_CHECK(split_plan.coalesced_pass_count == 2);
+    DM_CHECK(split_plan.attachments[0].promote_memoryless == false);
+
+    // 3. Null / zero-count rejection checks
+    DM_CHECK(!dm_tbdr_optimize_passes(nullptr, 3, split_ops, 4, &split_plan));
+    DM_CHECK(!dm_tbdr_optimize_passes(atts, 0, split_ops, 4, &split_plan));
+    DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, nullptr, 4, &split_plan));
+    DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, split_ops, 0, &split_plan));
+    DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, split_ops, 4, nullptr));
+
     printf("[dm_tbdr_bench] Unit tests (pass coalescing, action inference, barrier split, memoryless) OK\n");
 }
 
@@ -75,7 +97,13 @@ int main(int argc, char **argv) {
 
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
-        assert(dev != nil);
+        if (!dev || !dev.hasUnifiedMemory) {
+            if (ctest_skip_allowed()) {
+                printf("[dm_tbdr_bench] SKIP: no Apple Silicon UMA Metal device in headless environment\n");
+                return 77;
+            }
+        }
+        DM_CHECK(dev != nil);
 
         constexpr uint32_t kW = 1920, kH = 1080;
         constexpr int kBatches = 8, kTrisPerBatch = 64;
@@ -104,9 +132,10 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
 )";
         NSError *err = nil;
         id<MTLLibrary> lib = [dev newLibraryWithSource:msl options:nil error:&err];
-        assert(lib != nil);
+        DM_CHECK(lib != nil);
 
         MTLVertexDescriptor *vd = [MTLVertexDescriptor new];
+        DM_CHECK(vd != nil);
         vd.attributes[0].format = MTLVertexFormatFloat3;
         vd.attributes[0].offset = 0;
         vd.attributes[0].bufferIndex = 0;
@@ -115,20 +144,27 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
         vd.attributes[1].bufferIndex = 0;
         vd.layouts[0].stride = sizeof(TriVertex);
 
+        id<MTLFunction> vs_fn = [lib newFunctionWithName:@"tbdr_vs"];
+        id<MTLFunction> fs_fn = [lib newFunctionWithName:@"tbdr_fs"];
+        DM_CHECK(vs_fn != nil && fs_fn != nil);
+
         MTLRenderPipelineDescriptor *rpd = [MTLRenderPipelineDescriptor new];
-        rpd.vertexFunction = [lib newFunctionWithName:@"tbdr_vs"];
-        rpd.fragmentFunction = [lib newFunctionWithName:@"tbdr_fs"];
+        DM_CHECK(rpd != nil);
+        rpd.vertexFunction = vs_fn;
+        rpd.fragmentFunction = fs_fn;
         rpd.vertexDescriptor = vd;
         rpd.rasterSampleCount = 4;
         rpd.colorAttachments[0].pixelFormat = MTLPixelFormatRGBA8Unorm;
         rpd.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
         id<MTLRenderPipelineState> rps = [dev newRenderPipelineStateWithDescriptor:rpd error:&err];
-        assert(rps != nil);
+        DM_CHECK(rps != nil);
 
         MTLDepthStencilDescriptor *dsd = [MTLDepthStencilDescriptor new];
+        DM_CHECK(dsd != nil);
         dsd.depthCompareFunction = MTLCompareFunctionLess;
         dsd.depthWriteEnabled = YES;
         id<MTLDepthStencilState> dss = [dev newDepthStencilStateWithDescriptor:dsd];
+        DM_CHECK(dss != nil);
 
         // Generate 8 batches x 64 overlapping triangles (512 tris)
         std::vector<TriVertex> verts;
@@ -150,18 +186,22 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
         id<MTLBuffer> vbuf = [dev newBufferWithBytes:verts.data()
                                               length:verts.size() * sizeof(TriVertex)
                                              options:MTLResourceStorageModeShared];
+        DM_CHECK(vbuf != nil);
 
         // Resolved output targets (Shared so we can read back and verify bit-exact equivalence)
         MTLTextureDescriptor *res_td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                           width:kW height:kH mipmapped:NO];
+        DM_CHECK(res_td != nil);
         res_td.usage = MTLTextureUsageRenderTarget;
         res_td.storageMode = MTLStorageModeShared;
         id<MTLTexture> resolved_base = [dev newTextureWithDescriptor:res_td];
         id<MTLTexture> resolved_tbdr = [dev newTextureWithDescriptor:res_td];
+        DM_CHECK(resolved_base != nil && resolved_tbdr != nil);
 
         // --- Path A: Naive Uncoalesced Private MSAA+Depth (8 passes + load/store + resolve pass) ---
         MTLTextureDescriptor *msaa_td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                                            width:kW height:kH mipmapped:NO];
+        DM_CHECK(msaa_td != nil);
         msaa_td.textureType = MTLTextureType2DMultisample;
         msaa_td.sampleCount = 4;
         msaa_td.usage = MTLTextureUsageRenderTarget;
@@ -169,6 +209,7 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
 
         MTLTextureDescriptor *depth_td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                                                             width:kW height:kH mipmapped:NO];
+        DM_CHECK(depth_td != nil);
         depth_td.textureType = MTLTextureType2DMultisample;
         depth_td.sampleCount = 4;
         depth_td.usage = MTLTextureUsageRenderTarget;
@@ -176,13 +217,16 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
 
         id<MTLTexture> priv_msaa = [dev newTextureWithDescriptor:msaa_td];
         id<MTLTexture> priv_depth = [dev newTextureWithDescriptor:depth_td];
+        DM_CHECK(priv_msaa != nil && priv_depth != nil);
         const uint64_t baseline_transient_bytes = priv_msaa.allocatedSize + priv_depth.allocatedSize;
 
         id<MTLCommandQueue> queue = [dev newCommandQueue];
+        DM_CHECK(queue != nil);
         double baseline_sum_ms = 0.0;
         for (int f = 0; f < kWarmup + kFrames; ++f) {
             const double t0 = now_ms();
             id<MTLCommandBuffer> cb = [queue commandBuffer];
+            DM_CHECK(cb != nil);
 
             // Pass 0: Clear
             MTLRenderPassDescriptor *clear_rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -194,7 +238,9 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
             clear_rp.depthAttachment.loadAction = MTLLoadActionClear;
             clear_rp.depthAttachment.storeAction = MTLStoreActionStore;
             clear_rp.depthAttachment.clearDepth = 1.0;
-            [[cb renderCommandEncoderWithDescriptor:clear_rp] endEncoding];
+            id<MTLRenderCommandEncoder> clear_re = [cb renderCommandEncoderWithDescriptor:clear_rp];
+            DM_CHECK(clear_re != nil);
+            [clear_re endEncoding];
 
             // Passes 1..8: Separate render passes with Load+Store (DRAM round-trips)
             for (int b = 0; b < kBatches; ++b) {
@@ -206,6 +252,7 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
                 rp.depthAttachment.loadAction = MTLLoadActionLoad;
                 rp.depthAttachment.storeAction = MTLStoreActionStore;
                 id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rp];
+                DM_CHECK(re != nil);
                 [re setRenderPipelineState:rps];
                 [re setDepthStencilState:dss];
                 [re setVertexBuffer:vbuf offset:0 atIndex:0];
@@ -221,10 +268,13 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
             res_rp.colorAttachments[0].resolveTexture = resolved_base;
             res_rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
             res_rp.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
-            [[cb renderCommandEncoderWithDescriptor:res_rp] endEncoding];
+            id<MTLRenderCommandEncoder> res_re = [cb renderCommandEncoderWithDescriptor:res_rp];
+            DM_CHECK(res_re != nil);
+            [res_re endEncoding];
 
             [cb commit];
             [cb waitUntilCompleted];
+            DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
             const double t1 = now_ms();
             if (f >= kWarmup) baseline_sum_ms += (t1 - t0);
         }
@@ -236,13 +286,14 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
         depth_td.storageMode = MTLStorageModeMemoryless;
         id<MTLTexture> memless_msaa = [dev newTextureWithDescriptor:msaa_td];
         id<MTLTexture> memless_depth = [dev newTextureWithDescriptor:depth_td];
-        assert(memless_msaa != nil && memless_depth != nil);
+        DM_CHECK(memless_msaa != nil && memless_depth != nil);
         const uint64_t opt_transient_bytes = memless_msaa.allocatedSize + memless_depth.allocatedSize;
 
         double opt_sum_ms = 0.0;
         for (int f = 0; f < kWarmup + kFrames; ++f) {
             const double t0 = now_ms();
             id<MTLCommandBuffer> cb = [queue commandBuffer];
+            DM_CHECK(cb != nil);
             MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
             rp.colorAttachments[0].texture = memless_msaa;
             rp.colorAttachments[0].resolveTexture = resolved_tbdr;
@@ -255,6 +306,7 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
             rp.depthAttachment.clearDepth = 1.0;
 
             id<MTLRenderCommandEncoder> re = [cb renderCommandEncoderWithDescriptor:rp];
+            DM_CHECK(re != nil);
             [re setRenderPipelineState:rps];
             [re setDepthStencilState:dss];
             [re setVertexBuffer:vbuf offset:0 atIndex:0];
@@ -266,6 +318,7 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
             [re endEncoding];
             [cb commit];
             [cb waitUntilCompleted];
+            DM_CHECK(cb.status == MTLCommandBufferStatusCompleted);
             const double t1 = now_ms();
             if (f >= kWarmup) opt_sum_ms += (t1 - t0);
         }
@@ -279,11 +332,11 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
             const int d = std::abs((int)px_a[i] - (int)px_b[i]);
             if (d > max_diff) max_diff = d;
         }
-        assert(max_diff == 0);
+        DM_CHECK(max_diff == 0);
 
         const double base_ms = baseline_sum_ms / kFrames;
         const double opt_ms = opt_sum_ms / kFrames;
-        const double speedup = base_ms / opt_ms;
+        const double speedup = opt_ms > 0.0 ? (base_ms / opt_ms) : 0.0;
         const double base_mb = (double)baseline_transient_bytes / (1024.0 * 1024.0);
         const double opt_mb = (double)opt_transient_bytes / (1024.0 * 1024.0);
 
@@ -297,7 +350,7 @@ fragment float4 tbdr_fs(VOut in [[stage_in]]) {
 
         if (json_path) {
             FILE *jf = fopen(json_path, "w");
-            assert(jf != nullptr);
+            DM_CHECK(jf != nullptr);
             fprintf(jf,
                     "{\n"
                     "  \"pixel_exact\": true,\n"

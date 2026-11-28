@@ -3,15 +3,31 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <vector>
+#include <new>
 
 static constexpr size_t kAppleSiliconPageSize = 16384;
+static constexpr size_t kMetalBufferOffsetAlign = 256;
 
-static size_t align_up(size_t val, size_t align) {
-    if (align == 0) return val;
-    return (val + align - 1) & ~(align - 1);
+static bool align_up_checked(size_t val, size_t align, size_t *out) {
+    if (!out) return false;
+    if (align <= 1) {
+        *out = val;
+        return true;
+    }
+    const size_t rem = val % align;
+    if (rem == 0) {
+        *out = val;
+        return true;
+    }
+    const size_t add = align - rem;
+    if (val > SIZE_MAX - add) {
+        return false;
+    }
+    *out = val + add;
+    return true;
 }
 
 struct dm_uma_ring {
@@ -29,7 +45,11 @@ dm_uma_ring_t *dm_uma_ring_create(size_t capacity_bytes, dm_uma_heap_kind_t kind
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev || capacity_bytes == 0) return nullptr;
 
-        const size_t aligned_cap = align_up(capacity_bytes, kAppleSiliconPageSize);
+        size_t aligned_cap = 0;
+        if (!align_up_checked(capacity_bytes, kAppleSiliconPageSize, &aligned_cap)) {
+            return nullptr;
+        }
+
         void *raw_mem = nullptr;
         if (posix_memalign(&raw_mem, kAppleSiliconPageSize, aligned_cap) != 0 || !raw_mem) {
             return nullptr;
@@ -48,7 +68,10 @@ dm_uma_ring_t *dm_uma_ring_create(size_t capacity_bytes, dm_uma_heap_kind_t kind
             return nullptr;
         }
 
-        auto *ring = new dm_uma_ring();
+        auto *ring = new (std::nothrow) dm_uma_ring();
+        if (!ring) {
+            return nullptr;  // buf deallocator frees raw_mem on scope exit
+        }
         ring->device = dev;
         ring->buffer = buf;
         ring->base_ptr = static_cast<uint8_t *>(raw_mem);
@@ -72,12 +95,26 @@ void dm_uma_ring_destroy(dm_uma_ring_t *ring) {
 }
 
 bool dm_uma_ring_alloc(dm_uma_ring_t *ring, size_t size_bytes, size_t alignment, dm_uma_slice_t *out_slice) {
+    if (out_slice) {
+        memset(out_slice, 0, sizeof(*out_slice));
+    }
     if (!ring || !out_slice || size_bytes == 0) return false;
-    const size_t eff_align = alignment < 256 ? 256 : alignment;
-    const size_t off = align_up(ring->cursor, eff_align);
-    if (off + size_bytes > ring->capacity) {
+
+    size_t eff_align = kMetalBufferOffsetAlign;
+    if (alignment > kMetalBufferOffsetAlign) {
+        if (!align_up_checked(alignment, kMetalBufferOffsetAlign, &eff_align)) {
+            return false;
+        }
+    }
+
+    size_t off = 0;
+    if (!align_up_checked(ring->cursor, eff_align, &off)) {
         return false;
     }
+    if (off > ring->capacity || size_bytes > ring->capacity - off) {
+        return false;
+    }
+
     out_slice->cpu_ptr = ring->base_ptr + off;
     out_slice->metal_buffer_bridge = (__bridge void *)ring->buffer;
     out_slice->offset = off;
@@ -120,8 +157,13 @@ dm_uma_pool_t *dm_uma_pool_create(size_t heap_size_bytes, dm_uma_heap_kind_t kin
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev || heap_size_bytes == 0) return nullptr;
 
-        const size_t aligned_heap = align_up(heap_size_bytes, kAppleSiliconPageSize);
+        size_t aligned_heap = 0;
+        if (!align_up_checked(heap_size_bytes, kAppleSiliconPageSize, &aligned_heap)) {
+            return nullptr;
+        }
+
         MTLHeapDescriptor *hd = [MTLHeapDescriptor new];
+        if (!hd) return nullptr;
         hd.size = aligned_heap;
         hd.storageMode = MTLStorageModeShared;
         hd.cpuCacheMode = MTLCPUCacheModeDefaultCache;
@@ -131,11 +173,16 @@ dm_uma_pool_t *dm_uma_pool_create(size_t heap_size_bytes, dm_uma_heap_kind_t kin
         id<MTLHeap> heap = [dev newHeapWithDescriptor:hd];
         if (!heap) return nullptr;
 
-        auto *pool = new dm_uma_pool();
+        auto *pool = new (std::nothrow) dm_uma_pool();
+        if (!pool) return nullptr;
         pool->device = dev;
         pool->heap = heap;
         pool->free_list = [NSMutableArray new];
         pool->in_use = [NSMutableArray new];
+        if (!pool->free_list || !pool->in_use) {
+            delete pool;
+            return nullptr;
+        }
         pool->kind = kind;
         memset(&pool->telemetry, 0, sizeof(pool->telemetry));
         pool->telemetry.bytes_pooled_capacity = heap.size;
@@ -157,7 +204,11 @@ void dm_uma_pool_destroy(dm_uma_pool_t *pool) {
 }
 
 void *dm_uma_pool_acquire_buffer(dm_uma_pool_t *pool, size_t size_bytes, void **out_cpu_ptr) {
+    if (out_cpu_ptr) {
+        *out_cpu_ptr = nullptr;
+    }
     if (!pool || size_bytes == 0) return nullptr;
+
     @autoreleasepool {
         id<MTLBuffer> chosen = nil;
         NSUInteger chosen_idx = NSNotFound;
@@ -173,9 +224,13 @@ void *dm_uma_pool_acquire_buffer(dm_uma_pool_t *pool, size_t size_bytes, void **
             [pool->free_list removeObjectAtIndex:chosen_idx];
             pool->telemetry.reuse_hits += 1;
         } else {
+            size_t aligned_len = 0;
+            if (!align_up_checked(size_bytes, kMetalBufferOffsetAlign, &aligned_len)) {
+                return nullptr;
+            }
             MTLResourceOptions opts = MTLResourceStorageModeShared | MTLResourceHazardTrackingModeUntracked;
-            chosen = [pool->heap newBufferWithLength:align_up(size_bytes, 256) options:opts];
-            if (!chosen) return nullptr;
+            chosen = [pool->heap newBufferWithLength:aligned_len options:opts];
+            if (!chosen || !chosen.contents) return nullptr;
             pool->telemetry.bytes_allocated += chosen.length;
         }
         [pool->in_use addObject:chosen];

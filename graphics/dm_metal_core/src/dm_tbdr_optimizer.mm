@@ -2,14 +2,15 @@
 
 #include <cstring>
 
-static const dm_dx_attachment_desc_t *find_att(const dm_dx_attachment_desc_t *atts,
-                                               size_t count,
-                                               uint32_t id) {
-    if (id == UINT32_MAX) return nullptr;
-    for (size_t i = 0; i < count; ++i) {
-        if (atts[i].attachment_id == id) return &atts[i];
-    }
-    return nullptr;
+static uint64_t safe_mul_u64(uint64_t a, uint64_t b) {
+    if (a == 0 || b == 0) return 0;
+    if (a > UINT64_MAX / b) return UINT64_MAX;
+    return a * b;
+}
+
+static uint64_t safe_add_u64(uint64_t a, uint64_t b) {
+    if (a > UINT64_MAX - b) return UINT64_MAX;
+    return a + b;
 }
 
 bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
@@ -30,7 +31,9 @@ bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
 
     for (size_t i = 0; i < op_count; ++i) {
         if (ops[i].kind == DM_DX_OP_DRAW_BATCH || ops[i].kind == DM_DX_OP_RESOLVE_MSAA) {
-            raw_passes += 1;
+            if (raw_passes < UINT32_MAX) {
+                raw_passes += 1;
+            }
         }
         if (ops[i].kind == DM_DX_OP_READ_SRV_BARRIER && ops[i].srv_read_id != UINT32_MAX) {
             for (size_t a = 0; a < attachment_count; ++a) {
@@ -47,7 +50,8 @@ bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
             }
         }
     }
-    out_plan->original_pass_count = raw_passes > 0 ? raw_passes : (uint32_t)op_count;
+    const uint32_t clamped_ops = op_count > UINT32_MAX ? UINT32_MAX : static_cast<uint32_t>(op_count);
+    out_plan->original_pass_count = raw_passes > 0 ? raw_passes : clamped_ops;
 
     // Coalesce adjacent operations sharing compatible (color_rtv_id, dsv_id) unless broken by SRV barrier
     uint32_t pass_idx = 0;
@@ -90,7 +94,9 @@ bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
         if (cur.resolve_dst_id == UINT32_MAX && op.resolve_dst_id != UINT32_MAX) {
             cur.resolve_dst_id = op.resolve_dst_id;
         }
-        cur.merged_op_count += 1;
+        if (cur.merged_op_count < UINT32_MAX) {
+            cur.merged_op_count += 1;
+        }
 
         switch (op.kind) {
             case DM_DX_OP_CLEAR_RTV:
@@ -114,12 +120,16 @@ bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
                 }
                 break;
             case DM_DX_OP_DRAW_BATCH:
-                cur.total_draws += op.draw_count;
+                if (op.draw_count > UINT32_MAX - cur.total_draws) {
+                    cur.total_draws = UINT32_MAX;
+                } else {
+                    cur.total_draws += op.draw_count;
+                }
                 break;
             case DM_DX_OP_RESOLVE_MSAA:
                 cur.color_store = DM_TBDR_STORE_MULTISAMPLE_RESOLVE;
                 break;
-            default:
+            case DM_DX_OP_READ_SRV_BARRIER:
                 break;
         }
     }
@@ -147,12 +157,13 @@ bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
     }
 
     // Determine Memoryless promotion & DRAM savings per attachment
-    out_plan->attachment_count = (uint32_t)attachment_count;
+    out_plan->attachment_count = static_cast<uint32_t>(attachment_count);
     for (size_t a = 0; a < attachment_count; ++a) {
         const dm_dx_attachment_desc_t &att = attachments[a];
-        const uint64_t dram = (uint64_t)att.width * att.height *
-                              (att.sample_count > 0 ? att.sample_count : 1u) *
-                              att.bytes_per_pixel;
+        const uint64_t samples = att.sample_count > 0 ? static_cast<uint64_t>(att.sample_count) : 1ULL;
+        const uint64_t pixels = safe_mul_u64(static_cast<uint64_t>(att.width), static_cast<uint64_t>(att.height));
+        const uint64_t sample_pixels = safe_mul_u64(pixels, samples);
+        const uint64_t dram = safe_mul_u64(sample_pixels, static_cast<uint64_t>(att.bytes_per_pixel));
 
         bool used_load = false;
         bool used_store = false;
@@ -184,10 +195,9 @@ bool dm_tbdr_optimize_passes(const dm_dx_attachment_desc_t *attachments,
         ap.baseline_dram_bytes = dram;
         ap.optimized_dram_bytes = can_memoryless ? 0 : dram;
 
-        out_plan->total_baseline_dram_bytes += ap.baseline_dram_bytes;
-        out_plan->total_optimized_dram_bytes += ap.optimized_dram_bytes;
+        out_plan->total_baseline_dram_bytes = safe_add_u64(out_plan->total_baseline_dram_bytes, ap.baseline_dram_bytes);
+        out_plan->total_optimized_dram_bytes = safe_add_u64(out_plan->total_optimized_dram_bytes, ap.optimized_dram_bytes);
     }
 
-    (void)find_att;
     return true;
 }

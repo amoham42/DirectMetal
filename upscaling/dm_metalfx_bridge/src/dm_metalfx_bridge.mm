@@ -5,10 +5,11 @@
 #import <MetalFX/MetalFX.h>
 #import <objc/message.h>
 
-#include <algorithm>
 #include <cstring>
+#include <new>
 
 static bool query_metal4fx_support(Class descriptor_cls, id<MTLDevice> dev) {
+    if (!descriptor_cls || !dev) return false;
     SEL sel = NSSelectorFromString(@"supportsMetal4FX:");
     if (![descriptor_cls respondsToSelector:sel]) return false;
     return ((BOOL (*)(Class, SEL, id<MTLDevice>))objc_msgSend)(descriptor_cls, sel, dev) != NO;
@@ -31,8 +32,10 @@ bool dm_metalfx_query_caps(dm_metalfx_caps_t *out_caps) {
             out_caps->metal4fx_spatial = query_metal4fx_support([MTLFXSpatialScalerDescriptor class], dev);
             out_caps->metal4fx_temporal = query_metal4fx_support([MTLFXTemporalScalerDescriptor class], dev);
         }
-        out_caps->temporal_min_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:dev];
-        out_caps->temporal_max_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:dev];
+        if (out_caps->temporal_supported) {
+            out_caps->temporal_min_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:dev];
+            out_caps->temporal_max_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:dev];
+        }
         return true;
     }
 }
@@ -70,11 +73,17 @@ dm_metalfx_spatial_t *dm_metalfx_spatial_create(uint32_t input_width,
                                                 uint32_t output_height,
                                                 uint32_t mtl_pixel_format,
                                                 bool hdr) {
+    if (input_width == 0 || input_height == 0 || output_width == 0 || output_height == 0 ||
+        input_width > output_width || input_height > output_height ||
+        mtl_pixel_format == 0) {
+        return nullptr;
+    }
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev || ![MTLFXSpatialScalerDescriptor supportsDevice:dev]) return nullptr;
 
         MTLFXSpatialScalerDescriptor *desc = [MTLFXSpatialScalerDescriptor new];
+        if (!desc) return nullptr;
         desc.colorTextureFormat = (MTLPixelFormat)mtl_pixel_format;
         desc.outputTextureFormat = (MTLPixelFormat)mtl_pixel_format;
         desc.inputWidth = input_width;
@@ -87,7 +96,8 @@ dm_metalfx_spatial_t *dm_metalfx_spatial_create(uint32_t input_width,
         id<MTLFXSpatialScaler> scaler = [desc newSpatialScalerWithDevice:dev];
         if (!scaler) return nullptr;
 
-        auto *handle = new dm_metalfx_spatial();
+        auto *handle = new (std::nothrow) dm_metalfx_spatial();
+        if (!handle) return nullptr;
         handle->scaler = scaler;
         return handle;
     }
@@ -107,11 +117,17 @@ bool dm_metalfx_spatial_encode(dm_metalfx_spatial_t *scaler,
                                void *mtl_output_tex,
                                uint32_t content_width,
                                uint32_t content_height) {
-    if (!scaler || !mtl_command_buffer || !mtl_color_tex || !mtl_output_tex) return false;
+    if (!scaler || !scaler->scaler || !mtl_command_buffer || !mtl_color_tex || !mtl_output_tex ||
+        content_width == 0 || content_height == 0) {
+        return false;
+    }
     @autoreleasepool {
         id<MTLCommandBuffer> cb = (__bridge id<MTLCommandBuffer>)mtl_command_buffer;
         id<MTLTexture> col = (__bridge id<MTLTexture>)mtl_color_tex;
         id<MTLTexture> out = (__bridge id<MTLTexture>)mtl_output_tex;
+        if (content_width > col.width || content_height > col.height) {
+            return false;
+        }
         scaler->scaler.colorTexture = col;
         scaler->scaler.outputTexture = out;
         scaler->scaler.inputContentWidth = content_width;
@@ -133,11 +149,17 @@ dm_metalfx_temporal_t *dm_metalfx_temporal_create(uint32_t input_width,
                                                   uint32_t depth_format,
                                                   uint32_t motion_format,
                                                   uint32_t output_format) {
+    if (input_width == 0 || input_height == 0 || output_width == 0 || output_height == 0 ||
+        input_width > output_width || input_height > output_height ||
+        color_format == 0 || depth_format == 0 || motion_format == 0 || output_format == 0) {
+        return nullptr;
+    }
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if (!dev || ![MTLFXTemporalScalerDescriptor supportsDevice:dev]) return nullptr;
 
         MTLFXTemporalScalerDescriptor *desc = [MTLFXTemporalScalerDescriptor new];
+        if (!desc) return nullptr;
         desc.colorTextureFormat = (MTLPixelFormat)color_format;
         desc.depthTextureFormat = (MTLPixelFormat)depth_format;
         desc.motionTextureFormat = (MTLPixelFormat)motion_format;
@@ -152,7 +174,8 @@ dm_metalfx_temporal_t *dm_metalfx_temporal_create(uint32_t input_width,
         id<MTLFXTemporalScaler> scaler = [desc newTemporalScalerWithDevice:dev];
         if (!scaler) return nullptr;
 
-        auto *handle = new dm_metalfx_temporal();
+        auto *handle = new (std::nothrow) dm_metalfx_temporal();
+        if (!handle) return nullptr;
         handle->scaler = scaler;
         return handle;
     }
@@ -177,7 +200,7 @@ bool dm_metalfx_temporal_encode(dm_metalfx_temporal_t *scaler,
                                 float motion_scale_x,
                                 float motion_scale_y,
                                 bool reset_history) {
-    if (!scaler || !mtl_command_buffer || !mtl_color_tex || !mtl_depth_tex ||
+    if (!scaler || !scaler->scaler || !mtl_command_buffer || !mtl_color_tex || !mtl_depth_tex ||
         !mtl_motion_tex || !mtl_output_tex) {
         return false;
     }
@@ -187,6 +210,9 @@ bool dm_metalfx_temporal_encode(dm_metalfx_temporal_t *scaler,
         id<MTLTexture> dep = (__bridge id<MTLTexture>)mtl_depth_tex;
         id<MTLTexture> mot = (__bridge id<MTLTexture>)mtl_motion_tex;
         id<MTLTexture> out = (__bridge id<MTLTexture>)mtl_output_tex;
+        if (col.width == 0 || col.height == 0) {
+            return false;
+        }
 
         scaler->scaler.colorTexture = col;
         scaler->scaler.depthTexture = dep;
