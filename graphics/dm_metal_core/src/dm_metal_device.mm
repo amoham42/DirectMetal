@@ -33,8 +33,12 @@ bool dm_metal_query_device(dm_metal_device_info_t *out) {
         out->supports_raytracing = dev.supportsRaytracing;
         out->supports_barycentrics = dev.supportsShaderBarycentricCoordinates;
 
+        // Raw enum values keep Xcode 16 (macOS 15 SDK) builds working while detecting Apple10/Metal4 at runtime on macOS 26+.
+        static constexpr MTLGPUFamily kDMGPUFamilyApple10 = static_cast<MTLGPUFamily>(1010);
+        static constexpr MTLGPUFamily kDMGPUFamilyMetal4 = static_cast<MTLGPUFamily>(5002);
+
         const char *family = "Mac2";
-        if ([dev supportsFamily:MTLGPUFamilyApple10]) {
+        if ([dev supportsFamily:kDMGPUFamilyApple10]) {
             family = "Apple10";
         } else if ([dev supportsFamily:MTLGPUFamilyApple9]) {
             family = "Apple9";
@@ -47,7 +51,7 @@ bool dm_metal_query_device(dm_metal_device_info_t *out) {
 
         out->supports_metal3 = [dev supportsFamily:MTLGPUFamilyMetal3];
         if (@available(macOS 26.0, *)) {
-            out->supports_metal4 = [dev supportsFamily:MTLGPUFamilyMetal4];
+            out->supports_metal4 = [dev supportsFamily:kDMGPUFamilyMetal4];
         } else {
             out->supports_metal4 = false;
         }

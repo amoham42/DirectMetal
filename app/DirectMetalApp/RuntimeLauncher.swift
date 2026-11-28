@@ -98,6 +98,14 @@ enum RuntimeLauncher {
         return cachedHardwareInfo
     }
 
+    private static func queryMetal4FXSupport(_ descriptorClass: AnyClass, device: MTLDevice) -> Bool {
+        let sel = NSSelectorFromString("supportsMetal4FX:")
+        guard let method = class_getClassMethod(descriptorClass, sel) else { return false }
+        typealias SupportsM4FXFn = @convention(c) (AnyClass, Selector, MTLDevice) -> ObjCBool
+        let fn = unsafeBitCast(method_getImplementation(method), to: SupportsM4FXFn.self)
+        return fn(descriptorClass, sel, device).boolValue
+    }
+
     private static func probeHardwareInfo() -> MetalHardwareInfo {
         let osVer = ProcessInfo.processInfo.operatingSystemVersion
         let osStr = "\(osVer.majorVersion).\(osVer.minorVersion).\(osVer.patchVersion)"
@@ -121,8 +129,11 @@ enum RuntimeLauncher {
             )
         }
 
+        let apple10Family = MTLGPUFamily(rawValue: 1010)
+        let metal4Family = MTLGPUFamily(rawValue: 5002)
+
         let family: String
-        if dev.supportsFamily(.apple10) {
+        if let f10 = apple10Family, dev.supportsFamily(f10) {
             family = "Apple10"
         } else if dev.supportsFamily(.apple9) {
             family = "Apple9"
@@ -138,9 +149,11 @@ enum RuntimeLauncher {
         var m4 = false
         var m4fx = false
         if #available(macOS 26.0, *) {
-            m4 = dev.supportsFamily(.metal4)
-            m4fx = MTLFXSpatialScalerDescriptor.supportsMetal4FX(dev) &&
-                   MTLFXTemporalScalerDescriptor.supportsMetal4FX(dev)
+            if let fm4 = metal4Family {
+                m4 = dev.supportsFamily(fm4)
+            }
+            m4fx = Self.queryMetal4FXSupport(MTLFXSpatialScalerDescriptor.self, device: dev) &&
+                   Self.queryMetal4FXSupport(MTLFXTemporalScalerDescriptor.self, device: dev)
         }
 
         let cacheKey = "\(family.lowercased())_\(buildStr)"

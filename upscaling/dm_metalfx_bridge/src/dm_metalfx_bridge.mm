@@ -3,9 +3,16 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
+#import <objc/message.h>
 
 #include <algorithm>
 #include <cstring>
+
+static bool query_metal4fx_support(Class descriptor_cls, id<MTLDevice> dev) {
+    SEL sel = NSSelectorFromString(@"supportsMetal4FX:");
+    if (![descriptor_cls respondsToSelector:sel]) return false;
+    return ((BOOL (*)(Class, SEL, id<MTLDevice>))objc_msgSend)(descriptor_cls, sel, dev) != NO;
+}
 
 static uint32_t even_dim(uint32_t v) {
     uint32_t clamped = v < 64u ? 64u : v;
@@ -21,8 +28,8 @@ bool dm_metalfx_query_caps(dm_metalfx_caps_t *out_caps) {
         out_caps->spatial_supported = [MTLFXSpatialScalerDescriptor supportsDevice:dev];
         out_caps->temporal_supported = [MTLFXTemporalScalerDescriptor supportsDevice:dev];
         if (@available(macOS 26.0, *)) {
-            out_caps->metal4fx_spatial = [MTLFXSpatialScalerDescriptor supportsMetal4FX:dev];
-            out_caps->metal4fx_temporal = [MTLFXTemporalScalerDescriptor supportsMetal4FX:dev];
+            out_caps->metal4fx_spatial = query_metal4fx_support([MTLFXSpatialScalerDescriptor class], dev);
+            out_caps->metal4fx_temporal = query_metal4fx_support([MTLFXTemporalScalerDescriptor class], dev);
         }
         out_caps->temporal_min_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMinScaleForDevice:dev];
         out_caps->temporal_max_scale = [MTLFXTemporalScalerDescriptor supportedInputContentMaxScaleForDevice:dev];
