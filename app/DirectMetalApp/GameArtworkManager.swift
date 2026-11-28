@@ -1,5 +1,6 @@
 import AppKit
 import CoreGraphics
+import Darwin
 import Foundation
 
 // MARK: - Steam library discovery
@@ -7,6 +8,22 @@ import Foundation
 /// Locates Steam libraries, app IDs and the local `appcache/librarycache` artwork folders for a game executable.
 /// Pure filesystem lookups (no network, no Steam client required).
 enum SteamLibraryLocator {
+    private struct CachedManifestIndex {
+        let mtimeSec: Int
+        let mtimeNsec: Int
+        let index: [String: String]
+    }
+
+    private static let manifestCacheLock = NSLock()
+    private static var manifestCache: [String: CachedManifestIndex] = [:]
+
+    /// Clears the in-memory `appmanifest_*.acf` directory index cache (used by tests or after rescan).
+    static func invalidateManifestCache() {
+        manifestCacheLock.lock()
+        manifestCache.removeAll()
+        manifestCacheLock.unlock()
+    }
+
     /// For `/…/steamapps/common/<installdir>/…/game.exe` returns the `steamapps` folder and `<installdir>`.
     static func steamLocation(forExePath exePath: String) -> (steamapps: URL, installDir: String)? {
         let comps = URL(fileURLWithPath: exePath).standardizedFileURL.pathComponents
@@ -18,8 +35,22 @@ enum SteamLibraryLocator {
     }
 
     /// `installdir` (lowercased) -> appid for every `appmanifest_*.acf` in a `steamapps` folder.
+    /// Cached per `(path, dir mtime)` so scanning or loading artwork for N Steam games is O(N) instead of O(N^2).
     static func manifestIndex(steamapps: URL) -> [String: String] {
-        guard let items = try? FileManager.default.contentsOfDirectory(atPath: steamapps.path) else { return [:] }
+        let path = steamapps.standardizedFileURL.path
+        var st = stat()
+        let hasStat = (stat(path, &st) == 0)
+        if hasStat {
+            manifestCacheLock.lock()
+            if let hit = manifestCache[path],
+               hit.mtimeSec == st.st_mtimespec.tv_sec,
+               hit.mtimeNsec == st.st_mtimespec.tv_nsec {
+                manifestCacheLock.unlock()
+                return hit.index
+            }
+            manifestCacheLock.unlock()
+        }
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: path) else { return [:] }
         var out: [String: String] = [:]
         for file in items.sorted() where file.hasPrefix("appmanifest_") && file.hasSuffix(".acf") {
             guard let text = try? String(contentsOf: steamapps.appendingPathComponent(file), encoding: .utf8) else { continue }
@@ -29,6 +60,16 @@ enum SteamLibraryLocator {
             if let appid, let dir = fields["installdir"], !dir.isEmpty, out[dir.lowercased()] == nil {
                 out[dir.lowercased()] = appid
             }
+        }
+        if hasStat {
+            manifestCacheLock.lock()
+            if manifestCache.count > 64 { manifestCache.removeAll() }
+            manifestCache[path] = CachedManifestIndex(
+                mtimeSec: st.st_mtimespec.tv_sec,
+                mtimeNsec: st.st_mtimespec.tv_nsec,
+                index: out
+            )
+            manifestCacheLock.unlock()
         }
         return out
     }

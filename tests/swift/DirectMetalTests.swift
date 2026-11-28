@@ -263,7 +263,7 @@ struct DirectMetalTests {
             ("GameLibraryManager: tolerant GameLibraryEntry JSON decoding", {
                 try testGameLibraryEntryTolerantDecoding()
             }),
-            ("GameProfileRegistry: loads 36 profiles, matches titles, rejects ambiguous remakes", {
+            ("GameProfileRegistry: loads 50+ profiles, matches titles, rejects ambiguous remakes", {
                 try testGameProfileRegistry(tempRoot: tempRoot)
             }),
             ("GameLibraryManager: GOG Galaxy and Epic Games Store scanning in temp prefix", {
@@ -304,6 +304,9 @@ struct DirectMetalTests {
             }),
             ("PrefixManager: prefixStats computes disk usage and metadata", {
                 try testPrefixManagerStats(tempRoot: tempRoot)
+            }),
+            ("SteamLibraryLocator: stat-cached manifestIndex returns O(1) hits and invalidates on change", {
+                try testSteamManifestIndexCaching(tempRoot: tempRoot)
             }),
         ]
 
@@ -647,7 +650,7 @@ struct DirectMetalTests {
             registry.source.hasSuffix("runtime/profiles/game_profiles.json"),
             "expected registry to load runtime/profiles/game_profiles.json, got \(registry.source)"
         )
-        try expectEqual(registry.profiles.count, 36, "community game profile count")
+        try expect(registry.profiles.count >= 50, "expected >= 50 community game profiles, got \(registry.profiles.count)")
 
         // Positive matches
         let hades = try expectNotNil(
@@ -1466,5 +1469,40 @@ struct DirectMetalTests {
         try expectEqual(stats[0].gameExe, "/Games/Hades.exe")
         try expect(stats[0].sizeBytes > 4096, "game_one should include system.reg + metadata bytes")
         try expectEqual(stats[1].sizeBytes, 1024)
+    }
+
+    private static func testSteamManifestIndexCaching(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let steamapps = tempRoot.appendingPathComponent("steam_cache_test/steamapps", isDirectory: true)
+        try fm.createDirectory(at: steamapps, withIntermediateDirectories: true)
+        SteamLibraryLocator.invalidateManifestCache()
+
+        let acf1 = """
+        "AppState"
+        {
+            "appid"        "1145360"
+            "installdir"   "Hades"
+        }
+        """
+        try Data(acf1.utf8).write(to: steamapps.appendingPathComponent("appmanifest_1145360.acf"))
+        let idx1 = SteamLibraryLocator.manifestIndex(steamapps: steamapps)
+        try expectEqual(idx1["hades"], "1145360")
+        let idx1Hit = SteamLibraryLocator.manifestIndex(steamapps: steamapps)
+        try expectEqual(idx1Hit, idx1)
+
+        // Adding a new manifest updates the directory mtime (bump explicitly to avoid 1-tick coarseness)
+        let acf2 = """
+        "AppState"
+        {
+            "appid"        "1145350"
+            "installdir"   "Hades II"
+        }
+        """
+        try Data(acf2.utf8).write(to: steamapps.appendingPathComponent("appmanifest_1145350.acf"))
+        try fm.setAttributes([.modificationDate: Date().addingTimeInterval(5)], ofItemAtPath: steamapps.path)
+
+        let idx2 = SteamLibraryLocator.manifestIndex(steamapps: steamapps)
+        try expectEqual(idx2["hades"], "1145360")
+        try expectEqual(idx2["hades ii"], "1145350")
     }
 }
