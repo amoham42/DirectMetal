@@ -32,7 +32,8 @@ private func printLibraryTable(_ entries: [GameLibraryEntry]) {
     print(col("ID", 14) + col("TITLE", 34) + col("ARCH", 9) + col("APIS", 26) + col("ENGINE", 9) + col("PLAYS", 7) + "LAST PLAYED")
     for e in entries {
         let apis = e.detectedAPIs.isEmpty ? "-" : e.detectedAPIs.joined(separator: "+")
-        print(col(e.id, 14) + col(e.title, 34) + col(e.architecture, 9) + col(apis, 26)
+        let displayTitle = e.isFavorite ? "★ \(e.title)" : e.title
+        print(col(e.id, 14) + col(displayTitle, 34) + col(e.architecture, 9) + col(apis, 26)
             + col(e.engine.rawValue, 9) + col(String(e.playCount), 7) + (e.lastPlayedUtc ?? "never"))
     }
     print("\n\(entries.count) game(s) • \(GameLibraryManager().libraryURL.path)")
@@ -199,6 +200,8 @@ func runLibraryCLI(args: [String]) -> Int32 {
                 if ["steam", "gog", "epic", "standalone"].contains(v) { entries[idx].storeSource = v } else { ok = false }
             case "store-id", "storeid", "storegameid":
                 entries[idx].storeGameID = value.isEmpty ? nil : value
+            case "favorite", "fav", "pinned", "isfavorite":
+                if let v = parseBool(value) { entries[idx].isFavorite = v } else { ok = false }
             default:
                 fputs("error: unknown setting \"\(key)\"\n", stderr)
                 return 1

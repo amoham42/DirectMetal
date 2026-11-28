@@ -211,6 +211,12 @@ final class DirectMetalViewModel: ObservableObject {
         manager.save(library)
     }
 
+    func toggleFavorite(_ entry: GameLibraryEntry) {
+        let nowFav = !(library.first(where: { $0.id == entry.id })?.isFavorite ?? entry.isFavorite)
+        update(entry.id) { $0.isFavorite = nowFav }
+        statusMessage = nowFav ? "Pinned \(entry.title) to Favorites." : "Removed \(entry.title) from Favorites."
+    }
+
     // MARK: Library actions
 
     func reloadLibrary(select id: String? = nil) {

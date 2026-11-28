@@ -341,6 +341,11 @@ struct GameRow: View {
             Spacer(minLength: 0)
             if isRunning {
                 ProgressView().controlSize(.small)
+            } else if entry.isFavorite {
+                Image(systemName: "star.fill")
+                    .font(.caption2)
+                    .foregroundStyle(.yellow)
+                    .help("Pinned Favorite")
             }
         }
         .padding(.vertical, 3)
@@ -449,6 +454,7 @@ struct AttestationSecurityCard: View {
 /// Sidebar quick filter chips. `matches` is pure so it is unit-testable and cheap to re-run on every keystroke.
 enum LibraryFilter: String, CaseIterable, Identifiable {
     case all = "All"
+    case favorites = "★"
     case dx12 = "DX12"
     case dx11 = "DX11"
     case dx9 = "DX9"
@@ -459,6 +465,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     var tint: Color {
         switch self {
         case .all: return .accentColor
+        case .favorites: return .yellow
         case .dx12: return .purple
         case .dx11: return .blue
         case .dx9: return .orange
@@ -469,6 +476,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .all: return "Show every game in the library"
+        case .favorites: return "Show pinned favorite games"
         case .dx12: return "Games importing Direct3D 12 (d3d12.dll)"
         case .dx11: return "Games importing Direct3D 11 (d3d11.dll)"
         case .dx9: return "Games importing Direct3D 9 (d3d9.dll)"
@@ -479,6 +487,7 @@ enum LibraryFilter: String, CaseIterable, Identifiable {
     func matches(_ entry: GameLibraryEntry) -> Bool {
         switch self {
         case .all: return true
+        case .favorites: return entry.isFavorite
         case .dx12: return entry.detectedAPIs.contains("D3D12")
         case .dx11: return entry.detectedAPIs.contains("D3D11")
         case .dx9: return entry.detectedAPIs.contains("D3D9")

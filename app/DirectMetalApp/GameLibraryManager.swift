@@ -34,6 +34,8 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     var storeSource: String?
     /// Store-specific ID: GOG `gameId`, Epic `AppName` (Steam IDs live in `steamAppID`).
     var storeGameID: String?
+    /// User-pinned favorite flag for quick filtering in the sidebar, gallery, and CLI.
+    var isFavorite: Bool
 
     init(
         id: String? = nil,
@@ -61,7 +63,8 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         profileID: String? = nil,
         profileNote: String? = nil,
         storeSource: String? = nil,
-        storeGameID: String? = nil
+        storeGameID: String? = nil,
+        isFavorite: Bool = false
     ) {
         let canonical = GameLibraryManager.canonicalPath(exePath)
         self.id = id ?? GameLibraryManager.stableID(forCanonicalPath: canonical)
@@ -90,6 +93,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         self.profileNote = profileNote
         self.storeSource = storeSource
         self.storeGameID = storeGameID
+        self.isFavorite = isFavorite
     }
 
     enum CodingKeys: String, CodingKey {
@@ -97,7 +101,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         case retinaMode, enableHUD, enableSandbox, extraArgs, customEnv, architecture, detectedAPIs
         case detectedUpscalers, buildHash, playCount, totalPlaySeconds, lastPlayedUtc
         case steamAppID, profileID, profileNote
-        case storeSource, storeGameID
+        case storeSource, storeGameID, isFavorite
     }
 
     /// Tolerant decoder: missing or unknown values fall back to defaults so older/newer
@@ -134,6 +138,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         profileNote = opt(String.self, .profileNote)
         storeSource = opt(String.self, .storeSource).map { $0.lowercased() }
         storeGameID = opt(String.self, .storeGameID) ?? opt(Int.self, .storeGameID).map(String.init)
+        isFavorite = opt(Bool.self, .isFavorite) ?? false
     }
 
     /// Seeds per-game settings from a community profile. Only used for brand-new library entries so a

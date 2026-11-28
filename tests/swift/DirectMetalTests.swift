@@ -335,6 +335,9 @@ struct DirectMetalTests {
             ("ShaderCacheManager: syncFromIndex double-SHA-256 verification & outer archive tamper rejection", {
                 try testShaderCacheSyncFromIndexAndTamperRejection(tempRoot: tempRoot)
             }),
+            ("GameLibraryEntry & LibraryFilter: isFavorite tolerant decoding, persistence & Favorites filter", {
+                try testFavoritesPinningAndFilter(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -1853,5 +1856,30 @@ struct DirectMetalTests {
             if case ShaderCacheError.checksumMismatch = err { return true }
             return false
         }
+    }
+
+    private static func testFavoritesPinningAndFilter(tempRoot: URL) throws {
+        // 1. Legacy JSON without isFavorite defaults to false
+        let legacyJSON = #"{"exePath": "/Games/Classic/Classic.exe", "title": "Classic"}"#
+        let legacy = try JSONDecoder().decode(GameLibraryEntry.self, from: Data(legacyJSON.utf8))
+        try expectEqual(legacy.isFavorite, false, "missing isFavorite must default to false")
+
+        // 2. Round-trip persistence in GameLibraryManager preserves isFavorite
+        let favDir = tempRoot.appendingPathComponent("fav_lib", isDirectory: true)
+        let mgr = GameLibraryManager(supportRoot: favDir)
+        let pinned = GameLibraryEntry(title: "Hades", exePath: "/Games/Hades/Hades.exe", prefixName: "Hades", isFavorite: true)
+        let unpinned = GameLibraryEntry(title: "Celeste", exePath: "/Games/Celeste/Celeste.exe", prefixName: "Celeste", isFavorite: false)
+        mgr.save([pinned, unpinned])
+
+        let loaded = mgr.load()
+        try expectEqual(loaded.count, 2)
+        let loadedHades = try expectNotNil(loaded.first(where: { $0.title == "Hades" }))
+        let loadedCeleste = try expectNotNil(loaded.first(where: { $0.title == "Celeste" }))
+        try expectEqual(loadedHades.isFavorite, true)
+        try expectEqual(loadedCeleste.isFavorite, false)
+
+        // 3. LibraryFilter.favorites matches only pinned entries
+        let favMatches = loaded.filter(LibraryFilter.favorites.matches)
+        try expectEqual(favMatches.map(\.title), ["Hades"], "Favorites filter must return only pinned games")
     }
 }

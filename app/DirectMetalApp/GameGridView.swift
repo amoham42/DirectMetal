@@ -180,12 +180,26 @@ struct GamePosterCard: View {
             )
 
             VStack(alignment: .leading, spacing: 7) {
-                Text(entry.title)
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .help(entry.title)
+                HStack(spacing: 6) {
+                    Text(entry.title)
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help(entry.title)
+                    Spacer(minLength: 2)
+                    if entry.isFavorite || isHovering {
+                        Button {
+                            vm.toggleFavorite(entry)
+                        } label: {
+                            Image(systemName: entry.isFavorite ? "star.fill" : "star")
+                                .font(.system(size: 12))
+                                .foregroundStyle(entry.isFavorite ? Color.yellow : Color.secondary.opacity(0.65))
+                        }
+                        .buttonStyle(.plain)
+                        .help(entry.isFavorite ? "Remove from Favorites" : "Pin to Favorites")
+                    }
+                }
 
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
@@ -276,6 +290,15 @@ struct GamePosterCard: View {
                 onSelect(entry)
             } label: {
                 Label("Configure…", systemImage: "slider.horizontal.3")
+            }
+
+            Button {
+                vm.toggleFavorite(entry)
+            } label: {
+                Label(
+                    entry.isFavorite ? "Remove from Favorites" : "Pin to Favorites",
+                    systemImage: entry.isFavorite ? "star.slash" : "star.fill"
+                )
             }
 
             Divider()

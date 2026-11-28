@@ -29,6 +29,10 @@ struct LibrarySidebar: View {
                         .contextMenu {
                             Button("Play") { vm.play(entry) }
                                 .disabled(vm.isRunning || vm.runtimePaths == nil)
+                            Button(entry.isFavorite ? "Remove from Favorites" : "Pin to Favorites") {
+                                vm.toggleFavorite(entry)
+                            }
+                            Divider()
                             Button("Show in Finder") { vm.revealInFinder(entry) }
                             Button("Re-inspect Executable") { vm.reinspect(entry) }
                             Divider()
@@ -205,6 +209,16 @@ struct GameDetailView: View {
                     Text(e.title)
                         .font(.system(size: 28, weight: .bold))
                         .lineLimit(1)
+                    Button {
+                        vm.toggleFavorite(e)
+                    } label: {
+                        Image(systemName: e.isFavorite ? "star.fill" : "star")
+                            .font(.title3)
+                            .foregroundStyle(e.isFavorite ? Color.yellow : Color.secondary.opacity(0.6))
+                    }
+                    .buttonStyle(.plain)
+                    .help(e.isFavorite ? "Remove from Favorites" : "Pin to Favorites")
+                    .accessibilityLabel(e.isFavorite ? "Remove \(e.title) from Favorites" : "Pin \(e.title) to Favorites")
                     StorePill(source: e.storeSource, gameID: e.storeGameID)
                 }
                 Text(e.exePath)
