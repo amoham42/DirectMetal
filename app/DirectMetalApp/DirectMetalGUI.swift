@@ -405,7 +405,8 @@ final class DirectMetalViewModel: ObservableObject {
                     sandboxed: current.enableSandbox,
                     warmServerSeconds: 180,
                     controllerProfileKey: current.id,
-                    fpsCap: current.fpsCap
+                    fpsCap: current.fpsCap,
+                    customEnv: current.customEnvDictionary
                 )
                 let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: result,
                                                             failure: nil, gpuSummary: gpu)

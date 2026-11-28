@@ -427,6 +427,13 @@ struct GameDetailView: View {
                             .font(.body.monospaced())
                     }
                     GridRow {
+                        Text("Env Vars").foregroundStyle(.secondary)
+                        TextField("e.g. WINEDLLOVERRIDES=\"version=n,b\" LC_ALL=ja_JP.UTF-8", text: vm.binding(e, \.customEnv))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.body.monospaced())
+                            .help("Space-separated KEY=VAL overrides (quotes supported; WINEDLLOVERRIDES appends safely; WINEPREFIX/DYLD_* blocked)")
+                    }
+                    GridRow {
                         Text("Options").foregroundStyle(.secondary)
                         HStack(spacing: 18) {
                             Toggle("Retina PPI", isOn: vm.binding(e, \.retinaMode))
