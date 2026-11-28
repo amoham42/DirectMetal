@@ -174,7 +174,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "prefix":
         guard args.count >= 2 else {
-            fputs("error: prefix requires subcommand (list|stats|create|reset|delete)\n", stderr)
+            fputs("error: prefix requires subcommand (list|stats|prune|create|reset|delete)\n", stderr)
             return 1
         }
         let mgr = PrefixManager()
@@ -237,6 +237,36 @@ private func runCLI(args: [String]) -> Int32 {
                 return 0
             } catch {
                 fputs("prefix \(sub) failed: \(error)\n", stderr)
+                return 1
+            }
+
+        case "prune":
+            let rest = Array(args.dropFirst(2))
+            let dryRun = rest.contains("--dry-run") || rest.contains("-n")
+            let asJSON = rest.contains("--json")
+            let referenced = Set(GameLibraryManager().load().map(\.launchPrefixName))
+            do {
+                let res = try mgr.pruneOrphanedPrefixes(referencedNames: referenced, dryRun: dryRun)
+                if asJSON {
+                    let enc = JSONEncoder()
+                    enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    if let data = try? enc.encode(res), let str = String(data: data, encoding: .utf8) {
+                        print(str)
+                    }
+                    return 0
+                }
+                let mib = String(format: "%.2f", Double(res.reclaimedBytes) / (1024.0 * 1024.0))
+                let verb = dryRun ? "Would reclaim" : "Reclaimed"
+                print("\(verb) \(mib) MiB logical across \(res.removedPrefixes.count) orphaned prefix(es) (\(res.reclaimedFiles) files); kept \(res.keptPrefixes.count) referenced/default prefix(es).")
+                for name in res.removedPrefixes {
+                    print("  \(dryRun ? "would remove" : "removed"): \(name)")
+                }
+                if !res.skippedRunningPrefixes.isEmpty {
+                    print("  skipped active wineserver: \(res.skippedRunningPrefixes.joined(separator: ", "))")
+                }
+                return 0
+            } catch {
+                fputs("prefix prune failed: \(error)\n", stderr)
                 return 1
             }
 

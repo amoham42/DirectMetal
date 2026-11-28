@@ -46,6 +46,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal run <exe> [options] [-- game args]` | Execute any Windows `.exe` directly. Options: `--prefix <name>`, `--engine auto\|arm64ec\|rosetta`, `--perf-mode balanced\|ultra\|lowlatency`, `--dx9-backend auto\|dxvk\|metalgl`, `--upscale quality\|balanced\|performance`, `--retina` / `--no-retina`, `--hud` / `--no-hud`, `--sandbox`, `--warm-server`, `--reset-prefix`. |
 | `DirectMetal prefix list` | List all APFS Copy-on-Write prefixes managed by DirectMetal. |
 | `DirectMetal prefix stats [--json]` | Inspect per-prefix disk usage, file count, APFS CoW clone time, and associated game executable. |
+| `DirectMetal prefix prune [--dry-run] [--json]` | Safely remove orphaned APFS prefixes not referenced by any library game (always preserves `default` and active `wineserver` prefixes). |
 | `DirectMetal prefix create\|reset\|delete <name>` | Create, reset from the golden base prefix, or delete a managed APFS prefix. |
 | `DirectMetal server status\|stop` | Inspect or gracefully stop the background warm `wineserver` pool. |
 

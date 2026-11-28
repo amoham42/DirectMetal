@@ -165,6 +165,56 @@ final class PrefixManager {
         let cowCloneMs: Double?
     }
 
+    struct PrefixPruneResult: Codable {
+        let dryRun: Bool
+        let removedPrefixes: [String]
+        let keptPrefixes: [String]
+        let skippedRunningPrefixes: [String]
+        let reclaimedBytes: UInt64
+        let reclaimedFiles: Int
+    }
+
+    /// Removes managed prefixes not referenced by `referencedNames`. Always preserves `"default"`
+    /// and any prefix with an active running `wineserver`.
+    func pruneOrphanedPrefixes(referencedNames: Set<String>, dryRun: Bool = false) throws -> PrefixPruneResult {
+        var protected = Set(referencedNames.map { $0.replacingOccurrences(of: "/", with: "_") })
+        protected.insert("default")
+
+        let stats = prefixStats()
+        var removed: [String] = []
+        var kept: [String] = []
+        var skippedRunning: [String] = []
+        var bytes: UInt64 = 0
+        var files = 0
+
+        for s in stats {
+            if protected.contains(s.name) {
+                kept.append(s.name)
+                continue
+            }
+            let url = prefixURL(named: s.name)
+            if WineserverPool.runningPID(prefixURL: url) != nil {
+                kept.append(s.name)
+                skippedRunning.append(s.name)
+                continue
+            }
+            if !dryRun {
+                try deletePrefix(named: s.name)
+            }
+            removed.append(s.name)
+            bytes &+= s.sizeBytes
+            files += s.fileCount
+        }
+        return PrefixPruneResult(
+            dryRun: dryRun,
+            removedPrefixes: removed.sorted(),
+            keptPrefixes: kept.sorted(),
+            skippedRunningPrefixes: skippedRunning.sorted(),
+            reclaimedBytes: bytes,
+            reclaimedFiles: files
+        )
+    }
+
     /// Computes disk footprint and metadata for each managed prefix, sorted largest first.
     func prefixStats() -> [PrefixStat] {
         let fm = FileManager.default

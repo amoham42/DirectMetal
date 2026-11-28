@@ -84,8 +84,24 @@ struct PrefixManagerSheet: View {
     @State private var statusBanner: PrefixStatusBanner?
     @State private var pendingReset: PrefixManager.PrefixStat?
     @State private var pendingDelete: PrefixManager.PrefixStat?
+    @State private var showPruneConfirm: Bool = false
 
     private var isMutating: Bool { busyPrefixName != nil }
+
+    private var referencedPrefixNames: Set<String> {
+        var names = Set(vm.library.map { $0.launchPrefixName.replacingOccurrences(of: "/", with: "_") })
+        names.insert("default")
+        return names
+    }
+
+    private var orphanedStats: [PrefixManager.PrefixStat] {
+        let refs = referencedPrefixNames
+        return stats.filter { !refs.contains($0.name) }
+    }
+
+    private var orphanedLogicalBytes: UInt64 {
+        orphanedStats.reduce(0) { $0 &+ $1.sizeBytes }
+    }
 
     private var totalLogicalBytes: UInt64 {
         stats.reduce(0) { $0 &+ $1.sizeBytes }
@@ -174,6 +190,14 @@ struct PrefixManagerSheet: View {
             Button("Cancel", role: .cancel) {}
         } message: { stat in
             Text("This permanently removes “\(stat.name)” (\(PrefixDisplayFormat.logicalSize(stat.sizeBytes)), \(PrefixDisplayFormat.fileCount(stat.fileCount))) from disk, including any game saves or configuration stored inside its drive_c folder. Your game executable stays untouched.")
+        }
+        .alert("Prune \(orphanedStats.count) Orphaned Prefix\(orphanedStats.count == 1 ? "" : "es")?", isPresented: $showPruneConfirm) {
+            Button("Prune Orphaned", role: .destructive) {
+                pruneOrphanedPrefixes()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This permanently removes \(orphanedStats.count) prefix\(orphanedStats.count == 1 ? "" : "es") (\(PrefixDisplayFormat.logicalSize(orphanedLogicalBytes)) logical) not referenced by any game in your library. The “default” prefix and any prefix with a running wineserver are always preserved.")
         }
     }
 
@@ -265,6 +289,17 @@ struct PrefixManagerSheet: View {
                         .controlSize(.small)
                         .disabled(isLoading || isMutating)
                         .help("Rescan managed APFS prefixes and recompute logical sizes")
+
+                        if !orphanedStats.isEmpty {
+                            Button(role: .destructive) {
+                                showPruneConfirm = true
+                            } label: {
+                                Label("Prune Orphaned (\(orphanedStats.count))", systemImage: "trash")
+                            }
+                            .controlSize(.small)
+                            .disabled(vm.isRunning || isLoading || isMutating)
+                            .help("Remove prefixes not referenced by any game in your library (preserves default and active prefixes)")
+                        }
 
                         Button {
                             revealPrefixesFolder()
@@ -386,9 +421,11 @@ struct PrefixManagerSheet: View {
         } else {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
+                    let refs = referencedPrefixNames
                     ForEach(filteredStats) { stat in
                         PrefixStatRow(
                             stat: stat,
+                            isOrphaned: !refs.contains(stat.name),
                             isBusy: busyPrefixName == stat.name,
                             busyLabel: busyActionLabel,
                             mutationsDisabled: vm.isRunning || isMutating,
@@ -548,12 +585,52 @@ struct PrefixManagerSheet: View {
             }
         }
     }
+
+    private func pruneOrphanedPrefixes() {
+        guard !vm.isRunning, busyPrefixName == nil else { return }
+        busyPrefixName = "__prune__"
+        busyActionLabel = "Pruning…"
+        statusBanner = nil
+        let referenced = referencedPrefixNames
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let mgr = PrefixManager()
+                let res = try mgr.pruneOrphanedPrefixes(referencedNames: referenced, dryRun: false)
+                let updated = mgr.prefixStats()
+                let msg = "Pruned \(res.removedPrefixes.count) orphaned prefix\(res.removedPrefixes.count == 1 ? "" : "es") (\(PrefixDisplayFormat.logicalSize(res.reclaimedBytes)) logical)."
+                DispatchQueue.main.async {
+                    self.stats = updated
+                    self.hasLoaded = true
+                    self.busyPrefixName = nil
+                    self.busyActionLabel = ""
+                    if updated.count < 4 { self.searchText = "" }
+                    self.statusBanner = PrefixStatusBanner(message: msg, isError: false)
+                    self.vm.refreshPrefixes()
+                    self.vm.statusMessage = msg
+                }
+            } catch {
+                let updated = PrefixManager().prefixStats()
+                let msg = "Failed to prune orphaned prefixes: \(error.localizedDescription)"
+                DispatchQueue.main.async {
+                    self.stats = updated
+                    self.hasLoaded = true
+                    self.busyPrefixName = nil
+                    self.busyActionLabel = ""
+                    self.statusBanner = PrefixStatusBanner(message: msg, isError: true)
+                    self.vm.refreshPrefixes()
+                    self.vm.statusMessage = msg
+                }
+            }
+        }
+    }
 }
 
 // MARK: - Prefix row subview
 
 private struct PrefixStatRow: View {
     let stat: PrefixManager.PrefixStat
+    let isOrphaned: Bool
     let isBusy: Bool
     let busyLabel: String
     let mutationsDisabled: Bool
@@ -597,6 +674,16 @@ private struct PrefixStatRow: View {
                             .foregroundStyle(.secondary)
                             .background(Color.secondary.opacity(0.11), in: Capsule())
                             .help("APFS Copy-on-Write clone duration when this prefix was created")
+                    }
+
+                    if isOrphaned {
+                        Text("Orphaned")
+                            .font(.system(size: 9.5, weight: .bold, design: .rounded))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1.5)
+                            .foregroundStyle(.orange)
+                            .background(Color.orange.opacity(0.15), in: Capsule())
+                            .help("Not referenced by any game currently in your library")
                     }
                 }
 

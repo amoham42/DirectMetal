@@ -338,6 +338,9 @@ struct DirectMetalTests {
             ("GameLibraryEntry & LibraryFilter: isFavorite tolerant decoding, persistence & Favorites filter", {
                 try testFavoritesPinningAndFilter(tempRoot: tempRoot)
             }),
+            ("PrefixManager: pruneOrphanedPrefixes preserves referenced/default prefixes & supports dry-run", {
+                try testPrefixPruneOrphaned(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -1881,5 +1884,46 @@ struct DirectMetalTests {
         // 3. LibraryFilter.favorites matches only pinned entries
         let favMatches = loaded.filter(LibraryFilter.favorites.matches)
         try expectEqual(favMatches.map(\.title), ["Hades"], "Favorites filter must return only pinned games")
+    }
+
+    private static func testPrefixPruneOrphaned(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let root = tempRoot.appendingPathComponent("prune_prefixes", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+
+        func makePrefix(_ name: String, bytes: Int) throws {
+            let dir = root.appendingPathComponent(name, isDirectory: true)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            try Data(repeating: 0xAB, count: bytes).write(to: dir.appendingPathComponent("system.reg"))
+        }
+
+        try makePrefix("default", bytes: 128)
+        try makePrefix("Hades", bytes: 256)
+        try makePrefix("OldRemovedGame", bytes: 512)
+        try makePrefix("StaleDemo", bytes: 1024)
+
+        let mgr = PrefixManager(prefixRoot: root)
+        let referenced: Set<String> = ["Hades"]
+
+        // 1. Dry run reports both orphans without deleting anything
+        let dry = try mgr.pruneOrphanedPrefixes(referencedNames: referenced, dryRun: true)
+        try expectEqual(dry.dryRun, true)
+        try expectEqual(dry.removedPrefixes, ["OldRemovedGame", "StaleDemo"])
+        try expectEqual(dry.keptPrefixes, ["Hades", "default"])
+        try expectEqual(dry.reclaimedBytes, 1536)
+        try expectEqual(dry.reclaimedFiles, 2)
+        try expectEqual(mgr.listPrefixes().count, 4, "dryRun must not delete any prefixes")
+
+        // 2. Real prune removes only orphans, keeping default & referenced Hades
+        let real = try mgr.pruneOrphanedPrefixes(referencedNames: referenced, dryRun: false)
+        try expectEqual(real.dryRun, false)
+        try expectEqual(real.removedPrefixes, ["OldRemovedGame", "StaleDemo"])
+        try expectEqual(real.keptPrefixes, ["Hades", "default"])
+        try expectEqual(mgr.listPrefixes(), ["Hades", "default"])
+
+        // 3. Second prune is an idempotent no-op
+        let again = try mgr.pruneOrphanedPrefixes(referencedNames: referenced, dryRun: false)
+        try expectEqual(again.removedPrefixes, [])
+        try expectEqual(again.reclaimedBytes, 0)
     }
 }
