@@ -261,8 +261,12 @@ echo "  [OK] DirectMetal info emitted valid JSON"
 "${DM_BIN}" completions bash | bash -n
 "${DM_BIN}" profiles match /Games/Hades/x64/Hades.exe --json | python3 -m json.tool >/dev/null
 "${DM_BIN}" history --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" history stats --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" hud show --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" cache verify --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" library sync-profiles --dry-run --json | python3 -m json.tool >/dev/null
 "${DM_BIN}" prefix prune --dry-run --json | python3 -m json.tool >/dev/null
-echo "  [OK] DirectMetal CLI completions, profiles match, history & prefix prune smoke passed"
+echo "  [OK] DirectMetal CLI completions, profiles, history, hud, cache verify, sync-profiles & prefix prune smoke passed"
 
 TEMP_ATTEST="$(mktemp "${TMPDIR:-/tmp}/dm-ci-attest.XXXXXX.json")"
 "${DM_BIN}" attest --nonce a1b2c3d4e5f60718293a4b5c6d7e8f90 > "${TEMP_ATTEST}"

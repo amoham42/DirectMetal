@@ -13,10 +13,20 @@ private func printUsage() {
       DirectMetal completions zsh|bash   Print native shell completion script for zsh or bash
       DirectMetal inspect <exe>          Inspect PE headers, architecture, and DirectX/upscaler APIs
       DirectMetal prefix list            List APFS CoW game prefixes
+      DirectMetal prefix stats [--json]  Show disk usage and metadata for all prefixes
+      DirectMetal prefix prune [--dry-run] [--json]
+                                         Remove unreferenced prefixes while preserving default & active prefixes
       DirectMetal prefix create <name>   Create an APFS CoW prefix immediately
       DirectMetal prefix reset <name>    Reset an existing APFS CoW prefix
       DirectMetal prefix delete <name>   Delete an APFS CoW prefix
+      DirectMetal prefix export-saves <name> <out.tar.gz>
+                                         Export SHA-256 verified Windows save data from a prefix
+      DirectMetal prefix import-saves <archive.tar.gz> <name>
+                                         Verify SHA-256 and restore save data into a prefix
       DirectMetal cache status           Show pre-compiled shader cache stats
+      DirectMetal cache list [--json]    List local shader cache directories and host-key match status
+      DirectMetal cache prune [--dry-run] [--json]
+                                         Remove stale macOS build shader caches while keeping current caches
       DirectMetal cache verify [--quarantine|--repair] [--dry-run] [--json|--markdown]
                                          Verify local shader cache integrity and safely quarantine corrupt files
       DirectMetal cache export <file.tar.gz> [--filter <key>]
@@ -57,10 +67,32 @@ private func printUsage() {
                                          Show which artwork (GOG / Epic / Steam / .exe icon) resolves for a game
       DirectMetal library set <id_or_title> <key>=<value>...
                                          Update per-game settings (title, prefix, engine, perf, dx9,
-                                         upscale, retina, hud, sandbox, args, store, store-id)
+                                         upscale, fps, retina, hud, sandbox, favorite, args, env, store, store-id)
+      DirectMetal library diff <id_or_title> [--json]
+                                         Compare per-game settings against community preset or defaults
+      DirectMetal library reset-settings <id_or_title> [--json]
+                                         Reset per-game settings to baseline while keeping playtime & favorites
+      DirectMetal library sync-profiles [--dry-run] [--overwrite] [--json|--markdown]
+                                         Apply newly matched community profiles across the library safely
+      DirectMetal library explain <id_or_title> [--json|--markdown]
+                                         Preview full dry-run launch plan without spawning Wine
+      DirectMetal library shortcut <id_or_title> [--format app|command] [--dir <path>]
+                                         Export a native macOS Spotlight/Dock .app or .command launcher
       DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]
                                          Launch a saved game with its per-game settings + controller profile
       DirectMetal profiles list [--json] List community game profiles (auto-applied to newly added games)
+      DirectMetal profiles match <exe> [--title <name>] [--steam-id <id>] [--json]
+                                         Test which community game profile matches an executable
+      DirectMetal history [--limit N] [--json|--markdown] [--clear]
+                                         Inspect or export structured launch history
+      DirectMetal history stats [--json|--markdown]
+                                         Aggregate per-game stability tiers, engine mix & median APFS CoW speed
+      DirectMetal diagnose-log <logfile> [--json|--markdown]
+                                         Scan a Wine/DirectX/Metal log for crashes, missing DLLs & anti-cheat
+      DirectMetal support-bundle [<out.tar.gz>] [--json]
+                                         Export a privacy-redacted diagnostics archive for GitHub bug reports
+      DirectMetal hud show|set|reset [--json]
+                                         Inspect or customize the live Metal Performance HUD overlay
       DirectMetal controller list [--json]
                                          List saved controller profiles, presets and connected controllers
       DirectMetal controller show [<default|id_or_title>] [--json]

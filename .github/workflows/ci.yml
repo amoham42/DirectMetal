@@ -179,6 +179,10 @@ jobs:
           "${DM_BIN}" profiles list --json | python3 -m json.tool >/dev/null
           "${DM_BIN}" profiles match /Games/Hades/x64/Hades.exe --json | python3 -m json.tool >/dev/null
           "${DM_BIN}" history --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" history stats --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" hud show --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" cache verify --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" library sync-profiles --dry-run --json | python3 -m json.tool >/dev/null
           "${DM_BIN}" prefix prune --dry-run --json | python3 -m json.tool >/dev/null
 
           # Verify synthetic attestation bundle sign + verify round-trip via CLI
