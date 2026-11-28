@@ -1289,7 +1289,7 @@ _directmetal() {
       _values 'prefix subcommand' $sub
       ;;
     cache)
-      local -a sub=(status export import sync clear)
+      local -a sub=(status list prune export import sync clear)
       _values 'cache subcommand' $sub
       ;;
     controller)
@@ -1359,7 +1359,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "list create reset delete" -- "${cur}") )
       ;;
     cache)
-      COMPREPLY=( $(compgen -W "status export import sync clear" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "status list prune export import sync clear" -- "${cur}") )
       ;;
     controller)
       COMPREPLY=( $(compgen -W "list show set reset" -- "${cur}") )
@@ -1535,7 +1535,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "cache":
         guard args.count >= 2 else {
-            fputs("error: cache requires subcommand (status|export|import|sync|clear)\n", stderr)
+            fputs("error: cache requires subcommand (status|list|prune|export|import|sync|clear)\n", stderr)
             return 1
         }
         let sub = args[1]
@@ -1548,6 +1548,55 @@ private func runCLI(args: [String]) -> Int32 {
                 print(str)
             }
             return 0
+        case "list", "ls":
+            let entries = ShaderCacheManager.listLocalCaches()
+            let asJSON = args.dropFirst(2).contains("--json")
+            if asJSON {
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? enc.encode(entries), let str = String(data: data, encoding: .utf8) {
+                    print(str)
+                }
+                return 0
+            }
+            if entries.isEmpty {
+                print("No local shader caches found.")
+                return 0
+            }
+            let hostKey = RuntimeLauncher.queryHardwareInfo().cacheKey
+            print("Local Shader Caches (host key: \(hostKey))")
+            print("------------------------------------------------------------------------")
+            for e in entries {
+                let mib = String(format: "%7.2f MiB", Double(e.totalBytes) / (1024.0 * 1024.0))
+                let tag = !e.isKnownKeyedEntry ? "generic" : (e.matchesHostCacheKey ? "current" : "stale  ")
+                print("[\(tag)] \(mib)  (\(String(format: "%4d", e.fileCount)) files)  \(e.name)")
+            }
+            return 0
+        case "prune":
+            let rest = Array(args.dropFirst(2))
+            let dryRun = rest.contains("--dry-run") || rest.contains("-n")
+            let asJSON = rest.contains("--json")
+            do {
+                let res = try ShaderCacheManager.pruneStaleCaches(dryRun: dryRun)
+                if asJSON {
+                    let enc = JSONEncoder()
+                    enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                    if let data = try? enc.encode(res), let str = String(data: data, encoding: .utf8) {
+                        print(str)
+                    }
+                    return 0
+                }
+                let mib = String(format: "%.2f", Double(res.reclaimedBytes) / (1024.0 * 1024.0))
+                let verb = dryRun ? "Would reclaim" : "Reclaimed"
+                print("\(verb) \(mib) MiB across \(res.removedEntries.count) stale cache(s) (\(res.reclaimedFiles) files); kept \(res.keptEntries.count) entry/entries for host key \(res.currentCacheKey).")
+                for name in res.removedEntries {
+                    print("  \(dryRun ? "would remove" : "removed"): \(name)")
+                }
+                return 0
+            } catch {
+                fputs("cache prune failed: \(error)\n", stderr)
+                return 1
+            }
         case "export":
             guard args.count >= 3 else {
                 fputs("error: cache export requires <output.dmcache.tar.gz>\n", stderr)

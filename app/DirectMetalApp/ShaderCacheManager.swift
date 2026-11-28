@@ -210,6 +210,25 @@ struct ShaderCacheImportResult: Codable {
     let compatible: Bool
 }
 
+struct ShaderCacheLocalEntry: Codable, Identifiable {
+    var id: String { name }
+    let name: String
+    let path: String
+    let fileCount: Int
+    let totalBytes: UInt64
+    let matchesHostCacheKey: Bool
+    let isKnownKeyedEntry: Bool
+}
+
+struct ShaderCachePruneResult: Codable {
+    let dryRun: Bool
+    let currentCacheKey: String
+    let removedEntries: [String]
+    let keptEntries: [String]
+    let reclaimedBytes: UInt64
+    let reclaimedFiles: Int
+}
+
 enum ShaderCacheError: Error, CustomStringConvertible {
     case emptyCache(String)
     case archiveFailed(String)
@@ -311,7 +330,7 @@ enum ShaderCacheManager {
         }
 
         let resolvedPayloadPath = payloadDir.resolvingSymlinksInPath().path
-        var fileRecords: [ShaderCacheFileRecord] = []
+        var pendingFiles: [(url: URL, rel: String, size: UInt64)] = []
         var totalBytes: UInt64 = 0
         if let enumerator = fm.enumerator(at: payloadDir, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) {
             for case let url as URL in enumerator {
@@ -325,12 +344,12 @@ enum ShaderCacheManager {
                         rel = url.lastPathComponent
                     }
                     let sz = UInt64(vals?.fileSize ?? 0)
-                    let digest = try sha256Hex(fileAt: url)
-                    fileRecords.append(ShaderCacheFileRecord(relativePath: rel, sizeBytes: sz, sha256: digest))
+                    pendingFiles.append((url: url, rel: rel, size: sz))
                     totalBytes += sz
                 }
             }
         }
+        var fileRecords = try hashFilesConcurrently(pendingFiles)
         fileRecords.sort { $0.relativePath < $1.relativePath }
 
         let hw = RuntimeLauncher.queryHardwareInfo()
@@ -418,7 +437,9 @@ enum ShaderCacheManager {
         }
 
         let payloadDir = extractDir.appendingPathComponent("shaders", isDirectory: true)
-        // Verify every single file's SHA-256 checksum & guard against path traversal
+        // Validate paths & existence upfront, then verify every file's SHA-256 checksum (in parallel for large archives)
+        var verifyPairs: [(record: ShaderCacheFileRecord, url: URL)] = []
+        verifyPairs.reserveCapacity(manifest.files.count)
         for rec in manifest.files {
             if rec.relativePath.contains("..") || rec.relativePath.hasPrefix("/") {
                 throw ShaderCacheError.checksumMismatch("Unsafe relative path in archive: \(rec.relativePath)")
@@ -427,11 +448,9 @@ enum ShaderCacheManager {
             guard fm.fileExists(atPath: fileURL.path) else {
                 throw ShaderCacheError.checksumMismatch("Missing file listed in manifest: \(rec.relativePath)")
             }
-            let actualHash = try sha256Hex(fileAt: fileURL)
-            if actualHash.caseInsensitiveCompare(rec.sha256) != .orderedSame {
-                throw ShaderCacheError.checksumMismatch("SHA-256 mismatch for \(rec.relativePath): expected \(rec.sha256), got \(actualHash)")
-            }
+            verifyPairs.append((rec, fileURL))
         }
+        try verifyFilesConcurrently(verifyPairs)
 
         let destRoot = RuntimeLauncher.shaderCacheRoot()
         try fm.createDirectory(at: destRoot, withIntermediateDirectories: true)
@@ -622,6 +641,168 @@ enum ShaderCacheManager {
             gpuFamily: imported.gpuFamily,
             macosBuild: imported.macosBuild,
             compatible: imported.compatible
+        )
+    }
+
+    // MARK: Parallel Hashing & Local Cache Inspection / Pruning
+
+    private static func hashFilesConcurrently(
+        _ items: [(url: URL, rel: String, size: UInt64)]
+    ) throws -> [ShaderCacheFileRecord] {
+        guard items.count >= 4 else {
+            return try items.map { item in
+                let digest = try sha256Hex(fileAt: item.url)
+                return ShaderCacheFileRecord(relativePath: item.rel, sizeBytes: item.size, sha256: digest)
+            }
+        }
+        let lock = NSLock()
+        var results = [ShaderCacheFileRecord?](repeating: nil, count: items.count)
+        var firstError: Error?
+        DispatchQueue.concurrentPerform(iterations: items.count) { idx in
+            lock.lock()
+            let aborted = firstError != nil
+            lock.unlock()
+            if aborted { return }
+            let item = items[idx]
+            do {
+                let digest = try sha256Hex(fileAt: item.url)
+                let rec = ShaderCacheFileRecord(relativePath: item.rel, sizeBytes: item.size, sha256: digest)
+                lock.lock()
+                results[idx] = rec
+                lock.unlock()
+            } catch {
+                lock.lock()
+                if firstError == nil { firstError = error }
+                lock.unlock()
+            }
+        }
+        if let err = firstError { throw err }
+        return results.compactMap { $0 }
+    }
+
+    private static func verifyFilesConcurrently(_ pairs: [(record: ShaderCacheFileRecord, url: URL)]) throws {
+        guard pairs.count >= 4 else {
+            for pair in pairs {
+                let actualHash = try sha256Hex(fileAt: pair.url)
+                if actualHash.caseInsensitiveCompare(pair.record.sha256) != .orderedSame {
+                    throw ShaderCacheError.checksumMismatch(
+                        "SHA-256 mismatch for \(pair.record.relativePath): expected \(pair.record.sha256), got \(actualHash)"
+                    )
+                }
+            }
+            return
+        }
+        let lock = NSLock()
+        var firstError: Error?
+        DispatchQueue.concurrentPerform(iterations: pairs.count) { idx in
+            lock.lock()
+            let aborted = firstError != nil
+            lock.unlock()
+            if aborted { return }
+            let pair = pairs[idx]
+            do {
+                let actualHash = try sha256Hex(fileAt: pair.url)
+                if actualHash.caseInsensitiveCompare(pair.record.sha256) != .orderedSame {
+                    let err = ShaderCacheError.checksumMismatch(
+                        "SHA-256 mismatch for \(pair.record.relativePath): expected \(pair.record.sha256), got \(actualHash)"
+                    )
+                    lock.lock()
+                    if firstError == nil { firstError = err }
+                    lock.unlock()
+                }
+            } catch {
+                lock.lock()
+                if firstError == nil { firstError = error }
+                lock.unlock()
+            }
+        }
+        if let err = firstError { throw err }
+    }
+
+    /// Returns true if an entry directory name carries an Apple GPU family cache-key suffix (e.g. `_apple7_25B78`).
+    static func containsGpuCacheKeyMarker(_ entryName: String) -> Bool {
+        let lower = entryName.lowercased()
+        for fam in ["apple7_", "apple8_", "apple9_", "apple10_", "apple11_"] {
+            if lower.contains(fam) { return true }
+        }
+        return false
+    }
+
+    /// Lists top-level local shader cache directories with file count, byte size, and host compatibility.
+    static func listLocalCaches(cacheRoot: URL? = nil, currentCacheKey: String? = nil) -> [ShaderCacheLocalEntry] {
+        let fm = FileManager.default
+        let root = cacheRoot ?? RuntimeLauncher.shaderCacheRoot()
+        let hostKey = (currentCacheKey ?? RuntimeLauncher.queryHardwareInfo().cacheKey).lowercased()
+        guard let items = try? fm.contentsOfDirectory(at: root, includingPropertiesForKeys: [.isDirectoryKey]) else {
+            return []
+        }
+        var out: [ShaderCacheLocalEntry] = []
+        for item in items {
+            let isDir = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard isDir else { continue }
+            var files = 0
+            var bytes: UInt64 = 0
+            if let en = fm.enumerator(at: item, includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey]) {
+                for case let f as URL in en {
+                    let vals = try? f.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+                    if vals?.isRegularFile == true {
+                        files += 1
+                        bytes += UInt64(vals?.fileSize ?? 0)
+                    }
+                }
+            }
+            let name = item.lastPathComponent
+            let keyed = containsGpuCacheKeyMarker(name)
+            let matches = !keyed || name.lowercased().contains(hostKey)
+            out.append(ShaderCacheLocalEntry(
+                name: name,
+                path: item.path,
+                fileCount: files,
+                totalBytes: bytes,
+                matchesHostCacheKey: matches,
+                isKnownKeyedEntry: keyed
+            ))
+        }
+        return out.sorted {
+            if $0.totalBytes != $1.totalBytes { return $0.totalBytes > $1.totalBytes }
+            return $0.name < $1.name
+        }
+    }
+
+    /// Reclaims stale local shader cache directories whose embedded GPU/macOS cache key does not match the current host.
+    /// Entries without a GPU/macOS key suffix (e.g. generic per-game directories) are preserved.
+    static func pruneStaleCaches(
+        dryRun: Bool = false,
+        cacheRoot: URL? = nil,
+        currentCacheKey: String? = nil
+    ) throws -> ShaderCachePruneResult {
+        let fm = FileManager.default
+        let hostKey = currentCacheKey ?? RuntimeLauncher.queryHardwareInfo().cacheKey
+        let entries = listLocalCaches(cacheRoot: cacheRoot, currentCacheKey: hostKey)
+        var removed: [String] = []
+        var kept: [String] = []
+        var reclaimedBytes: UInt64 = 0
+        var reclaimedFiles = 0
+
+        for entry in entries {
+            if entry.isKnownKeyedEntry && !entry.matchesHostCacheKey {
+                if !dryRun {
+                    try fm.removeItem(atPath: entry.path)
+                }
+                removed.append(entry.name)
+                reclaimedBytes += entry.totalBytes
+                reclaimedFiles += entry.fileCount
+            } else {
+                kept.append(entry.name)
+            }
+        }
+        return ShaderCachePruneResult(
+            dryRun: dryRun,
+            currentCacheKey: hostKey,
+            removedEntries: removed.sorted(),
+            keptEntries: kept.sorted(),
+            reclaimedBytes: reclaimedBytes,
+            reclaimedFiles: reclaimedFiles
         )
     }
 }

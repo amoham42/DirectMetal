@@ -344,6 +344,9 @@ enum RuntimeLauncher {
     }
 
     static func shaderCacheRoot() -> URL {
+        if let env = ProcessInfo.processInfo.environment["DIRECTMETAL_SHADER_CACHE_ROOT"], !env.isEmpty {
+            return URL(fileURLWithPath: env, isDirectory: true)
+        }
         let fm = FileManager.default
         let cachesDir = fm.urls(for: .cachesDirectory, in: .userDomainMask).first!
         return cachesDir.appendingPathComponent("DirectMetal/Shaders", isDirectory: true)
