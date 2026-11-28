@@ -560,7 +560,7 @@ func runControllerCLI(args: [String]) -> Int32 {
         }
         // Presets first so explicit options in the same command refine them, whatever the argument order.
         for (k, v) in parsed where k == "preset" {
-            guard let p = ControllerPreset.allCases.first(where: { $0.rawValue.lowercased() == v.lowercased() }) else {
+            guard let p = ControllerPreset.parse(v) else {
                 fputs("error: unknown preset \"\(v)\" (expected: \(ControllerPreset.allCases.map(\.rawValue).joined(separator: ", ")))\n", stderr)
                 return 1
             }

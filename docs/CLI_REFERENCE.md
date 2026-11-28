@@ -78,7 +78,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | :--- | :--- |
 | `DirectMetal controller list` | List connected `GCController` gamepads and saved remapping profiles. |
 | `DirectMetal controller show [profile] [--json]` | Print active remappings, deadzones, haptics, and generated `SDL_GAMECONTROLLERCONFIG`. |
-| `DirectMetal controller set <profile> <key=val ...>` | Configure presets (`xbox`, `playstation`, `nintendoSwap`, `bumperTriggerSwap`, `southpaw`), `left-deadzone=0..35`, `right-deadzone=0..35`, `haptics=true\|false`, or individual button swaps. |
+| `DirectMetal controller set <profile> <key=val ...>` | Configure presets (`xboxStandard`/`xbox`, `playstationDualSense`/`playstation`, `nintendoSwap`, `invertedLookY`, `bumperTriggerSwap`, `custom`), `left-deadzone=0..35`, `right-deadzone=0..35`, `haptics=true\|false`, or individual button swaps. |
 | `DirectMetal controller reset <profile>` | Reset a controller profile to defaults. |
 | `DirectMetal attest [--pid <pid>] [--nonce <hex>] [--sandbox]` | Emit a Secure Enclave ECDSA P-256 signed hardware attestation report (SIP, SSV, hardware model, GPU, sandbox state). |
 | `DirectMetal verify-attest <report.json> [--nonce <hex>]` | Cryptographically verify an attestation report's ECDSA P-256 signature and challenge nonce. |

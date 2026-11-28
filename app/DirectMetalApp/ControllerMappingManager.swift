@@ -9,6 +9,7 @@ enum ControllerPreset: String, Codable, CaseIterable, Identifiable {
     case nintendoSwap
     case playstationDualSense
     case invertedLookY
+    case bumperTriggerSwap
     case custom
 
     var id: String { rawValue }
@@ -19,6 +20,7 @@ enum ControllerPreset: String, Codable, CaseIterable, Identifiable {
         case .nintendoSwap: return "Nintendo Layout (A↔B, X↔Y)"
         case .playstationDualSense: return "PlayStation DualSense"
         case .invertedLookY: return "Inverted Look (Right Stick Y)"
+        case .bumperTriggerSwap: return "Flipped Bumpers & Triggers (L1↔L2, R1↔R2)"
         case .custom: return "Custom"
         }
     }
@@ -29,7 +31,24 @@ enum ControllerPreset: String, Codable, CaseIterable, Identifiable {
         case .nintendoSwap: return "Swaps A/B and X/Y so the on-controller labels match prompts on Switch Pro / Joy-Con."
         case .playstationDualSense: return "Cross/Circle/Square/Triangle on XInput A/B/X/Y with DualSense haptics enabled."
         case .invertedLookY: return "Standard layout with the right stick's vertical axis inverted (flight-style look)."
+        case .bumperTriggerSwap: return "Swaps LB/LT and RB/RT for instant digital fire/aim on bumpers (classic shooter / Souls layout)."
         case .custom: return "Your own button remapping."
+        }
+    }
+
+    /// Parses canonical raw values plus common CLI shorthand aliases (`xbox`, `playstation`, `nintendo`, `flipped`).
+    static func parse(_ raw: String) -> ControllerPreset? {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if let exact = allCases.first(where: { $0.rawValue.lowercased() == key }) {
+            return exact
+        }
+        switch key {
+        case "xbox", "default", "standard": return .xboxStandard
+        case "nintendo", "switch": return .nintendoSwap
+        case "playstation", "ps", "dualsense": return .playstationDualSense
+        case "inverted", "invert-y", "inverted-y": return .invertedLookY
+        case "flipped", "bumper-trigger-swap", "l1l2": return .bumperTriggerSwap
+        default: return nil
         }
     }
 }
@@ -78,6 +97,11 @@ struct ControllerMappingProfile: Codable, Equatable {
             map["a"] = "b"; map["b"] = "a"; map["x"] = "y"; map["y"] = "x"
         case .invertedLookY:
             invert = true
+        case .bumperTriggerSwap:
+            map["leftshoulder"] = "lefttrigger"
+            map["lefttrigger"] = "leftshoulder"
+            map["rightshoulder"] = "righttrigger"
+            map["righttrigger"] = "rightshoulder"
         case .xboxStandard, .playstationDualSense, .custom:
             break
         }

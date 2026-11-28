@@ -300,7 +300,7 @@ _directmetal() {
       _values 'update subcommand' $sub
       ;;
     profiles)
-      _values 'profiles subcommand' list
+      _values 'profiles subcommand' list match
       ;;
     completions)
       _values 'shell' zsh bash
@@ -369,7 +369,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "check apply" -- "${cur}") )
       ;;
     profiles)
-      COMPREPLY=( $(compgen -W "list" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "list match" -- "${cur}") )
       ;;
     completions)
       COMPREPLY=( $(compgen -W "zsh bash" -- "${cur}") )

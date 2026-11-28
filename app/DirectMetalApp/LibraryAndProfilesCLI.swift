@@ -440,8 +440,45 @@ func runProfilesCLI(args: [String]) -> Int32 {
         print("\n\(registry.profiles.count) profile(s), \(verified) tested on real hardware • source: \(registry.source)"
             + (registry.userOverlay.map { " + overlay \($0)" } ?? ""))
         return 0
+
+    case "match":
+        let asJSON = rest.contains("--json")
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard let rawExe = positional.first, !rawExe.isEmpty else {
+            fputs("error: profiles match requires <exe_path> [--json]\n", stderr)
+            return 1
+        }
+        let canonical = GameLibraryManager.canonicalPath(rawExe)
+        let title = GameLibraryManager.deriveTitle(exePath: canonical)
+        let registry = GameProfileRegistry.load()
+        let matched = registry.match(title: title, exePath: canonical, steamAppID: nil)
+        struct ProfileMatchOutput: Encodable {
+            let exePath: String
+            let derivedTitle: String
+            let matched: Bool
+            let profile: GameProfile?
+        }
+        if asJSON {
+            printLibraryJSON(ProfileMatchOutput(exePath: canonical, derivedTitle: title,
+                                                matched: matched != nil, profile: matched))
+            return matched != nil ? 0 : 1
+        }
+        if let p = matched {
+            print("Matched profile: \(p.id) — \(p.title)")
+            print("  status:   \(p.status ?? "-") (\(p.verificationLabel))")
+            print("  engine:   \(p.gameEngine ?? "-")")
+            print("  settings: perf=\(p.perfProfile?.rawValue ?? "-") dx9=\(p.dx9Backend?.rawValue ?? "-") metalfx=\(p.upscaleMode ?? "-") retina=\(p.retinaMode.map(String.init) ?? "-") sandbox=\(p.enableSandbox.map(String.init) ?? "-")")
+            if let notes = p.notes, !notes.isEmpty {
+                print("  notes:    \(notes)")
+            }
+            return 0
+        } else {
+            print("No community profile matched \"\(title)\" (\(canonical)). DirectMetal will use automatic zero-config PE detection.")
+            return 1
+        }
+
     default:
-        fputs("unknown profiles subcommand: \(sub) (expected: list [--json])\n", stderr)
+        fputs("unknown profiles subcommand: \(sub) (expected: list [--json] | match <exe> [--json])\n", stderr)
         return 1
     }
 }

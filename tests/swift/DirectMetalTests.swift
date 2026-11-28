@@ -269,7 +269,7 @@ struct DirectMetalTests {
             ("GameLibraryManager: GOG Galaxy and Epic Games Store scanning in temp prefix", {
                 try testGOGAndEpicScanning(tempRoot: tempRoot)
             }),
-            ("ControllerMappingManager: all 5 presets and deadzone clamping", {
+            ("ControllerMappingManager: all 6 presets, CLI aliases and deadzone clamping", {
                 try testControllerPresetsAndDeadzones()
             }),
             ("ControllerMappingManager: inheritance, SDL_GAMECONTROLLERCONFIG, stock empty env, reset", {
@@ -904,7 +904,7 @@ struct DirectMetalTests {
     // MARK: - 3. ControllerMappingManager Tests
 
     private static func testControllerPresetsAndDeadzones() throws {
-        try expectEqual(ControllerPreset.allCases.count, 5, "should have 5 controller presets")
+        try expectEqual(ControllerPreset.allCases.count, 6, "should have 6 controller presets")
 
         let xbox = ControllerMappingProfile.forPreset(.xboxStandard)
         try expectEqual(xbox.preset, .xboxStandard)
@@ -933,6 +933,18 @@ struct DirectMetalTests {
         try expectEqual(inverted.isIdentityMap, true)
         try expectEqual(inverted.invertRightY, true)
         try expectEqual(inverted.isStock, false)
+
+        let flipped = ControllerMappingProfile.forPreset(.bumperTriggerSwap)
+        try expectEqual(flipped.preset, .bumperTriggerSwap)
+        try expectEqual(flipped.buttonMap["leftshoulder"], "lefttrigger")
+        try expectEqual(flipped.buttonMap["lefttrigger"], "leftshoulder")
+        try expectEqual(flipped.buttonMap["rightshoulder"], "righttrigger")
+        try expectEqual(flipped.buttonMap["righttrigger"], "rightshoulder")
+        try expectEqual(flipped.isStock, false)
+        try expectEqual(ControllerPreset.parse("xbox"), .xboxStandard)
+        try expectEqual(ControllerPreset.parse("playstation"), .playstationDualSense)
+        try expectEqual(ControllerPreset.parse("flipped"), .bumperTriggerSwap)
+        try expectNil(ControllerPreset.parse("nonexistent_preset"))
 
         let custom = ControllerMappingProfile.forPreset(.custom)
         try expectEqual(custom.preset, .custom)
