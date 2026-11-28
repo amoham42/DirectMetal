@@ -102,15 +102,34 @@ enum ShaderCacheVerifier {
     private static let headerReadLimit = 64
     private static let maxJSONInspectionBytes: UInt64 = 4 * 1024 * 1024
 
-    private static let metallibMagic: [UInt8] = [0x4D, 0x54, 0x4C, 0x42] // "MTLB"
-    private static let bitcodeMagic: [UInt8] = [0x42, 0x43, 0xC0, 0xDE]  // "BC\xC0\xDE"
+    private static let metallibMagic: [UInt8] = [0x4D, 0x54, 0x4C, 0x42]          // "MTLB"
+    private static let metalFatMagic: [UInt8] = [0xCB, 0xFE, 0xBA, 0xBE]          // Apple MTLBinaryArchive / Universal Metal lib
+    private static let machOFatMagic: [UInt8] = [0xCA, 0xFE, 0xBA, 0xBE]          // Universal fat binary (32-bit offsets)
+    private static let machOFat64Magic: [UInt8] = [0xCA, 0xFE, 0xBA, 0xBF]        // Universal fat binary (64-bit offsets)
+    private static let bitcodeMagic: [UInt8] = [0x42, 0x43, 0xC0, 0xDE]           // "BC\xC0\xDE"
     private static let gzipMagic: [UInt8] = [0x1F, 0x8B]
+    private static let dxvkCacheMagic: [UInt8] = [0x44, 0x58, 0x56, 0x4B]         // "DXVK"
+    private static let sqliteMagic: [UInt8] = [                                   // "SQLite format 3\0"
+        0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66,
+        0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00,
+    ]
+
+    /// Extensions whose files are legitimately 0 bytes when idle/checkpointed (e.g. SQLite WAL/lock sidecars).
+    private static let zeroByteAllowedExtensions: Set<String> = [
+        "db-lock",
+        "db-wal",
+        "db-shm",
+        "lock",
+        "lck",
+        "wal",
+        "shm",
+        "journal",
+    ]
 
     private static let binaryCacheExtensions: Set<String> = [
         "bin",
         "binaryarchive",
         "metallibarchive",
-        "dxvk-cache",
         "cache",
         "pipeline",
     ]
@@ -579,12 +598,32 @@ enum ShaderCacheVerifier {
         return nil
     }
 
+    private static func isValidMetallibHeader(_ bytes: [UInt8]) -> Bool {
+        hasMagic(bytes, metallibMagic)
+            || hasMagic(bytes, metalFatMagic)
+            || hasMagic(bytes, machOFatMagic)
+            || hasMagic(bytes, machOFat64Magic)
+    }
+
+    private static func isZeroByteAllowed(url: URL, ext: String) -> Bool {
+        if zeroByteAllowedExtensions.contains(ext) { return true }
+        let name = url.lastPathComponent.lowercased()
+        return name.hasSuffix("-wal")
+            || name.hasSuffix("-shm")
+            || name.hasSuffix("-journal")
+            || name.hasSuffix("-lock")
+    }
+
     private static func inspectRegularFile(
         at url: URL,
         relativePath: String,
         sizeBytes: UInt64
     ) -> ShaderCacheIssue? {
+        let ext = url.pathExtension.lowercased()
         if sizeBytes == 0 {
+            if isZeroByteAllowed(url: url, ext: ext) {
+                return nil
+            }
             return ShaderCacheIssue(
                 relativePath: relativePath,
                 kind: .zeroByteFile,
@@ -606,8 +645,6 @@ enum ShaderCacheVerifier {
             )
         }
 
-        let ext = url.pathExtension.lowercased()
-
         switch ext {
         case "metallib":
             if sizeBytes < 32 {
@@ -618,12 +655,32 @@ enum ShaderCacheVerifier {
                     detail: "Metallib file is truncated (\(sizeBytes) bytes; minimum 32 bytes required)"
                 )
             }
-            if !hasMagic(headerBytes, metallibMagic) {
+            if !isValidMetallibHeader(headerBytes) {
                 return ShaderCacheIssue(
                     relativePath: relativePath,
                     kind: .invalidMetallibHeader,
                     sizeBytes: sizeBytes,
-                    detail: "Invalid .metallib magic header (expected 'MTLB', got \(hexPreview(headerBytes, count: 4)))"
+                    detail: "Invalid .metallib magic header (expected 'MTLB' or Apple Metal binary archive 0xCBFEBABE, got \(hexPreview(headerBytes, count: 4)))"
+                )
+            }
+
+        case "db":
+            if sizeBytes < 100 || !hasMagic(headerBytes, sqliteMagic) {
+                return ShaderCacheIssue(
+                    relativePath: relativePath,
+                    kind: .truncatedArchive,
+                    sizeBytes: sizeBytes,
+                    detail: "Corrupt or truncated SQLite shader database (\(sizeBytes) bytes, magic \(hexPreview(headerBytes, count: 4)))"
+                )
+            }
+
+        case "dxvk-cache":
+            if sizeBytes < 16 || !hasMagic(headerBytes, dxvkCacheMagic) {
+                return ShaderCacheIssue(
+                    relativePath: relativePath,
+                    kind: .truncatedArchive,
+                    sizeBytes: sizeBytes,
+                    detail: "Corrupt or truncated DXVK state cache (expected 'DXVK', got \(hexPreview(headerBytes, count: 4)))"
                 )
             }
 

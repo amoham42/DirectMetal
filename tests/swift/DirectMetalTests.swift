@@ -2405,10 +2405,21 @@ struct DirectMetalTests {
         let entryDir = cacheRoot.appendingPathComponent("gamehash_apple9_25G241", isDirectory: true)
         try fm.createDirectory(at: entryDir, withIntermediateDirectories: true)
 
-        // Healthy files
+        // Healthy files: single-slice MTLB, universal MTLBinaryArchive (0xCBFEBABE), SQLite DB + idle WAL/lock sidecars, DXVK cache & JSON
         var validMetallib = Data([0x4D, 0x54, 0x4C, 0x42]) // "MTLB"
         validMetallib.append(Data(repeating: 0x11, count: 60))
         try validMetallib.write(to: entryDir.appendingPathComponent("good.metallib"))
+        var validFatMetallib = Data([0xCB, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x02])
+        validFatMetallib.append(Data(repeating: 0x22, count: 56))
+        try validFatMetallib.write(to: entryDir.appendingPathComponent("pipelines_400_v122_0.metallib"))
+        var validSqlite = Data("SQLite format 3\0".utf8)
+        validSqlite.append(Data(repeating: 0x00, count: 128))
+        try validSqlite.write(to: entryDir.appendingPathComponent("shaders.db"))
+        try Data().write(to: entryDir.appendingPathComponent("shaders.db-lock"))
+        try Data().write(to: entryDir.appendingPathComponent("shaders.db-wal"))
+        var validDxvk = Data("DXVK".utf8)
+        validDxvk.append(Data(repeating: 0x0A, count: 32))
+        try validDxvk.write(to: entryDir.appendingPathComponent("game.dxvk-cache"))
         try Data("{\"ok\":true}".utf8).write(to: entryDir.appendingPathComponent("meta.json"))
         try Data(repeating: 0x00, count: 10).write(to: entryDir.appendingPathComponent(".DS_Store"))
 
@@ -2432,7 +2443,7 @@ struct DirectMetalTests {
 
         let report = ShaderCacheVerifier.verify(cacheRoot: cacheRoot)
         try expectEqual(report.isHealthy, false)
-        try expectEqual(report.healthyFileCount, 2, "good.metallib and meta.json should be healthy")
+        try expectEqual(report.healthyFileCount, 7, "all 7 healthy shader/db/sidecar/json files should pass")
         try expectEqual(report.issues.count, 6, "expected 6 corrupt/invalid cache items")
 
         let kinds = Set(report.issues.map(\.kind))
@@ -2460,7 +2471,7 @@ struct DirectMetalTests {
         // Post-quarantine re-verify skips _quarantine and reports 100% healthy
         let afterReport = ShaderCacheVerifier.verify(cacheRoot: cacheRoot)
         try expectEqual(afterReport.isHealthy, true, "re-verify after quarantine should report healthy")
-        try expectEqual(afterReport.healthyFileCount, 2)
+        try expectEqual(afterReport.healthyFileCount, 7)
         try expect(ShaderCacheVerifier.formatMarkdown(report).contains("Shader Cache Integrity"), "markdown formatter should emit header")
     }
 }
