@@ -1,6 +1,6 @@
 cask "directmetal" do
-  version "1.1.0"
-  sha256 "4a4d8f02010ea6fa4acc5ace693d6d82e7a7f0cefad9fe97220ac0d7a8fa8711"
+  version "1.2.0"
+  sha256 "278354945984006f0512502d11f2a250d5759afa25587150bda0df3b01f65719"
 
   url "https://github.com/amoham42/DirectMetal/releases/download/v#{version}/DirectMetal-Lite-macOS-arm64.dmg"
   name "DirectMetal"
