@@ -380,6 +380,9 @@ struct DirectMetalTests {
             ("GameSessionAnalytics: stability tiers, median CoW clone, recency & Markdown", {
                 try testGameSessionAnalytics()
             }),
+            ("StorageFootprintAnalyzer: 6-category audit, symlink safety & reclamation hints", {
+                try testStorageFootprintAnalyzer(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2612,5 +2615,58 @@ struct DirectMetalTests {
         let md = GameSessionAnalytics.formatMarkdown(summary, home: "/Users/alice")
         try expect(md.contains("Hades"), "markdown should list top games")
         try expect(!md.contains("/Users/alice"), "markdown must redact home paths")
+    }
+
+    private static func testStorageFootprintAnalyzer(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let support = tempRoot.appendingPathComponent("storage_support", isDirectory: true)
+        let prefixes = support.appendingPathComponent("Prefixes", isDirectory: true)
+        let caches = tempRoot.appendingPathComponent("storage_caches", isDirectory: true)
+        let saveBackups = support.appendingPathComponent("SaveBackups", isDirectory: true)
+        let runtimeDir = support.appendingPathComponent("Runtime-arm64ec", isDirectory: true)
+        try fm.createDirectory(at: prefixes.appendingPathComponent("ActiveGame", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: prefixes.appendingPathComponent("OrphanGame", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: caches.appendingPathComponent("abc_apple7_26B131", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: caches.appendingPathComponent("abc_apple7_25A000", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: caches.appendingPathComponent("_quarantine/20261128", isDirectory: true), withIntermediateDirectories: true)
+        try fm.createDirectory(at: saveBackups, withIntermediateDirectories: true)
+        try fm.createDirectory(at: runtimeDir, withIntermediateDirectories: true)
+
+        try Data(repeating: 0x11, count: 1024).write(to: prefixes.appendingPathComponent("ActiveGame/system.reg"))
+        try Data(repeating: 0x22, count: 4096).write(to: prefixes.appendingPathComponent("OrphanGame/system.reg"))
+        try Data(repeating: 0x33, count: 2048).write(to: caches.appendingPathComponent("abc_apple7_26B131/pso.metallib"))
+        try Data(repeating: 0x44, count: 8192).write(to: caches.appendingPathComponent("abc_apple7_25A000/stale.metallib"))
+        try Data(repeating: 0x55, count: 512).write(to: caches.appendingPathComponent("_quarantine/20261128/corrupt.metallib"))
+        try Data(repeating: 0x66, count: 256).write(to: saveBackups.appendingPathComponent("Hades.dmsaves.tar.gz"))
+        try Data(repeating: 0x77, count: 1536).write(to: runtimeDir.appendingPathComponent("wine.bin"))
+        try Data("{}".utf8).write(to: support.appendingPathComponent("library.json"))
+
+        // Symlink pointing outside must never inflate reported disk size
+        let outsideHuge = tempRoot.appendingPathComponent("outside_huge.bin")
+        try Data(repeating: 0xAA, count: 65536).write(to: outsideHuge)
+        try fm.createSymbolicLink(
+            at: prefixes.appendingPathComponent("ActiveGame/link_out"),
+            withDestinationURL: outsideHuge
+        )
+
+        let activeEntry = GameLibraryEntry(title: "Active", exePath: "/Games/Active.exe", prefixName: "ActiveGame")
+        let report = StorageFootprintAnalyzer.analyze(
+            supportRoot: support,
+            prefixRoot: prefixes,
+            shaderCacheRoot: caches,
+            libraryEntries: [activeEntry],
+            hostCacheKey: "apple7_26B131"
+        )
+
+        try expectEqual(report.categories.count, 6, "should report all 6 storage categories")
+        try expect(report.totalBytes < 65536, "symlink target outside root must not be counted")
+        try expectEqual(report.totalReclaimableBytes, 4096 + 8192 + 512, "reclaimable bytes should sum orphan prefix + stale cache + quarantine")
+        try expectEqual(report.suggestions.count, 3, "should emit 3 reclamation suggestions sorted by size")
+        try expectEqual(report.suggestions[0].reclaimableBytes, 8192, "largest reclaimable suggestion should sort first")
+
+        let text = StorageFootprintAnalyzer.formatText(report, home: tempRoot.path)
+        try expect(!text.contains(tempRoot.path), "formatText must redact home prefix")
+        let md = StorageFootprintAnalyzer.formatMarkdown(report, home: tempRoot.path)
+        try expect(md.contains("DirectMetal Storage Footprint"), "formatMarkdown should emit heading")
     }
 }

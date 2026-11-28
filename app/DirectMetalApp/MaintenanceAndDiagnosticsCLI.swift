@@ -571,3 +571,17 @@ func runHUDCLI(args: [String]) -> Int32 {
         return 1
     }
 }
+
+func runStorageCLI(args: [String]) -> Int32 {
+    let asJSON = args.contains("--json")
+    let asMarkdown = args.contains("--markdown") || args.contains("--md")
+    let report = StorageFootprintAnalyzer.analyze()
+    if asJSON {
+        printLibraryJSON(report)
+    } else if asMarkdown {
+        print(StorageFootprintAnalyzer.formatMarkdown(report))
+    } else {
+        print(StorageFootprintAnalyzer.formatText(report))
+    }
+    return 0
+}

@@ -91,6 +91,8 @@ private func printUsage() {
                                          Scan a Wine/DirectX/Metal log for crashes, missing DLLs & anti-cheat
       DirectMetal support-bundle [<out.tar.gz>] [--json]
                                          Export a privacy-redacted diagnostics archive for GitHub bug reports
+      DirectMetal storage [--json|--markdown]
+                                         Audit disk usage across prefixes, caches, backups & runtimes with reclaim tips
       DirectMetal hud show|set|reset [--json]
                                          Inspect or customize the live Metal Performance HUD overlay
       DirectMetal controller list [--json]
@@ -468,6 +470,9 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "support-bundle":
         return runSupportBundleCLI(args: Array(args.dropFirst()))
+
+    case "storage", "disk":
+        return runStorageCLI(args: Array(args.dropFirst()))
 
     case "hud":
         return runHUDCLI(args: Array(args.dropFirst()))
