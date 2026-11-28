@@ -298,6 +298,23 @@ struct ProfileBrowserSheet: View {
                 Spacer(minLength: 8)
 
                 Button {
+                    let report = vm.syncLibraryProfiles(registry: registry, overwriteCustomized: false)
+                    if report.appliedCount > 0 {
+                        appliedBannerMessage = "Applied \(report.appliedCount) community preset\(report.appliedCount == 1 ? "" : "s") across your library (\(report.skippedCustomizedCount) customized preserved)."
+                    } else if report.skippedCustomizedCount > 0 {
+                        appliedBannerMessage = "All \(report.alreadyMatchedCount) matched games already synced (\(report.skippedCustomizedCount) customized preserved)."
+                    } else {
+                        appliedBannerMessage = "No new community presets to apply (\(report.alreadyMatchedCount) already matched, \(report.unmatchedCount) unmatched)."
+                    }
+                } label: {
+                    Label("Sync Library", systemImage: "arrow.triangle.2.circlepath")
+                }
+                .controlSize(.small)
+                .buttonStyle(.borderedProminent)
+                .disabled(isLoading || vm.library.isEmpty)
+                .help("Apply newly matched community profiles across your library without overwriting customized games")
+
+                Button {
                     reloadRegistry()
                 } label: {
                     if isLoading {

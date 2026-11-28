@@ -60,7 +60,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|play|explain|shortcut|export|import)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|sync-profiles|play|explain|shortcut|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -347,6 +347,31 @@ func runLibraryCLI(args: [String]) -> Int32 {
         } else {
             let baseline = profile.map { "Community Preset: \($0.title)" } ?? "DirectMetal Zero-Config Defaults"
             print("Reset settings for \"\(entries[idx].title)\" to \(baseline).")
+        }
+        return 0
+
+    case "sync-profiles", "apply-profiles":
+        let dryRun = rest.contains("--dry-run") || rest.contains("-n")
+        let overwrite = rest.contains("--overwrite") || rest.contains("--force")
+        let asJSON = rest.contains("--json")
+        let asMarkdown = rest.contains("--markdown") || rest.contains("--md")
+
+        var entries = mgr.load()
+        let report = ProfileBatchSync.sync(
+            library: &entries,
+            registry: mgr.profileRegistry,
+            overwriteCustomized: overwrite,
+            dryRun: dryRun
+        )
+        if !dryRun && report.appliedCount > 0 {
+            mgr.save(entries)
+        }
+        if asJSON {
+            printLibraryJSON(report)
+        } else if asMarkdown {
+            print(ProfileBatchSync.formatMarkdown(report))
+        } else {
+            print(ProfileBatchSync.formatText(report))
         }
         return 0
 

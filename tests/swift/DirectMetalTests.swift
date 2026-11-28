@@ -374,6 +374,9 @@ struct DirectMetalTests {
             ("ShaderCacheVerifier: detects corrupt metallib/JSON/symlinks & safely quarantines", {
                 try testShaderCacheVerifierAndQuarantine(tempRoot: tempRoot)
             }),
+            ("ProfileBatchSync: matches games, skips customized entries, supports dry-run & overwrite", {
+                try testProfileBatchSync()
+            }),
         ]
 
         var passed = 0
@@ -2473,5 +2476,66 @@ struct DirectMetalTests {
         try expectEqual(afterReport.isHealthy, true, "re-verify after quarantine should report healthy")
         try expectEqual(afterReport.healthyFileCount, 7)
         try expect(ShaderCacheVerifier.formatMarkdown(report).contains("Shader Cache Integrity"), "markdown formatter should emit header")
+    }
+
+    private static func testProfileBatchSync() throws {
+        let registry = GameProfileRegistry.load()
+        try expect(registry.profiles.count >= 125, "bundled profile registry should contain 125+ profiles")
+
+        // 1. Unprofiled stock game matching newly added RimWorld (294100)
+        let rimworld = GameLibraryEntry(
+            title: "RimWorld",
+            exePath: "/Games/RimWorld/RimWorldWin64.exe",
+            prefixName: "RimWorld",
+            playCount: 5,
+            totalPlaySeconds: 3600,
+            steamAppID: "294100",
+            isFavorite: true
+        )
+        // 2. Customized game (user set fpsCap=90) matching Hades — must be skipped unless overwriteCustomized=true
+        var customHades = GameLibraryEntry(
+            title: "Hades",
+            exePath: "/Games/Hades/x64/Hades.exe",
+            prefixName: "Hades",
+            steamAppID: "1145360"
+        )
+        customHades.fpsCap = 90
+        // 3. Unknown indie game — noMatch
+        let unknown = GameLibraryEntry(
+            title: "Totally Unknown Indie Prototype 9999",
+            exePath: "/Games/Unknown/Prototype9999.exe",
+            prefixName: "Unknown"
+        )
+
+        // Dry-run does not mutate
+        var dryLib = [rimworld, customHades, unknown]
+        let dryReport = ProfileBatchSync.sync(library: &dryLib, registry: registry, overwriteCustomized: false, dryRun: true)
+        try expectEqual(dryReport.dryRun, true)
+        try expectEqual(dryReport.appliedCount, 1)
+        try expectEqual(dryReport.skippedCustomizedCount, 1)
+        try expectEqual(dryReport.unmatchedCount, 1)
+        try expectNil(dryLib[0].profileID, "dry-run must not mutate library entry")
+
+        // Live sync applies RimWorld, preserves customized Hades and user stats
+        var liveLib = [rimworld, customHades, unknown]
+        let liveReport = ProfileBatchSync.sync(library: &liveLib, registry: registry, overwriteCustomized: false, dryRun: false)
+        try expectEqual(liveReport.appliedCount, 1)
+        try expectEqual(liveReport.skippedCustomizedCount, 1)
+        try expectEqual(liveLib[0].profileID, "rimworld")
+        try expectEqual(liveLib[0].playCount, 5, "sync must preserve playCount")
+        try expectEqual(liveLib[0].isFavorite, true, "sync must preserve isFavorite")
+        try expectEqual(liveLib[1].fpsCap, 90, "customized game must be skipped by default")
+
+        // Second pass is idempotent (.alreadyMatched)
+        let secondReport = ProfileBatchSync.sync(library: &liveLib, registry: registry, overwriteCustomized: false, dryRun: false)
+        try expectEqual(secondReport.appliedCount, 0)
+        try expectEqual(secondReport.alreadyMatchedCount, 1)
+
+        // Overwrite pass resets customized Hades to its community preset
+        let overwriteReport = ProfileBatchSync.sync(library: &liveLib, registry: registry, overwriteCustomized: true, dryRun: false)
+        try expectEqual(overwriteReport.appliedCount, 1)
+        try expectEqual(liveLib[1].profileID, "hades")
+        try expectEqual(liveLib[1].fpsCap, 0, "overwrite pass resets customized fpsCap to profile baseline")
+        try expect(ProfileBatchSync.formatMarkdown(overwriteReport).contains("Profile Batch Sync"), "markdown output should include heading")
     }
 }

@@ -267,6 +267,32 @@ final class DirectMetalViewModel: ObservableObject {
         manager.save(library)
     }
 
+    @discardableResult
+    func syncLibraryProfiles(
+        registry: GameProfileRegistry = .shared,
+        overwriteCustomized: Bool = false
+    ) -> ProfileBatchSyncReport {
+        var updated = library
+        let report = ProfileBatchSync.sync(
+            library: &updated,
+            registry: registry,
+            overwriteCustomized: overwriteCustomized,
+            dryRun: false
+        )
+        if report.appliedCount > 0 {
+            library = updated
+            manager.save(library)
+        }
+        if report.appliedCount > 0 {
+            statusMessage = "Synced \(report.appliedCount) game\(report.appliedCount == 1 ? "" : "s") with community profiles (\(report.skippedCustomizedCount) customized preserved)."
+        } else if report.skippedCustomizedCount > 0 {
+            statusMessage = "All \(report.alreadyMatchedCount) matched games up to date (\(report.skippedCustomizedCount) customized preserved)."
+        } else {
+            statusMessage = "Library already synced with community profiles (\(report.alreadyMatchedCount) matched)."
+        }
+        return report
+    }
+
     func toggleFavorite(_ entry: GameLibraryEntry) {
         let nowFav = !(library.first(where: { $0.id == entry.id })?.isFavorite ?? entry.isFavorite)
         update(entry.id) { $0.isFavorite = nowFav }
