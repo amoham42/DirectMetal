@@ -25,6 +25,7 @@ private struct PaletteQuickAction: Identifiable {
         case importBackup
         case exportSupportBundle
         case libraryReport
+        case collectionsManager
     }
 
     let id: String
@@ -213,6 +214,17 @@ private struct PaletteQuickAction: Identifiable {
             tint: .indigo,
             shortcutHint: nil,
             keywords: ["report", "csv", "markdown", "playtime", "stability", "export", "table", "stats"],
+            presentsModal: true
+        ),
+        PaletteQuickAction(
+            id: "action.collections-manager",
+            kind: .collectionsManager,
+            title: "Manage Game Collections…",
+            subtitle: "Create, rename, and organize games into custom named collections & tags",
+            systemImage: "folder.badge.plus",
+            tint: .purple,
+            shortcutHint: "⇧⌘C",
+            keywords: ["collections", "tags", "folders", "organize", "groups", "backlog", "rpg"],
             presentsModal: true
         ),
     ]
@@ -787,6 +799,8 @@ struct CommandPaletteSheet: View {
                 vm.exportDiagnosticsBundle()
             case .libraryReport:
                 vm.openLibraryReport()
+            case .collectionsManager:
+                vm.openCollectionsManager()
             }
         }
 

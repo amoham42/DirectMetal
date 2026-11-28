@@ -80,6 +80,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showCustomProfileEditorSheet: Bool = false
     // Privacy-safe Library Playtime & Compatibility Report sheet
     @Published var showLibraryReportSheet: Bool = false
+    // User Game Collections & Tagging Manager sheet (⇧⌘C)
+    @Published var showCollectionsSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -163,7 +165,8 @@ final class DirectMetalViewModel: ObservableObject {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
             || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
             || showProfileBrowserSheet || showLaunchPlanSheet || showHUDCustomizerSheet
-            || showLogTriageSheet || showCustomProfileEditorSheet || showLibraryReportSheet || showRemoveConfirm
+            || showLogTriageSheet || showCustomProfileEditorSheet || showLibraryReportSheet
+            || showCollectionsSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -250,6 +253,12 @@ final class DirectMetalViewModel: ObservableObject {
     func openLibraryReport() {
         guard !isPresentingModal || showLibraryReportSheet else { return }
         showLibraryReportSheet = true
+    }
+
+    /// ⇧⌘C: open the Game Collections & Tagging Manager sheet.
+    func openCollectionsManager() {
+        guard !isPresentingModal || showCollectionsSheet else { return }
+        showCollectionsSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -763,6 +772,9 @@ struct DirectMetalContentView: View {
         .sheet(isPresented: $vm.showLibraryReportSheet) {
             LibraryReportSheet(vm: vm)
         }
+        .sheet(isPresented: $vm.showCollectionsSheet) {
+            CollectionsManagerSheet(vm: vm)
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -862,6 +874,9 @@ struct DirectMetalCommands: Commands {
             Button("Find Game…") { vm?.requestSearchFocus() }
                 .keyboardShortcut("f", modifiers: .command)
                 .disabled(vm == nil)
+            Button("Game Collections…") { vm?.openCollectionsManager() }
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .disabled(vm == nil || (modal && vm?.showCollectionsSheet != true))
             Divider()
             Button("Detail Inspector") { vm?.showGalleryView = false }
                 .keyboardShortcut("1", modifiers: .command)
