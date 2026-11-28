@@ -1,6 +1,7 @@
 import AppKit
 import Foundation
 import SwiftUI
+import UniformTypeIdentifiers
 
 // APFS Prefix Manager & Storage Inspector Sheet.
 // Inspects managed Wine prefixes asynchronously off the main thread, reports logical
@@ -431,6 +432,8 @@ struct PrefixManagerSheet: View {
                             mutationsDisabled: vm.isRunning || isMutating,
                             gameRunning: vm.isRunning,
                             onReveal: { revealPrefixInFinder(stat) },
+                            onExportSaves: { exportPrefixSaves(stat) },
+                            onImportSaves: { importPrefixSaves(stat) },
                             onReset: { pendingReset = stat },
                             onDelete: { pendingDelete = stat }
                         )
@@ -471,6 +474,82 @@ struct PrefixManagerSheet: View {
 
     private func revealPrefixInFinder(_ stat: PrefixManager.PrefixStat) {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: stat.path)])
+    }
+
+    private func exportPrefixSaves(_ stat: PrefixManager.PrefixStat) {
+        guard !vm.isRunning, busyPrefixName == nil else { return }
+        let panel = NSSavePanel()
+        panel.title = "Export Save Data — \(stat.name)"
+        panel.message = "Save a SHA-256 verified .tar.gz archive of Windows Documents, Saved Games & AppData saves from prefix “\(stat.name)”."
+        panel.allowedContentTypes = [UTType.gzip]
+        panel.nameFieldStringValue = "\(stat.name)-saves.tar.gz"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destURL = panel.url else { return }
+
+        busyPrefixName = stat.name
+        busyActionLabel = "Exporting saves…"
+        statusBanner = nil
+        let name = stat.name
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let res = try SaveBackupManager.exportSaves(prefixName: name, to: destURL.path)
+                let msg = "Backed up \(res.fileCount) save file\(res.fileCount == 1 ? "" : "s") from “\(name)” to \(destURL.lastPathComponent)."
+                DispatchQueue.main.async {
+                    self.busyPrefixName = nil
+                    self.busyActionLabel = ""
+                    self.statusBanner = PrefixStatusBanner(message: msg, isError: false)
+                    self.vm.statusMessage = msg
+                }
+            } catch {
+                let msg = "Save backup failed for “\(name)”: \(error)"
+                DispatchQueue.main.async {
+                    self.busyPrefixName = nil
+                    self.busyActionLabel = ""
+                    self.statusBanner = PrefixStatusBanner(message: msg, isError: true)
+                    self.vm.statusMessage = msg
+                }
+            }
+        }
+    }
+
+    private func importPrefixSaves(_ stat: PrefixManager.PrefixStat) {
+        guard !vm.isRunning, busyPrefixName == nil else { return }
+        let panel = NSOpenPanel()
+        panel.title = "Restore Save Data — \(stat.name)"
+        panel.message = "Choose a DirectMetal .tar.gz save backup to SHA-256 verify and restore into prefix “\(stat.name)”."
+        panel.allowedContentTypes = [UTType.gzip]
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let srcURL = panel.url else { return }
+
+        busyPrefixName = stat.name
+        busyActionLabel = "Restoring saves…"
+        statusBanner = nil
+        let name = stat.name
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let res = try SaveBackupManager.importSaves(from: srcURL.path, into: name)
+                let updated = PrefixManager().prefixStats()
+                let msg = "Restored \(res.restoredFiles) verified save file\(res.restoredFiles == 1 ? "" : "s") into “\(name)”."
+                DispatchQueue.main.async {
+                    self.stats = updated
+                    self.hasLoaded = true
+                    self.busyPrefixName = nil
+                    self.busyActionLabel = ""
+                    self.statusBanner = PrefixStatusBanner(message: msg, isError: false)
+                    self.vm.statusMessage = msg
+                }
+            } catch {
+                let msg = "Save restore failed for “\(name)”: \(error)"
+                DispatchQueue.main.async {
+                    self.busyPrefixName = nil
+                    self.busyActionLabel = ""
+                    self.statusBanner = PrefixStatusBanner(message: msg, isError: true)
+                    self.vm.statusMessage = msg
+                }
+            }
+        }
     }
 
     private func resetPrefix(_ stat: PrefixManager.PrefixStat) {
@@ -636,6 +715,8 @@ private struct PrefixStatRow: View {
     let mutationsDisabled: Bool
     let gameRunning: Bool
     let onReveal: () -> Void
+    let onExportSaves: () -> Void
+    let onImportSaves: () -> Void
     let onReset: () -> Void
     let onDelete: () -> Void
 
@@ -729,6 +810,28 @@ private struct PrefixStatRow: View {
                     }
                     .controlSize(.small)
                     .help("Reveal “\(stat.name)” in Finder")
+
+                    Menu {
+                        Button {
+                            onExportSaves()
+                        } label: {
+                            Label("Backup Saves (.tar.gz)…", systemImage: "square.and.arrow.up")
+                        }
+                        Button {
+                            onImportSaves()
+                        } label: {
+                            Label("Restore Saves (.tar.gz)…", systemImage: "square.and.arrow.down")
+                        }
+                    } label: {
+                        Image(systemName: "externaldrive.badge.checkmark")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .disabled(mutationsDisabled)
+                    .help(gameRunning
+                          ? "Quit the running game before backing up or restoring saves"
+                          : "Backup or restore SHA-256 verified Windows save files for “\(stat.name)”")
 
                     Button {
                         onReset()

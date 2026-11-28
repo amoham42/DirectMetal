@@ -51,6 +51,8 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal prefix stats [--json]` | Inspect per-prefix disk usage, file count, APFS CoW clone time, and associated game executable. |
 | `DirectMetal prefix prune [--dry-run] [--json]` | Safely remove orphaned APFS prefixes not referenced by any library game (always preserves `default` and active `wineserver` prefixes). |
 | `DirectMetal prefix create\|reset\|delete <name>` | Create, reset from the golden base prefix, or delete a managed APFS prefix. |
+| `DirectMetal prefix export-saves <name> <out.tar.gz> [--json]` | Export Windows save data (`Documents`, `Saved Games`, `AppData`) from a prefix into a SHA-256 verified `.tar.gz` archive. |
+| `DirectMetal prefix import-saves <name> <backup.tar.gz> [--json]` | SHA-256 verify and atomically restore a save backup archive into a managed prefix (rejects path traversal and symlinks). |
 | `DirectMetal server status\|stop` | Inspect or gracefully stop the background warm `wineserver` pool. |
 
 ---

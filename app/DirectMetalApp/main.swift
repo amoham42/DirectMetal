@@ -174,7 +174,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "prefix":
         guard args.count >= 2 else {
-            fputs("error: prefix requires subcommand (list|stats|prune|create|reset|delete)\n", stderr)
+            fputs("error: prefix requires subcommand (list|stats|prune|create|reset|delete|export-saves|import-saves)\n", stderr)
             return 1
         }
         let mgr = PrefixManager()
@@ -281,6 +281,50 @@ private func runCLI(args: [String]) -> Int32 {
                 return 0
             } catch {
                 fputs("prefix delete failed: \(error)\n", stderr)
+                return 1
+            }
+
+        case "export-saves":
+            let rest = Array(args.dropFirst(2))
+            let asJSON = rest.contains("--json")
+            let positional = rest.filter { !$0.hasPrefix("--") }
+            guard positional.count >= 2 else {
+                fputs("error: prefix export-saves requires <prefix_name> <output.tar.gz> [--json]\n", stderr)
+                return 1
+            }
+            do {
+                let res = try SaveBackupManager.exportSaves(prefixName: positional[0], to: positional[1], prefixManager: mgr)
+                if asJSON {
+                    printLibraryJSON(res)
+                } else {
+                    let kib = String(format: "%.1f", Double(res.totalPayloadBytes) / 1024.0)
+                    print("Exported \(res.fileCount) save file(s) (\(kib) KiB) from prefix \"\(res.prefixName)\" to \(res.archivePath) (manifest_sha256=\(res.manifestSha256.prefix(16))…)")
+                }
+                return 0
+            } catch {
+                fputs("prefix export-saves failed: \(error)\n", stderr)
+                return 1
+            }
+
+        case "import-saves":
+            let rest = Array(args.dropFirst(2))
+            let asJSON = rest.contains("--json")
+            let positional = rest.filter { !$0.hasPrefix("--") }
+            guard positional.count >= 2 else {
+                fputs("error: prefix import-saves requires <prefix_name> <backup.tar.gz> [--json]\n", stderr)
+                return 1
+            }
+            do {
+                let res = try SaveBackupManager.importSaves(from: positional[1], into: positional[0], prefixManager: mgr)
+                if asJSON {
+                    printLibraryJSON(res)
+                } else {
+                    let kib = String(format: "%.1f", Double(res.totalBytes) / 1024.0)
+                    print("Restored \(res.restoredFiles) SHA-256 verified save file(s) (\(kib) KiB) into prefix \"\(res.prefixName)\".")
+                }
+                return 0
+            } catch {
+                fputs("prefix import-saves failed: \(error)\n", stderr)
                 return 1
             }
 

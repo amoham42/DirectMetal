@@ -284,7 +284,7 @@ _directmetal() {
       _values 'runtime subcommand' $sub
       ;;
     prefix)
-      local -a sub=(list stats prune create reset delete)
+      local -a sub=(list stats prune create reset delete export-saves import-saves)
       _values 'prefix subcommand' $sub
       ;;
     cache)
@@ -357,7 +357,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "status install update remove warm stop-servers" -- "${cur}") )
       ;;
     prefix)
-      COMPREPLY=( $(compgen -W "list stats prune create reset delete" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "list stats prune create reset delete export-saves import-saves" -- "${cur}") )
       ;;
     cache)
       COMPREPLY=( $(compgen -W "status list prune export import sync clear" -- "${cur}") )

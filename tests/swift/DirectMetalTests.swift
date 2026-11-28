@@ -356,6 +356,9 @@ struct DirectMetalTests {
             ("LaunchPlanInspector: pure dry-run resolution, blocked env detection & home redaction", {
                 try testLaunchPlanInspectorDryRun(tempRoot: tempRoot)
             }),
+            ("SaveBackupManager: save discovery, parallel SHA-256 export/restore & path-traversal rejection", {
+                try testSaveBackupExportImportAndSecurity(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2162,5 +2165,44 @@ struct DirectMetalTests {
         let md = LaunchPlanInspector.formatMarkdown(plan, home: "/Users/alice")
         try expect(md.contains("REANIMAL"), "markdown plan must include game title")
         try expect(!md.contains("/Users/alice"), "markdown plan must redact home directory")
+    }
+
+    private static func testSaveBackupExportImportAndSecurity(tempRoot: URL) throws {
+        // 1. Path safety checks
+        try expectEqual(SaveBackupManager.isSafeRelativePath("steamuser/Documents/Hades/Profile1.sav"), true)
+        try expectEqual(SaveBackupManager.isSafeRelativePath("../escape.sav"), false)
+        try expectEqual(SaveBackupManager.isSafeRelativePath("/etc/passwd"), false)
+        try expectEqual(SaveBackupManager.isSafeRelativePath("user/Documents/../../evil"), false)
+        try expectEqual(SaveBackupManager.isSafeRelativePath("user\\Documents\\save.dat"), false)
+        try expectEqual(SaveBackupManager.isSafeRelativePath(""), false)
+
+        // 2. Discover & export saves while ignoring noisy Temp/Cache folders
+        let fm = FileManager.default
+        let pfxRoot = tempRoot.appendingPathComponent("save_prefixes", isDirectory: true)
+        let srcPrefix = pfxRoot.appendingPathComponent("HadesSrc", isDirectory: true)
+        let dstPrefix = pfxRoot.appendingPathComponent("HadesDst", isDirectory: true)
+        let saveDir = srcPrefix.appendingPathComponent("drive_c/users/steamuser/Documents/Saved Games/Hades", isDirectory: true)
+        let tempNoise = srcPrefix.appendingPathComponent("drive_c/users/steamuser/AppData/Local/Temp", isDirectory: true)
+        try fm.createDirectory(at: saveDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: tempNoise, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dstPrefix.appendingPathComponent("drive_c/users", isDirectory: true), withIntermediateDirectories: true)
+
+        let savePayload = Data("hades-run-42-victory-payload".utf8)
+        try savePayload.write(to: saveDir.appendingPathComponent("Profile1.sav"))
+        try Data("junk-temp-bytes".utf8).write(to: tempNoise.appendingPathComponent("ignore.tmp"))
+
+        let mgr = PrefixManager(prefixRoot: pfxRoot)
+        let archiveURL = tempRoot.appendingPathComponent("hades-saves.tar.gz")
+        let exported = try SaveBackupManager.exportSaves(prefixName: "HadesSrc", to: archiveURL.path, prefixManager: mgr)
+        try expectEqual(exported.fileCount, 1, "Temp folder files must be excluded from save export")
+        try expectEqual(exported.totalPayloadBytes, UInt64(savePayload.count))
+        try expectEqual(exported.manifestSha256.count, 64)
+
+        // 3. Verified restore into a clean destination prefix
+        let imported = try SaveBackupManager.importSaves(from: archiveURL.path, into: "HadesDst", prefixManager: mgr)
+        try expectEqual(imported.restoredFiles, 1)
+        let restoredFile = dstPrefix.appendingPathComponent("drive_c/users/steamuser/Documents/Saved Games/Hades/Profile1.sav")
+        let restoredBytes = try Data(contentsOf: restoredFile)
+        try expectEqual(restoredBytes, savePayload, "restored save bytes must match original exactly")
     }
 }
