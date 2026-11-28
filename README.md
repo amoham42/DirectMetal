@@ -44,7 +44,7 @@ Traditional Mac gaming wrappers stack layers (`DirectX → Vulkan → MoltenVK �
 - **100% Post-Rosetta ARM64EC + FEX:** Runs both **64-bit and 32-bit** Windows games on a native `arm64` host (`Wine 11.22` + `USync 6` + `FEX-Emu`) with zero Rosetta 2 on macOS 26.4+ (plus optional `--include-rosetta` fallback for macOS 15–26.3).
 - **`2.8 MiB` Lite Installer & Verified Self-Updater:** Ships as a `2.9 MB` `DirectMetal-Lite.app` that downloads and SHA-256 + `codesign` verifies `MetalSharp-Wine` on first launch — or grab the `1.3 GB` self-contained offline DMG.
 - **Instant Launches & Zero Stutter:** Persistent warm `wineserver` pool (**`70–100 ms`** repeat launches, `10.7×` faster), **`0.25–0.41 ms`** APFS CoW prefixes, `~150 ms` zero-copy prefix hydration, and double-SHA-256 verified **Cloud Shader Cache CDN** (`MTLBinaryArchive`, `67×–254×` warm load).
-- **Consumer Game Library & Controller Remapper:** Auto-discovers **Steam, GOG Galaxy, and Epic Games Store** installs with real storefront artwork + embedded Windows PE `.exe` icons, **50 community game presets**, Retina PPI + ProMotion/EDR telemetry, and interactive `GCController` remapping + deadzones.
+- **Consumer Game Library & Controller Remapper:** Auto-discovers **Steam, GOG Galaxy, and Epic Games Store** installs with real storefront artwork + embedded Windows PE `.exe` icons, **60 community game presets**, Retina PPI + ProMotion/EDR telemetry, and interactive `GCController` remapping + deadzones.
 - **Hardened Per-Game Sandbox & Attestation:** Opt-in macOS kernel Seatbelt confinement (`--sandbox`) and Apple Silicon Secure Enclave P-256 hardware attestation (`DirectMetal attest`).
 
 ---
