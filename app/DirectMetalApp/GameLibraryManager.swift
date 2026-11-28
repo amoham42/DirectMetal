@@ -21,6 +21,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     var detectedUpscalers: [String]
     var buildHash: String
     var playCount: Int
+    var totalPlaySeconds: Double
     var lastPlayedUtc: String?
     /// Steam app ID discovered from the Steam library manifest / `steam_appid.txt` (artwork + profile matching).
     var steamAppID: String?
@@ -50,6 +51,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         detectedUpscalers: [String] = [],
         buildHash: String = "",
         playCount: Int = 0,
+        totalPlaySeconds: Double = 0,
         lastPlayedUtc: String? = nil,
         steamAppID: String? = nil,
         profileID: String? = nil,
@@ -75,6 +77,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         self.detectedUpscalers = detectedUpscalers
         self.buildHash = buildHash
         self.playCount = playCount
+        self.totalPlaySeconds = max(0, totalPlaySeconds)
         self.lastPlayedUtc = lastPlayedUtc
         self.steamAppID = steamAppID
         self.profileID = profileID
@@ -86,7 +89,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     enum CodingKeys: String, CodingKey {
         case id, title, exePath, prefixName, engine, perfProfile, dx9Backend, upscaleMode
         case retinaMode, enableHUD, enableSandbox, extraArgs, architecture, detectedAPIs
-        case detectedUpscalers, buildHash, playCount, lastPlayedUtc
+        case detectedUpscalers, buildHash, playCount, totalPlaySeconds, lastPlayedUtc
         case steamAppID, profileID, profileNote
         case storeSource, storeGameID
     }
@@ -116,6 +119,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         detectedUpscalers = opt([String].self, .detectedUpscalers) ?? []
         buildHash = opt(String.self, .buildHash) ?? ""
         playCount = opt(Int.self, .playCount) ?? 0
+        totalPlaySeconds = max(0, opt(Double.self, .totalPlaySeconds) ?? 0)
         lastPlayedUtc = opt(String.self, .lastPlayedUtc)
         steamAppID = opt(String.self, .steamAppID) ?? opt(Int.self, .steamAppID).map(String.init)
         profileID = opt(String.self, .profileID)
@@ -339,6 +343,14 @@ final class GameLibraryManager {
         save(entries)
     }
 
+    func recordSessionDuration(id: String, seconds: Double) {
+        guard seconds.isFinite, seconds > 0 else { return }
+        var entries = load()
+        guard let idx = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[idx].totalPlaySeconds += seconds
+        save(entries)
+    }
+
     func entry(idOrTitle: String) -> GameLibraryEntry? {
         GameLibraryManager.find(idOrTitle, in: load())
     }
@@ -509,14 +521,35 @@ final class GameLibraryManager {
             else { return [] }
             return [Discovery(exePath: exe.path, title: root.lastPathComponent, prefixName: nil)]
         }
-        return dirs.compactMap { dir in
-            if let rec = StoreMetadataLocator.storeRecord(forGameFolder: dir), let d = discovery(from: rec, prefixName: nil) {
-                return d
-            }
-            return GameLibraryManager.primaryExecutable(inGameFolder: dir, titleHint: dir.lastPathComponent).map {
-                Discovery(exePath: $0.path, title: dir.lastPathComponent, prefixName: nil)
+        if dirs.count < 4 {
+            return dirs.compactMap { dir in
+                if let rec = StoreMetadataLocator.storeRecord(forGameFolder: dir), let d = discovery(from: rec, prefixName: nil) {
+                    return d
+                }
+                return GameLibraryManager.primaryExecutable(inGameFolder: dir, titleHint: dir.lastPathComponent).map {
+                    Discovery(exePath: $0.path, title: dir.lastPathComponent, prefixName: nil)
+                }
             }
         }
+        let lock = NSLock()
+        var slotResults = [Discovery?](repeating: nil, count: dirs.count)
+        DispatchQueue.concurrentPerform(iterations: dirs.count) { idx in
+            let dir = dirs[idx]
+            let found: Discovery?
+            if let rec = StoreMetadataLocator.storeRecord(forGameFolder: dir), let d = discovery(from: rec, prefixName: nil) {
+                found = d
+            } else {
+                found = GameLibraryManager.primaryExecutable(inGameFolder: dir, titleHint: dir.lastPathComponent).map {
+                    Discovery(exePath: $0.path, title: dir.lastPathComponent, prefixName: nil)
+                }
+            }
+            if let found {
+                lock.lock()
+                slotResults[idx] = found
+                lock.unlock()
+            }
+        }
+        return slotResults.compactMap { $0 }
     }
 
     // MARK: GOG Galaxy / Epic Games Store

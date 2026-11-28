@@ -54,6 +54,14 @@ enum LauncherStyle {
         f.unitsStyle = .full
         return "Played " + f.localizedString(for: date, relativeTo: Date())
     }
+
+    static func playtimeText(_ seconds: Double) -> String? {
+        guard seconds.isFinite, seconds >= 60 else { return nil }
+        let mins = Int((seconds / 60.0).rounded())
+        if mins < 60 { return "\(mins)m played" }
+        let hrs = seconds / 3600.0
+        return String(format: "%.1f hrs played", hrs)
+    }
 }
 
 struct BadgeView: View {
@@ -499,6 +507,7 @@ enum LibrarySort: String, CaseIterable, Identifiable {
                 let order = x.title.localizedStandardCompare(y.title)
                 if order != .orderedSame { return order == .orderedAscending }
             case .mostPlayed:
+                if Int(x.totalPlaySeconds) != Int(y.totalPlaySeconds) { return x.totalPlaySeconds > y.totalPlaySeconds }
                 if x.playCount != y.playCount { return x.playCount > y.playCount }
                 let order = x.title.localizedStandardCompare(y.title)
                 if order != .orderedSame { return order == .orderedAscending }
