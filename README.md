@@ -53,6 +53,12 @@ Traditional Mac gaming wrappers stack layers (`DirectX → Vulkan → MoltenVK �
 
 ### 1. Download & Install (Fastest)
 
+**Via Homebrew Cask:**
+```bash
+brew install --cask https://raw.githubusercontent.com/amoham42/DirectMetal/main/Casks/directmetal.rb
+```
+
+**Or direct DMG download:**
 1. Grab **[`DirectMetal-Lite-macOS-arm64.dmg` (`2.8 MiB`)](https://github.com/amoham42/DirectMetal/releases/latest)** *(or the `1.3 GB` offline DMG)*.
 2. Drag **`DirectMetal-Lite.app`** into `/Applications`.
 3. *(Until Apple Developer ID notarization is enabled on CI)* clear macOS quarantine once:
@@ -169,6 +175,8 @@ make dmg-ultra      # Build max-compression offline DMG (1.0 GB ULMO LZMA)
 | Document | Description |
 | :--- | :--- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | DirectX-to-Metal stack, UMA/TBDR optimizations, and ARM64EC + FEX design |
+| [docs/COMPARISON.md](docs/COMPARISON.md) | Honest comparison vs. Whisky, CrossOver, Kegworks, and Apple GPTK |
+| [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Fixes for quarantine, macOS 15 Rosetta fallback, Retina PPI, Steam & warm servers |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Full 25/25 PSNR/SSIM conformance tables and M1 Pro / M4 vs. RTX 3070 benchmarks |
 | [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md) | Engine & retail game test telemetry (UE5, Source, DX9/11/12) |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 60-second dev loop, CMake/Swift build guide, adding presets to [`game_profiles.json`](runtime/profiles/game_profiles.json) |
