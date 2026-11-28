@@ -4,6 +4,25 @@ All notable changes to **DirectMetal** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-11-27
+
+### Added
+
+- **Verified In-App & CLI Self-Updater (`AppUpdater.swift`, `DirectMetal update apply`, `DirectMetal runtime update`):**
+  - Dual update checker monitoring both `amoham42/DirectMetal` and upstream `metalsharp/MetalSharp-Wine` releases in the GUI Updates sheet and `DirectMetal update check --json`.
+  - Streams release `.dmg` downloads, enforces strict SHA-256 verification against `.sha256` sidecars, mounts read-only via `hdiutil`, verifies `codesign --verify --deep --strict`, checks Bundle ID and Signing Team ID identity match, atomically replaces the installed `.app` with automatic rollback on failure, and offers one-click relaunch.
+- **GOG Galaxy & Epic Games Store Discovery + Artwork (`GameLibraryManager.swift`, `GameArtworkManager.swift`):**
+  - Automatic scanning of GOG Galaxy (`goggame-*.info`, `webcache` cover art, `.ico` icons) and Epic Games Store (`Manifests/*.item`, Heroic `installed.json` + `images-cache/`, `.egstore/` markers) alongside Steam and Windows PE `.exe` icon extraction, with storefront badges in the GUI and `DirectMetal library artwork <game>`.
+- **Interactive Controller Remapping, Deadzones & Live Input Tester (`ControllerMappingManager.swift`, `DirectMetal controller`):**
+  - Global and per-game controller profiles (`xboxStandard`, `nintendoSwap`, `playstationDualSense`, `invertedLookY`, `custom`), per-button remapping, Left/Right stick deadzones (`0%–35%`), haptics toggle, live `GCController` input tester sheet in the GUI, and automatic `SDL_GAMECONTROLLERCONFIG` generation on launch.
+- **Expanded Community Game Profiles & Multi-Chip Cloud Shader Cache (`runtime/profiles/game_profiles.json`):**
+  - Expanded to 36 profiles across UE5, Unity, RE Engine, Frostbite, REDengine, and Source 2 (with honest `playable` vs `preset` status tags), plus combined `Apple7` (M1 Pro) + `Apple9` (M4) starter Cloud Shader Cache index.
+
+### Fixed
+
+- **macOS 15 SDK (Xcode 16) Compilation:** Replaced macOS 26-only `MTLGPUFamily.apple10` / `.metal4` / `supportsMetal4FX` compile-time symbols with runtime-safe raw enum values and dynamic Obj-C selector probes (`RuntimeLauncher.swift`, `dm_metal_device.mm`, `dm_metalfx_bridge.mm`), making GitHub Actions `macos-15` CI pass cleanly while retaining full Metal 4 runtime detection on macOS 26/27.
+- **Strict Code Signing on `--include-rosetta` Bundles:** Stripped external symlinks (`dosdevices/z: -> /` and host home-directory links) from bundled Rosetta base prefixes in `scripts/package_app.sh` and restored `dosdevices/z: -> /` automatically on clone in `PrefixManager.swift`.
+
 ## [1.0.0] - 2026-11-27
 
 Initial stable Apple Silicon (`arm64`) release of DirectMetal, verified on **Apple M1 Pro (`macOS 27.2.1` `26B131`)** and **Apple M4 (`macOS 26.7.1`)** against native **Windows 11 + NVIDIA RTX 3070** ground-truth reference captures.
