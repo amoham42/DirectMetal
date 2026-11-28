@@ -251,6 +251,15 @@ if [[ "${LITE_MODE}" != "1" && "${BUNDLE_ROSETTA}" == "1" ]]; then
     cp "${D3D12_GUARD_DLL}" "${CONTENTS}/Runtime/base-prefix/drive_c/windows/system32/d3d12.dll"
   fi
 
+  # Remove symlinks pointing outside the .app bundle (e.g. dosdevices/z: -> / and user home links)
+  # so strict codesign verification passes on --include-rosetta builds; PrefixManager restores z: on clone.
+  find "${CONTENTS}/Runtime/base-prefix" -type l | while IFS= read -r link_path; do
+    link_target="$(readlink "${link_path}")"
+    if [[ "${link_target}" == /* ]]; then
+      rm -f "${link_path}"
+    fi
+  done
+
   # Strip unused build/dev/legacy bloat from bundled Rosetta runtime copy (non-destructive to build/)
   WINE_REL="$(cd "${CONTENTS}/Runtime" && find wine-dist -maxdepth 6 -type f -name wine -path "*/bin/wine" | head -n 1 | sed 's|/bin/wine$||')"
   MULLION_REL="$(cd "${CONTENTS}/Runtime" && find mullion-dist -maxdepth 3 -type f -name install.sh | head -n 1 | sed 's|/install.sh$||')"

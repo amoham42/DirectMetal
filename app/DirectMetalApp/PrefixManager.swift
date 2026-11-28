@@ -88,6 +88,12 @@ final class PrefixManager {
         let elapsedMs = try Self.cloneTree(from: basePrefix, to: dest)
         // Hydration marker belongs to the shared golden prefix only.
         unlink(dest.appendingPathComponent(BasePrefixHydrator.markerFileName).path)
+        // Ensure Z: drive symlink exists (stripped from --include-rosetta bundles for strict codesign compliance).
+        let dosdevices = dest.appendingPathComponent("dosdevices", isDirectory: true)
+        let zDrive = dosdevices.appendingPathComponent("z:")
+        if access(dosdevices.path, F_OK) == 0 && access(zDrive.path, F_OK) != 0 {
+            _ = symlink("/", zDrive.path)
+        }
 
         let formatter = ISO8601DateFormatter()
         let meta = PrefixMetadata(
