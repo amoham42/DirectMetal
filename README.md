@@ -44,7 +44,8 @@ Traditional Mac gaming wrappers stack layers (`DirectX → Vulkan → MoltenVK �
 - **100% Post-Rosetta ARM64EC + FEX:** Runs both **64-bit and 32-bit** Windows games on a native `arm64` host (`Wine 11.22` + `USync 6` + `FEX-Emu`) with zero Rosetta 2 on macOS 26.4+ (plus optional `--include-rosetta` fallback for macOS 15–26.3).
 - **`2.8 MiB` Lite Installer & Verified Self-Updater:** Ships as a `2.9 MB` `DirectMetal-Lite.app` that downloads and SHA-256 + `codesign` verifies `MetalSharp-Wine` on first launch — or grab the `1.3 GB` self-contained offline DMG.
 - **Instant Launches & Zero Stutter:** Persistent warm `wineserver` pool (**`70–100 ms`** repeat launches, `10.7×` faster), **`0.25–0.41 ms`** APFS CoW prefixes, `~150 ms` zero-copy prefix hydration, and double-SHA-256 verified **Cloud Shader Cache CDN** (`MTLBinaryArchive`, `67×–254×` warm load).
-- **Consumer Game Library & Controller Remapper:** Auto-discovers **Steam, GOG Galaxy, and Epic Games Store** installs with real storefront artwork + embedded Windows PE `.exe` icons, **60 community game presets**, Retina PPI + ProMotion/EDR telemetry, and interactive `GCController` remapping + deadzones.
+- **Consumer Game Library & Power-User Launcher:** Native macOS 15 SwiftUI launcher with **Detail Inspector (`⌘1`) & Poster Gallery (`⌘2`)**, **`⌘K` Quick-Launch Command Palette**, **Favorites pinning**, auto-discovery for **Steam, GOG Galaxy, and Epic Games Store** with real storefront artwork + embedded Windows PE `.exe` icons, **75 validated community game presets**, **Spotlight/Dock `.app` shortcut export**, per-game **FPS cap & ProMotion frame-pacing**, sanitized custom env vars, playtime tracking, **portable library backup/restore**, and interactive `GCController` remapping + deadzones.
+- **Built-in Diagnostics, Benchmarking & Storage Maintenance:** One-click **System Health, Shader Cache & Apple Silicon Benchmark Sheet (`⌘D`, `DirectMetal doctor`, `DirectMetal bench`)**, **APFS Prefix Manager & Orphaned Prefix Pruning (`⇧⌘P`, `prefix stats|prune`)**, **Structured Launch History (`⇧⌘H`, `DirectMetal history`)**, and native `zsh`/`bash` tab completions.
 - **Hardened Per-Game Sandbox & Attestation:** Opt-in macOS kernel Seatbelt confinement (`--sandbox`) and Apple Silicon Secure Enclave P-256 hardware attestation (`DirectMetal attest`).
 
 ---
@@ -134,12 +135,18 @@ flowchart LR
 # Game Library (Steam, GOG Galaxy, Epic Games Store & local folders)
 DirectMetal library scan
 DirectMetal library list
-DirectMetal library set Hades perf=ultra retina=true hud=true sandbox=true
+DirectMetal library set Hades perf=ultra fps-cap=120 retina=true hud=true sandbox=true favorite=true
 DirectMetal library artwork Hades
+DirectMetal library shortcut Hades    # Export Spotlight/Dock .app launcher with game icon
+DirectMetal library export backup.json
 DirectMetal library play Hades --warm-server
 
-# Diagnostics, Runtime, Self-Updater & Cloud Shader Cache CDN
+# Diagnostics, Benchmarking, Prefixes, Runtime & Cloud Shader Cache CDN
 DirectMetal doctor --json             # 9-point Apple Silicon health & readiness check
+DirectMetal bench --markdown          # Built-in Apple Silicon UMA, APFS CoW, SHA-256 & PE benchmarks
+DirectMetal history --limit 20        # Structured session launch history (launch_history.jsonl)
+DirectMetal prefix stats              # APFS Copy-on-Write prefix footprint & metadata
+DirectMetal prefix prune --dry-run    # Safely preview orphaned prefix cleanup
 DirectMetal completions zsh           # Native zsh/bash tab completions
 DirectMetal runtime status --json
 DirectMetal runtime install
