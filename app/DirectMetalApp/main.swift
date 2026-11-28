@@ -82,6 +82,8 @@ private func printUsage() {
                                          Run 7-point launch readiness & kernel anti-cheat pre-flight check
       DirectMetal library report [--format markdown|csv] [--sort most-played|title|recent|favorites] [--output <path>]
                                          Export a privacy-safe playtime & stability report (CSV or Markdown)
+      DirectMetal collections list|create|rename|delete|add|remove|prune
+                                         Organize games into custom collections & tags (collections.json)
       DirectMetal library shortcut <id_or_title> [--format app|command] [--dir <path>]
                                          Export a native macOS Spotlight/Dock .app or .command launcher
       DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]
@@ -479,6 +481,9 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "storage", "disk":
         return runStorageCLI(args: Array(args.dropFirst()))
+
+    case "collections", "collection", "tags":
+        return runCollectionsCLI(args: Array(args.dropFirst()))
 
     case "hud":
         return runHUDCLI(args: Array(args.dropFirst()))

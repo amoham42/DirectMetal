@@ -585,3 +585,127 @@ func runStorageCLI(args: [String]) -> Int32 {
     }
     return 0
 }
+
+func runCollectionsCLI(args: [String]) -> Int32 {
+    let sub = args.first ?? "list"
+    let rest = Array(args.dropFirst())
+    let asJSON = rest.contains("--json") || sub == "--json"
+    let mgr = GameCollectionsManager()
+    let libMgr = GameLibraryManager()
+    switch sub {
+    case "list", "ls", "--json":
+        let doc = mgr.load()
+        if asJSON {
+            printLibraryJSON(doc)
+        } else {
+            print(GameCollectionsManager.formatText(doc, library: libMgr.load()))
+        }
+        return 0
+    case "create", "new":
+        var color: CollectionAccentColor = .blue
+        var symbol = "folder.fill"
+        var positional: [String] = []
+        var idx = 0
+        while idx < rest.count {
+            if rest[idx] == "--color", idx + 1 < rest.count {
+                if let parsed = CollectionAccentColor(rawValue: rest[idx + 1].lowercased()) {
+                    color = parsed
+                } else {
+                    fputs("error: invalid color \"\(rest[idx + 1])\"\n", stderr)
+                    return 1
+                }
+                idx += 2
+            } else if rest[idx] == "--icon", idx + 1 < rest.count {
+                symbol = rest[idx + 1]
+                idx += 2
+            } else if rest[idx] == "--json" {
+                idx += 1
+            } else {
+                positional.append(rest[idx])
+                idx += 1
+            }
+        }
+        let name = positional.joined(separator: " ")
+        do {
+            let col = try mgr.createCollection(name: name, symbolName: symbol, accentColor: color)
+            if asJSON {
+                printLibraryJSON(col)
+            } else {
+                print("Created collection \"\(col.name)\" (id=\(col.id)).")
+            }
+            return 0
+        } catch {
+            fputs("collections create failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+    case "rename":
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard positional.count >= 2 else {
+            fputs("error: collections rename requires <collection_id> <new_name>\n", stderr)
+            return 1
+        }
+        let newName = positional.dropFirst().joined(separator: " ")
+        do {
+            let col = try mgr.renameCollection(id: positional[0], to: newName)
+            if asJSON { printLibraryJSON(col) } else { print("Renamed collection \(col.id) to \"\(col.name)\".") }
+            return 0
+        } catch {
+            fputs("collections rename failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+    case "delete", "rm":
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard let id = positional.first, !id.isEmpty else {
+            fputs("error: collections delete requires <collection_id>\n", stderr)
+            return 1
+        }
+        do {
+            try mgr.deleteCollection(id: id)
+            print("Deleted collection \"\(id)\".")
+            return 0
+        } catch {
+            fputs("collections delete failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+    case "add", "remove":
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard positional.count >= 2 else {
+            fputs("error: collections \(sub) requires <collection_id> <game_id_or_title>\n", stderr)
+            return 1
+        }
+        let colID = positional[0]
+        let gameKey = positional.dropFirst().joined(separator: " ")
+        guard let entry = libMgr.entry(idOrTitle: gameKey) else {
+            fputs("collections \(sub) failed: no unique game matches \"\(gameKey)\"\n", stderr)
+            return 1
+        }
+        do {
+            let col = (sub == "add")
+                ? try mgr.addGame(entry.id, to: colID)
+                : try mgr.removeGame(entry.id, from: colID)
+            if asJSON {
+                printLibraryJSON(col)
+            } else {
+                let verb = sub == "add" ? "Added" : "Removed"
+                print("\(verb) \"\(entry.title)\" (\(col.gameIDs.count) game(s) in \"\(col.name)\").")
+            }
+            return 0
+        } catch {
+            fputs("collections \(sub) failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+    case "prune":
+        let valid = Set(libMgr.load().map(\.id))
+        do {
+            let removed = try mgr.pruneMissingGames(validGameIDs: valid)
+            print("Pruned \(removed) stale game membership(s) across collections.")
+            return 0
+        } catch {
+            fputs("collections prune failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+    default:
+        fputs("unknown collections subcommand: \(sub) (expected: list|create|rename|delete|add|remove|prune)\n", stderr)
+        return 1
+    }
+}

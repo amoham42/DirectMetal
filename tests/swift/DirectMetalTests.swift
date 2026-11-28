@@ -398,6 +398,9 @@ struct DirectMetalTests {
             ("LibraryReportExporter: CSV formula-injection guard, Markdown table, analytics join & privacy", {
                 try testLibraryReportExporter(tempRoot: tempRoot)
             }),
+            ("GameCollectionsManager: create/rename/delete, toggle membership, prune & persistence", {
+                try testGameCollectionsManager(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2925,5 +2928,43 @@ struct DirectMetalTests {
         let outURL = tempRoot.appendingPathComponent("reports/library.csv")
         let written = try LibraryReportExporter.writeReport(report, format: .csv, to: outURL.path)
         try expectEqual(try String(contentsOf: written, encoding: .utf8), csv)
+    }
+
+    private static func testGameCollectionsManager(tempRoot: URL) throws {
+        let support = tempRoot.appendingPathComponent("collections_support", isDirectory: true)
+        let mgr = GameCollectionsManager(supportRoot: support)
+        try expectEqual(mgr.load().collections.count, 0, "fresh collections store should be empty")
+
+        let rpg = try mgr.createCollection(name: "Cozy RPGs", symbolName: "sparkles", accentColor: .purple)
+        try expectEqual(rpg.id, "cozy-rpgs")
+        try expectEqual(rpg.accentColor, .purple)
+
+        let g1 = GameLibraryEntry(title: "Hades", exePath: "/Games/Hades/Hades.exe", prefixName: "Hades")
+        let g2 = GameLibraryEntry(title: "Disco Elysium", exePath: "/Games/Disco/Disco.exe", prefixName: "Disco")
+
+        let afterAdd = try mgr.addGame(g1.id, to: rpg.id)
+        try expectEqual(afterAdd.gameIDs, [g1.id])
+        // Adding duplicate is idempotent
+        try expectEqual(try mgr.addGame(g1.id, to: rpg.id).gameIDs, [g1.id])
+
+        let toggled = try mgr.toggleGame(g2.id, in: rpg.id)
+        try expectEqual(toggled.isMember, true)
+        try expectEqual(toggled.collection.gameIDs, [g1.id, g2.id])
+        try expectEqual(mgr.collections(containing: g1.id).map(\.id), [rpg.id])
+        try expectEqual(mgr.games(in: rpg.id, from: [g1, g2]).map(\.title), ["Hades", "Disco Elysium"])
+
+        let renamed = try mgr.renameCollection(id: rpg.id, to: "Top RPGs")
+        try expectEqual(renamed.name, "Top RPGs")
+
+        // Prune removes memberships for games no longer in the library
+        let pruned = try mgr.pruneMissingGames(validGameIDs: [g1.id])
+        try expectEqual(pruned, 1)
+        try expectEqual(mgr.load().collections.first?.gameIDs, [g1.id])
+
+        let formatted = GameCollectionsManager.formatText(mgr.load(), library: [g1])
+        try expect(formatted.contains("Top RPGs"), "formatText should display collection name")
+
+        try mgr.deleteCollection(id: rpg.id)
+        try expectEqual(mgr.load().collections.count, 0)
     }
 }
