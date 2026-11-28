@@ -1,0 +1,198 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# DirectMetal Local CI Verification Gate
+# Mirrors .github/workflows/ci.yml on an Apple Silicon development machine:
+#   1. Shell syntax (bash -n scripts/*.sh)
+#   2. Python syntax (py_compile scripts/*.py tools/*.py)
+#   3. JSON & GitHub Actions workflow YAML validation
+#   4. Python PSNR/SSIM diff-harness unit tests (tools/test_diff_harness.py)
+#   5. CMake C/Obj-C++ native subsystem builds + host tests
+#   6. DirectMetal-Lite.app build, strict codesign verification, and CLI smoke checks
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+cd "${REPO_ROOT}"
+
+CLEAN_AFTER=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --clean)
+      CLEAN_AFTER=1
+      shift
+      ;;
+    -h|--help)
+      cat <<EOF
+Usage: $(basename "$0") [--clean]
+
+Runs all DirectMetal local CI checks end-to-end:
+  • Shell, Python, JSON, and workflow YAML validation
+  • Python visual-diff harness unit tests (tools/test_diff_harness.py)
+  • Native C/Obj-C++ CMake subsystem builds & tests
+  • DirectMetal-Lite.app build, codesign verification, and CLI smoke tests
+
+Options:
+  --clean     Remove build/ and dist/ outputs after verification succeeds
+  -h, --help  Show this help message
+EOF
+      exit 0
+      ;;
+    *)
+      echo "error: unknown option '$1' (pass --help for usage)" >&2
+      exit 1
+      ;;
+  esac
+done
+
+TEMP_VENV=""
+TEMP_ATTEST=""
+cleanup() {
+  if [[ -n "${TEMP_VENV}" && -d "${TEMP_VENV}" ]]; then
+    rm -rf "${TEMP_VENV}"
+  fi
+  if [[ -n "${TEMP_ATTEST}" && -f "${TEMP_ATTEST}" ]]; then
+    rm -f "${TEMP_ATTEST}"
+  fi
+}
+trap cleanup EXIT
+
+T0="$(python3 -c 'import time; print(f"{time.monotonic():.3f}")')"
+
+echo "=== [1/6] Shell & Python Syntax Checks ==="
+bash -n scripts/*.sh
+echo "  [OK] bash -n passed on $(ls -1 scripts/*.sh | wc -l | tr -d ' ') shell scripts."
+python3 -m py_compile scripts/*.py tools/*.py
+echo "  [OK] py_compile passed on Python scripts and tools."
+
+echo "=== [2/6] JSON & Workflow YAML Validation ==="
+python3 - <<'PY'
+import json
+import pathlib
+import sys
+
+roots = [pathlib.Path(p) for p in ("runtime", "graphics", "tests/reference") if pathlib.Path(p).exists()]
+json_files = sorted(f for r in roots for f in r.rglob("*.json"))
+if not json_files:
+    print("error: no JSON files found under runtime/ or graphics/", file=sys.stderr)
+    sys.exit(1)
+for jf in json_files:
+    with jf.open("r", encoding="utf-8") as fh:
+        json.load(fh)
+print(f"  [OK] Validated {len(json_files)} JSON file(s).")
+PY
+
+if [[ -d ".github/workflows" ]]; then
+  if python3 -c "import yaml" >/dev/null 2>&1; then
+    python3 - <<'PY'
+import pathlib
+import yaml
+
+ymls = sorted(pathlib.Path(".github/workflows").glob("*.yml"))
+for yf in ymls:
+    doc = yaml.safe_load(yf.read_text(encoding="utf-8"))
+    assert isinstance(doc, dict) and "jobs" in doc, f"Invalid workflow structure in {yf}"
+print(f"  [OK] Validated {len(ymls)} workflow YAML file(s) via PyYAML.")
+PY
+  elif command -v ruby >/dev/null 2>&1; then
+    ruby -ryaml -rdate -e '
+      files = Dir.glob(".github/workflows/*.yml").sort
+      abort("No workflow YAML files found") if files.empty?
+      files.each do |f|
+        doc = YAML.safe_load(File.read(f), permitted_classes: [Date, Time])
+        abort("Invalid workflow structure in #{f}") unless doc.is_a?(Hash) && doc.key?("jobs")
+      end
+      puts "  [OK] Validated #{files.size} workflow YAML file(s) via Ruby Psych."
+    '
+  fi
+fi
+
+echo "=== [3/6] Python Visual-Diff Harness Unit Tests ==="
+PY_RUNNER=""
+if [[ -x "${REPO_ROOT}/.venv/bin/python" ]] && "${REPO_ROOT}/.venv/bin/python" -c "import PIL, numpy" >/dev/null 2>&1; then
+  PY_RUNNER="${REPO_ROOT}/.venv/bin/python"
+elif python3 -c "import PIL, numpy" >/dev/null 2>&1; then
+  PY_RUNNER="python3"
+else
+  COMMON_GIT_DIR="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir 2>/dev/null || true)"
+  if [[ -n "${COMMON_GIT_DIR}" ]]; then
+    [[ "${COMMON_GIT_DIR}" != /* ]] && COMMON_GIT_DIR="${REPO_ROOT}/${COMMON_GIT_DIR}"
+    COMMON_ROOT="$(cd "${COMMON_GIT_DIR}/.." 2>/dev/null && pwd || true)"
+    if [[ -n "${COMMON_ROOT}" && -x "${COMMON_ROOT}/.venv/bin/python" ]] && "${COMMON_ROOT}/.venv/bin/python" -c "import PIL, numpy" >/dev/null 2>&1; then
+      PY_RUNNER="${COMMON_ROOT}/.venv/bin/python"
+    fi
+  fi
+fi
+
+if [[ -z "${PY_RUNNER}" ]]; then
+  echo "  [INFO] Creating temporary venv with pillow + numpy..."
+  TEMP_VENV="$(mktemp -d "${TMPDIR:-/tmp}/dm-ci-venv.XXXXXX")"
+  python3 -m venv "${TEMP_VENV}"
+  "${TEMP_VENV}/bin/pip" install --quiet --disable-pip-version-check pillow numpy
+  PY_RUNNER="${TEMP_VENV}/bin/python"
+fi
+PYTHONPATH="${REPO_ROOT}/tools" "${PY_RUNNER}" "${REPO_ROOT}/tools/test_diff_harness.py"
+
+echo "=== [4/6] CMake Native C/Obj-C++ Subsystem Build ==="
+SUBSYSTEMS=(
+  runtime/dm_sync
+  runtime/dm_prefix
+  sandbox/dm_sandbox
+  runtime/dm_host_io
+  shaders/dm_shader_cache
+  sandbox/dm_attestation
+  graphics/dm_metal_core
+  upscaling/dm_metalfx_bridge
+)
+for sub in "${SUBSYSTEMS[@]}"; do
+  name="$(basename "${sub}")"
+  cmake -S "${REPO_ROOT}/${sub}" -B "${REPO_ROOT}/build/${name}" >/dev/null
+  cmake --build "${REPO_ROOT}/build/${name}" -j >/dev/null
+  echo "  [OK] Built ${name}"
+done
+
+echo "=== [5/6] CMake Host Subsystem Tests ==="
+"${REPO_ROOT}/build/dm_sync/dm_sync_test"
+"${REPO_ROOT}/build/dm_prefix/dm_prefix_test"
+mkdir -p "${HOME}/.ssh"
+"${REPO_ROOT}/build/dm_sandbox/dm_sandbox_test" "${REPO_ROOT}/sandbox/profiles/directmetal_game.sb.tmpl"
+"${REPO_ROOT}/build/dm_host_io/dm_host_io_test"
+
+if swift -e 'import Metal; guard let d = MTLCreateSystemDefaultDevice(), !d.name.lowercased().contains("paravirtual") else { exit(1) }' >/dev/null 2>&1; then
+  "${REPO_ROOT}/build/dm_shader_cache/dm_shader_cache_test"
+else
+  echo "  [SKIP] No hardware Metal GPU device detected; skipping dm_shader_cache_test."
+fi
+
+if csrutil status 2>/dev/null | grep -q "enabled" && csrutil authenticated-root status 2>/dev/null | grep -q "enabled"; then
+  "${REPO_ROOT}/build/dm_attestation/dm_attestation_test"
+else
+  echo "  [SKIP] SIP/SSV disabled in this environment; skipping live SIP assertion in dm_attestation_test."
+fi
+
+echo "=== [6/6] DirectMetal-Lite.app Packaging & Smoke Verification ==="
+"${REPO_ROOT}/scripts/package_app.sh" --lite
+APP_BUNDLE="${REPO_ROOT}/dist/DirectMetal-Lite.app"
+DM_BIN="${APP_BUNDLE}/Contents/MacOS/DirectMetal"
+
+codesign --verify --strict "${APP_BUNDLE}"
+echo "  [OK] codesign --verify --strict passed on DirectMetal-Lite.app"
+
+"${DM_BIN}" help >/dev/null
+echo "  [OK] DirectMetal help passed"
+
+INFO_OUT="$("${DM_BIN}" info)"
+printf '%s\n' "${INFO_OUT}" | python3 -m json.tool >/dev/null
+echo "  [OK] DirectMetal info emitted valid JSON"
+
+TEMP_ATTEST="$(mktemp "${TMPDIR:-/tmp}/dm-ci-attest.XXXXXX.json")"
+"${DM_BIN}" attest --nonce a1b2c3d4e5f60718293a4b5c6d7e8f90 > "${TEMP_ATTEST}"
+"${DM_BIN}" verify-attest "${TEMP_ATTEST}" --nonce a1b2c3d4e5f60718293a4b5c6d7e8f90 >/dev/null
+echo "  [OK] DirectMetal attest + verify-attest round-trip passed"
+
+if [[ "${CLEAN_AFTER}" == "1" ]]; then
+  rm -rf "${REPO_ROOT}/build" "${REPO_ROOT}/dist"
+  echo "  [CLEAN] Removed build/ and dist/"
+fi
+
+ELAPSED="$(python3 -c "import time; print(f'{time.monotonic() - ${T0}:.2f}')")"
+echo "=== ALL DIRECTMETAL LOCAL CI CHECKS PASSED (${ELAPSED}s) ==="

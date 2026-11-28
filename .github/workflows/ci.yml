@@ -1,0 +1,144 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+jobs:
+  macos-arm64:
+    name: Apple Silicon Build, Test & Lite DMG
+    runs-on: macos-15
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify Apple Silicon host & toolchain
+        run: |
+          uname -m | grep -qx "arm64"
+          sw_vers
+          xcrun swiftc --version
+          cmake --version | head -n 1
+          python3 --version
+
+      - name: Validate shell, Python, and JSON syntax
+        run: |
+          echo "=== Shell syntax (bash -n) ==="
+          bash -n scripts/*.sh
+
+          echo "=== Python syntax (py_compile) ==="
+          python3 -m py_compile scripts/*.py tools/*.py
+
+          echo "=== JSON syntax (runtime/ & graphics/) ==="
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          roots = [pathlib.Path(p) for p in ("runtime", "graphics", "tests/reference") if pathlib.Path(p).exists()]
+          json_files = sorted(f for r in roots for f in r.rglob("*.json"))
+          if not json_files:
+              print("error: expected at least one JSON file in runtime/ or graphics/", file=sys.stderr)
+              sys.exit(1)
+          for jf in json_files:
+              with jf.open("r", encoding="utf-8") as fh:
+                  json.load(fh)
+              print(f"  [OK] {jf}")
+          print(f"Validated {len(json_files)} JSON file(s).")
+          PY
+
+      - name: Run Python visual-diff harness unit tests
+        run: |
+          VENV_DIR="${RUNNER_TEMP}/directmetal-ci-venv"
+          python3 -m venv "${VENV_DIR}"
+          "${VENV_DIR}/bin/pip" install --quiet --disable-pip-version-check pillow numpy
+          PYTHONPATH=tools "${VENV_DIR}/bin/python" tools/test_diff_harness.py
+
+      - name: Build & test C/Obj-C++ native subsystems (CMake)
+        run: |
+          SUBSYSTEMS=(
+            runtime/dm_sync
+            runtime/dm_prefix
+            sandbox/dm_sandbox
+            runtime/dm_host_io
+            shaders/dm_shader_cache
+            sandbox/dm_attestation
+            graphics/dm_metal_core
+            upscaling/dm_metalfx_bridge
+          )
+          for sub in "${SUBSYSTEMS[@]}"; do
+            name="$(basename "${sub}")"
+            echo "=== Configuring & building ${name} ==="
+            cmake -S "${sub}" -B "build/${name}"
+            cmake --build "build/${name}" -j
+          done
+
+          echo "=== Running dm_sync_test ==="
+          ./build/dm_sync/dm_sync_test
+
+          echo "=== Running dm_prefix_test ==="
+          ./build/dm_prefix/dm_prefix_test
+
+          echo "=== Running dm_sandbox_test ==="
+          mkdir -p "${HOME}/.ssh"
+          ./build/dm_sandbox/dm_sandbox_test sandbox/profiles/directmetal_game.sb.tmpl
+
+          echo "=== Running dm_host_io_test ==="
+          ./build/dm_host_io/dm_host_io_test
+
+          echo "=== Running dm_shader_cache_test (when hardware Metal GPU is present) ==="
+          if swift -e 'import Metal; guard let d = MTLCreateSystemDefaultDevice(), !d.name.lowercased().contains("paravirtual") else { exit(1) }' >/dev/null 2>&1; then
+            ./build/dm_shader_cache/dm_shader_cache_test
+          else
+            echo "[SKIP] Headless CI VM has no hardware Metal GPU device; skipping interactive GPU binary-archive test."
+          fi
+
+          echo "=== Running dm_attestation_test (when SIP & SSV are enabled) ==="
+          if csrutil status 2>/dev/null | grep -q "enabled" && csrutil authenticated-root status 2>/dev/null | grep -q "enabled"; then
+            ./build/dm_attestation/dm_attestation_test
+          else
+            echo "[SKIP] Headless CI VM image runs with SIP/SSV disabled; dm_attestation compiled cleanly (-Werror)."
+          fi
+
+      - name: Build DirectMetal-Lite.app & smoke test CLI
+        run: |
+          ./scripts/package_app.sh --lite
+          codesign --verify --strict dist/DirectMetal-Lite.app
+
+          DM_BIN="dist/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
+          "${DM_BIN}" help >/dev/null
+          INFO_JSON="$("${DM_BIN}" info)"
+          printf '%s\n' "${INFO_JSON}"
+          printf '%s\n' "${INFO_JSON}" | python3 -m json.tool >/dev/null
+
+          # Verify synthetic attestation bundle sign + verify round-trip via CLI
+          ATTEST_FILE="${RUNNER_TEMP}/ci_attest.json"
+          "${DM_BIN}" attest --nonce 0123456789abcdef0123456789abcdef > "${ATTEST_FILE}"
+          "${DM_BIN}" verify-attest "${ATTEST_FILE}" --nonce 0123456789abcdef0123456789abcdef
+
+      - name: Build DirectMetal-Lite-macOS-arm64.dmg
+        run: |
+          ./scripts/build_dmg.sh --lite
+          test -s dist/DirectMetal-Lite-macOS-arm64.dmg
+          test -s dist/DirectMetal-Lite-macOS-arm64.dmg.sha256
+          (cd dist && shasum -a 256 -c DirectMetal-Lite-macOS-arm64.dmg.sha256)
+
+      - name: Upload DirectMetal-Lite DMG artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: DirectMetal-Lite-macOS-arm64
+          path: |
+            dist/DirectMetal-Lite-macOS-arm64.dmg
+            dist/DirectMetal-Lite-macOS-arm64.dmg.sha256
+          if-no-files-found: error
+          retention-days: 14

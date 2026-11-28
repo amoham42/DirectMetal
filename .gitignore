@@ -4,12 +4,16 @@ out/
 dist/
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/
+*.xcworkspace
+.swiftpm/
 .build/
 *.metallib
 *.air
 *.log
+*.tmp
 prefixes/
 captures/
+captures/diffs/
 .venv/
 .directmetal_cache/
 runtime/prebuilt/

@@ -148,6 +148,7 @@ xcrun swiftc \
   -framework CoreGraphics \
   -framework Metal \
   -framework MetalFX \
+  -framework GameController \
   -framework CryptoKit \
   -framework Security \
   -framework DeviceCheck \
@@ -165,6 +166,9 @@ if [[ -f "${APP_SRC}/AppIcon.icns" ]]; then
 fi
 cp "${REPO_ROOT}/runtime/config/mullion.conf" "${CONTENTS}/Resources/mullion.conf"
 cp "${REPO_ROOT}/sandbox/profiles/directmetal_game.sb.tmpl" "${CONTENTS}/Resources/directmetal_game.sb.tmpl"
+if [[ -f "${REPO_ROOT}/runtime/profiles/game_profiles.json" ]]; then
+  cp "${REPO_ROOT}/runtime/profiles/game_profiles.json" "${CONTENTS}/Resources/game_profiles.json"
+fi
 
 echo "[DirectMetal] Building & bundling universal Vulkan compat layer (VK_LAYER_DIRECTMETAL_mvk_compat)..."
 mkdir -p "${CONTENTS}/Resources/vulkan-layers" "${REPO_ROOT}/build/dm_vk_compat"
