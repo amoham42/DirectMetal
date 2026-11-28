@@ -527,7 +527,10 @@ struct LaunchHistorySheet: View {
                     }
 
                     if !entries.isEmpty {
-                        Text("\(succeededCount) succeeded · \(failedCount) failed · stored at \(LaunchDiagnostics.redactHome(LaunchHistoryStore().historyURL.path))")
+                        let analytics = GameSessionAnalytics.summarize(entries: entries)
+                        let cowText = analytics.medianCowCloneMs.map { String(format: " · median CoW %.2f ms", $0) } ?? ""
+                        let engineText = " · ARM64EC \(analytics.arm64ecLaunches) / Rosetta \(analytics.rosettaLaunches)"
+                        Text("\(succeededCount) succeeded · \(failedCount) failed\(engineText)\(cowText)")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(1)

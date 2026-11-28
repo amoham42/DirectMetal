@@ -377,6 +377,9 @@ struct DirectMetalTests {
             ("ProfileBatchSync: matches games, skips customized entries, supports dry-run & overwrite", {
                 try testProfileBatchSync()
             }),
+            ("GameSessionAnalytics: stability tiers, median CoW clone, recency & Markdown", {
+                try testGameSessionAnalytics()
+            }),
         ]
 
         var passed = 0
@@ -2537,5 +2540,77 @@ struct DirectMetalTests {
         try expectEqual(liveLib[1].profileID, "hades")
         try expectEqual(liveLib[1].fpsCap, 0, "overwrite pass resets customized fpsCap to profile baseline")
         try expect(ProfileBatchSync.formatMarkdown(overwriteReport).contains("Profile Batch Sync"), "markdown output should include heading")
+    }
+
+    private static func testGameSessionAnalytics() throws {
+        // Empty input produces clean zeroed summary
+        let empty = GameSessionAnalytics.summarize(entries: [])
+        try expectEqual(empty.totalLaunches, 0)
+        try expectEqual(empty.uniqueGames, 0)
+        try expectNil(empty.medianCowCloneMs)
+
+        let entries: [LaunchHistoryEntry] = [
+            LaunchHistoryEntry(
+                timestampUtc: "2026-11-27T10:00:00Z",
+                gameID: "hades",
+                title: "Hades",
+                exePath: "/Users/alice/Games/Hades.exe",
+                prefixName: "Hades",
+                activeEngine: "arm64ec-fex",
+                exitCode: 0,
+                elapsedSeconds: 1800,
+                sandboxed: true,
+                cowCloneMs: 0.40
+            ),
+            LaunchHistoryEntry(
+                timestampUtc: "2026-11-27T12:00:00Z",
+                gameID: "hades",
+                title: "Hades",
+                exePath: "/Users/alice/Games/Hades.exe",
+                prefixName: "Hades",
+                activeEngine: "arm64ec-fex",
+                exitCode: 0,
+                elapsedSeconds: 3600,
+                sandboxed: true,
+                cowCloneMs: 0.60
+            ),
+            LaunchHistoryEntry(
+                timestampUtc: "2026-11-27T14:00:00Z",
+                gameID: "reanimal",
+                title: "REANIMAL",
+                exePath: "/Users/alice/Games/REANIMAL.exe",
+                prefixName: "REANIMAL",
+                activeEngine: "rosetta2",
+                exitCode: 1,
+                elapsedSeconds: 15,
+                sandboxed: false,
+                cowCloneMs: 1.00,
+                failure: "Crash at /Users/alice/Games/REANIMAL.exe"
+            ),
+        ]
+
+        let summary = GameSessionAnalytics.summarize(entries: entries, home: "/Users/alice")
+        try expectEqual(summary.totalLaunches, 3)
+        try expectEqual(summary.uniqueGames, 2)
+        try expectEqual(summary.successCount, 2)
+        try expectEqual(summary.failureCount, 1)
+        try expectEqual(summary.arm64ecLaunches, 2)
+        try expectEqual(summary.rosettaLaunches, 1)
+        try expectEqual(summary.sandboxedLaunches, 2)
+        try expectEqual(summary.medianCowCloneMs, 0.60, "odd median of [0.40, 0.60, 1.00] is 0.60")
+
+        let hadesStats = try expectNotNil(summary.topGames.first(where: { $0.gameID == "hades" }))
+        try expectEqual(hadesStats.stabilityTier, .rockSolid)
+        try expectEqual(hadesStats.medianCowCloneMs, 0.50, "even median of [0.40, 0.60] is 0.50")
+
+        try expectEqual(summary.gamesNeedingAttention.count, 1)
+        let failing = summary.gamesNeedingAttention[0]
+        try expectEqual(failing.stabilityTier, .needsAttention)
+        try expect(failing.lastFailure?.contains("~/Games/REANIMAL.exe") == true, "lastFailure must redact home directory")
+        try expect(failing.lastFailure?.contains("/Users/alice") == false, "lastFailure must not leak raw home path")
+
+        let md = GameSessionAnalytics.formatMarkdown(summary, home: "/Users/alice")
+        try expect(md.contains("Hades"), "markdown should list top games")
+        try expect(!md.contains("/Users/alice"), "markdown must redact home paths")
     }
 }

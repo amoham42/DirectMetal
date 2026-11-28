@@ -170,12 +170,15 @@ struct PrefixManagerSheet: View {
             ),
             presenting: pendingReset
         ) { stat in
-            Button("Reset Prefix", role: .destructive) {
-                resetPrefix(stat)
+            Button("Backup Saves & Reset") {
+                resetPrefix(stat, backupSavesFirst: true)
+            }
+            Button("Reset Without Backup", role: .destructive) {
+                resetPrefix(stat, backupSavesFirst: false)
             }
             Button("Cancel", role: .cancel) {}
         } message: { stat in
-            Text("This wipes “\(stat.name)” (\(PrefixDisplayFormat.logicalSize(stat.sizeBytes))) and re-clones a clean copy from the golden base prefix via APFS Copy-on-Write. Any Windows registry entries or local save files inside this prefix will be lost.")
+            Text("This wipes “\(stat.name)” (\(PrefixDisplayFormat.logicalSize(stat.sizeBytes))) and re-clones a clean copy from the golden base prefix via APFS Copy-on-Write. Choose “Backup Saves & Reset” to export SHA-256 verified save data first.")
         }
         .alert(
             "Delete Prefix “\(pendingDelete?.name ?? "")”?",
@@ -552,10 +555,10 @@ struct PrefixManagerSheet: View {
         }
     }
 
-    private func resetPrefix(_ stat: PrefixManager.PrefixStat) {
+    private func resetPrefix(_ stat: PrefixManager.PrefixStat, backupSavesFirst: Bool = false) {
         guard !vm.isRunning, busyPrefixName == nil else { return }
         busyPrefixName = stat.name
-        busyActionLabel = "Resetting…"
+        busyActionLabel = backupSavesFirst ? "Backing up saves…" : "Resetting…"
         statusBanner = nil
 
         let cachedPaths = vm.runtimePaths
@@ -566,6 +569,29 @@ struct PrefixManagerSheet: View {
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
+                var backupNote = ""
+                if backupSavesFirst {
+                    let fm = FileManager.default
+                    let appSupport = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                        ?? URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true).appendingPathComponent("Library/Application Support", isDirectory: true)
+                    let backupDir = appSupport.appendingPathComponent("DirectMetal/SaveBackups", isDirectory: true)
+                    try fm.createDirectory(at: backupDir, withIntermediateDirectories: true)
+                    let df = DateFormatter()
+                    df.locale = Locale(identifier: "en_US_POSIX")
+                    df.timeZone = TimeZone(secondsFromGMT: 0)
+                    df.dateFormat = "yyyyMMdd-HHmmss"
+                    let safeName = name.replacingOccurrences(of: "/", with: "_")
+                    let backupURL = backupDir.appendingPathComponent("\(safeName)-pre-reset-\(df.string(from: Date())).dmsaves.tar.gz")
+                    do {
+                        let backupRes = try SaveBackupManager.exportSaves(prefixName: name, to: backupURL.path)
+                        backupNote = " Backed up \(backupRes.fileCount) save file\(backupRes.fileCount == 1 ? "" : "s") to \(backupURL.lastPathComponent)."
+                    } catch SaveBackupError.noSaveFilesFound {
+                        backupNote = " No save files found to back up."
+                    }
+                    DispatchQueue.main.async {
+                        self.busyActionLabel = "Resetting…"
+                    }
+                }
                 let paths: RuntimePaths
                 if let live = try? RuntimeLauncher.resolveRuntimePaths() {
                     paths = live
@@ -591,7 +617,7 @@ struct PrefixManagerSheet: View {
                     forceReset: true
                 )
                 let updated = mgr.prefixStats()
-                let msg = String(format: "Reset prefix “%@” from golden base in %.2f ms (APFS CoW).", name, res.cloneMs)
+                let msg = String(format: "Reset prefix “%@” from golden base in %.2f ms (APFS CoW).%@", name, res.cloneMs, backupNote)
                 DispatchQueue.main.async {
                     self.stats = updated
                     self.hasLoaded = true

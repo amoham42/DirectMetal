@@ -811,6 +811,18 @@ private func runCLI(args: [String]) -> Int32 {
     case "history":
         let rest = Array(args.dropFirst())
         let store = LaunchHistoryStore()
+        if rest.first == "stats" || rest.first == "analytics" || rest.contains("--stats") {
+            let entries = store.load(limit: LaunchHistoryStore.maxEntries)
+            let summary = GameSessionAnalytics.summarize(entries: entries)
+            if rest.contains("--json") {
+                printLibraryJSON(summary)
+            } else if rest.contains("--markdown") || rest.contains("--md") {
+                print(GameSessionAnalytics.formatMarkdown(summary))
+            } else {
+                print(GameSessionAnalytics.formatText(summary))
+            }
+            return 0
+        }
         if rest.contains("--clear") {
             store.clear()
             print("Cleared launch history (\(store.historyURL.path)).")
