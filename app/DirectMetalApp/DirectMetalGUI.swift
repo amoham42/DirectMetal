@@ -2,342 +2,9 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
-// MARK: - Presentation helpers
-
-struct LauncherBadge: Identifiable, Hashable {
-    let text: String
-    let color: Color
-    var id: String { text }
-}
-
-enum LauncherStyle {
-    static let metalFXOptions: [(tag: String, label: String)] = [
-        ("off", "Off"),
-        ("quality", "Quality 1.5x"),
-        ("balanced", "Balanced 1.7x"),
-        ("performance", "Perf 2.0x"),
-        ("ultra_performance", "Ultra Perf 2.5x"),
-    ]
-
-    static func apiBadges(for entry: GameLibraryEntry) -> [LauncherBadge] {
-        var out: [LauncherBadge] = []
-        let apis = Set(entry.detectedAPIs)
-        if apis.contains("D3D12") { out.append(LauncherBadge(text: "DX12", color: .purple)) }
-        if apis.contains("D3D11") { out.append(LauncherBadge(text: "DX11", color: .blue)) }
-        if apis.contains("D3D10") { out.append(LauncherBadge(text: "DX10", color: .teal)) }
-        if apis.contains("D3D9") { out.append(LauncherBadge(text: "DX9", color: .orange)) }
-        if !entry.detectedUpscalers.isEmpty || entry.launchUpscaleMode != nil {
-            out.append(LauncherBadge(text: "MetalFX", color: .green))
-        }
-        return out
-    }
-
-    static func accent(for title: String) -> Color {
-        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .green, .red, .mint, .cyan]
-        let sum = title.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) & 0x7fff_ffff }
-        return palette[sum % palette.count]
-    }
-
-    static func initials(for title: String) -> String {
-        let words = title.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
-        let letters = words.prefix(2).compactMap { $0.first.map { String($0).uppercased() } }
-        return letters.isEmpty ? "?" : letters.joined()
-    }
-
-    static func lastPlayedText(_ iso: String?) -> String {
-        guard let iso, let date = GameLibraryManager.isoFormatter.date(from: iso) else { return "Never played" }
-        let f = RelativeDateTimeFormatter()
-        f.unitsStyle = .full
-        return "Played " + f.localizedString(for: date, relativeTo: Date())
-    }
-}
-
-struct BadgeView: View {
-    let badge: LauncherBadge
-    var body: some View {
-        Text(badge.text)
-            .font(.system(size: 9.5, weight: .bold, design: .rounded))
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1.5)
-            .foregroundStyle(badge.color)
-            .background(badge.color.opacity(0.16), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-    }
-}
-
-struct ArchPill: View {
-    let architecture: String
-    var body: some View {
-        Text(architecture)
-            .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
-            .padding(.horizontal, 6)
-            .padding(.vertical, 1.5)
-            .foregroundStyle(.secondary)
-            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.45), lineWidth: 0.8))
-    }
-}
-
-/// Compact storefront pill (Steam / GOG / Epic); renders nothing for standalone / unknown games.
-struct StorePill: View {
-    let source: String?
-    var gameID: String? = nil
-
-    static func info(_ source: String?) -> (label: String, color: Color)? {
-        switch source?.lowercased() {
-        case "steam": return ("Steam", Color(red: 0.10, green: 0.27, blue: 0.47))
-        case "gog": return ("GOG", Color(red: 0.49, green: 0.18, blue: 0.62))
-        case "epic": return ("Epic", Color(white: 0.22))
-        default: return nil
-        }
-    }
-
-    var body: some View {
-        if let info = StorePill.info(source) {
-            Text(info.label)
-                .font(.system(size: 9.5, weight: .bold, design: .rounded))
-                .padding(.horizontal, 6)
-                .padding(.vertical, 1.5)
-                .foregroundStyle(.white)
-                .background(info.color, in: Capsule())
-                .help(gameID.map { "\(info.label) game ID \($0)" } ?? "Installed by \(info.label)")
-        }
-    }
-}
-
-struct GameMonogram: View {
-    let title: String
-    var size: CGFloat = 34
-    var body: some View {
-        let color = LauncherStyle.accent(for: title)
-        RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
-            .fill(LinearGradient(colors: [color.opacity(0.95), color.opacity(0.55)],
-                                 startPoint: .topLeading, endPoint: .bottomTrailing))
-            .frame(width: size, height: size)
-            .overlay(
-                Text(LauncherStyle.initials(for: title))
-                    .font(.system(size: size * 0.38, weight: .heavy, design: .rounded))
-                    .foregroundStyle(.white)
-            )
-            .shadow(color: color.opacity(0.25), radius: size * 0.08, y: size * 0.04)
-    }
-}
-
-struct StatusPill: View {
-    let title: String
-    let value: String
-    let ok: Bool
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: ok ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                .foregroundStyle(ok ? .green : .orange)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.caption2).foregroundStyle(.secondary)
-                Text(value).font(.callout.weight(.semibold))
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(8)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-/// Real game artwork (Steam library art or the `.exe`'s embedded icon) with a `GameMonogram` fallback.
-/// Artwork is decoded on a background queue and cached, so list scrolling never touches the disk.
-struct GameArtworkView: View {
-    let entry: GameLibraryEntry
-    var style: ArtworkStyle = .icon
-    var size: CGFloat = 34
-    /// Frame width for wide art (Steam header banners); `nil` keeps every artwork square.
-    var wideWidth: CGFloat? = nil
-    @State private var image: NSImage?
-
-    init(entry: GameLibraryEntry, style: ArtworkStyle = .icon, size: CGFloat = 34, wideWidth: CGFloat? = nil) {
-        self.entry = entry
-        self.style = style
-        self.size = size
-        self.wideWidth = wideWidth
-        _image = State(initialValue: GameArtworkManager.shared.cachedArtwork(for: entry, style: style))
-    }
-
-    private var loadKey: String { GameArtworkManager.artworkKey(entry, style) }
-
-    var body: some View {
-        Group {
-            if let image {
-                let wide = image.size.width > image.size.height * 1.3
-                let width = wide ? (wideWidth ?? size) : size
-                Image(nsImage: image)
-                    .resizable()
-                    .interpolation(.high)
-                    .aspectRatio(contentMode: .fill)
-                    .frame(width: width, height: size)
-                    .clipShape(RoundedRectangle(cornerRadius: size * (wide ? 0.14 : 0.2), style: .continuous))
-                    .shadow(color: .black.opacity(wide ? 0.22 : 0.12), radius: size * 0.06, y: size * 0.03)
-            } else {
-                GameMonogram(title: entry.title, size: size)
-            }
-        }
-        .task(id: loadKey) { await load() }
-    }
-
-    private func load() async {
-        let e = entry
-        let s = style
-        if let cached = GameArtworkManager.shared.cachedArtwork(for: e, style: s) {
-            image = cached
-            return
-        }
-        let box = await withCheckedContinuation { (cont: CheckedContinuation<ArtworkBox, Never>) in
-            DispatchQueue.global(qos: .utility).async {
-                cont.resume(returning: ArtworkBox(image: GameArtworkManager.shared.loadArtwork(for: e, style: s)))
-            }
-        }
-        if !Task.isCancelled { image = box.image }
-    }
-}
-
-private struct ArtworkBox: @unchecked Sendable {
-    let image: NSImage?
-}
-
-/// "Community preset" pill + note for entries seeded from `game_profiles.json`.
-struct ProfilePresetPill: View {
-    let entry: GameLibraryEntry
-    let profile: GameProfile?
-
-    var body: some View {
-        let verified = profile?.isVerified ?? false
-        let tint: Color = verified ? .green : .orange
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 6) {
-                Label("Community preset · \(profile?.title ?? entry.profileID ?? "Custom")",
-                      systemImage: verified ? "checkmark.seal.fill" : "sparkles")
-                    .font(.caption.weight(.semibold))
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 2)
-                    .foregroundStyle(tint)
-                    .background(tint.opacity(0.14), in: Capsule())
-                if let profile {
-                    Text(profile.verificationLabel)
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            if let note = entry.profileNote, !note.isEmpty {
-                Text(note)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help(note)
-            }
-        }
-    }
-}
-
-struct PeripheralChip: View {
-    let icon: String
-    let text: String
-    var tint: Color = .secondary
-
-    var body: some View {
-        Label(text, systemImage: icon)
-            .font(.caption.weight(.medium))
-            .lineLimit(1)
-            .fixedSize()
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .foregroundStyle(tint)
-            .background(tint.opacity(0.10), in: Capsule())
-    }
-}
-
-/// Display (Retina / ProMotion / HDR-EDR) and game controller strip, live-updated by `PeripheralMonitor`.
-struct PeripheralStrip: View {
-    @ObservedObject var monitor: PeripheralMonitor
-    /// Opens the controller remapping / dead zone sheet when set.
-    var onControllers: (() -> Void)? = nil
-
-    var body: some View {
-        let d = monitor.display
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                PeripheralChip(icon: "display", text: d.resolutionLabel, tint: d.isRetina ? .blue : .secondary)
-                    .help("\(d.displayName): \(d.pixelWidth)×\(d.pixelHeight) px, \(d.dpi) DPI LogPixels with Retina mode")
-                PeripheralChip(icon: "gauge.with.dots.needle.67percent", text: d.refreshLabel,
-                               tint: d.isProMotion ? .purple : .secondary)
-                    .help(d.variableRefresh ? "Variable refresh (ProMotion / Adaptive-Sync)" : "Fixed refresh rate")
-                PeripheralChip(icon: d.supportsHDR ? "sun.max.fill" : "sun.min", text: d.hdrLabel,
-                               tint: d.supportsHDR ? .orange : .secondary)
-                    .help(String(format: "EDR headroom now %.2fx, maximum %.2fx", d.edrHeadroom, d.potentialEDRHeadroom))
-                Divider().frame(height: 14)
-                if monitor.controllers.isEmpty {
-                    PeripheralChip(icon: "gamecontroller", text: "No controller")
-                        .help("Connect a Bluetooth or USB game controller; it appears here automatically.")
-                } else {
-                    ForEach(monitor.controllers) { c in
-                        PeripheralChip(icon: "gamecontroller.fill", text: c.summary, tint: .green)
-                            .help("\(c.productCategory)\(c.batteryState.map { " · \($0)" } ?? "")")
-                    }
-                }
-                if let onControllers {
-                    Button {
-                        onControllers()
-                    } label: {
-                        Label("Controllers…", systemImage: "slider.horizontal.3")
-                            .font(.caption.weight(.medium))
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help("Remap buttons, tune stick dead zones and haptics, and test controller input live")
-                }
-            }
-            .padding(.vertical, 1)
-        }
-        .onAppear { monitor.refresh() }
-    }
-}
-
-/// Toolbar pill: opens the Updates sheet (DirectMetal app + MetalSharp-Wine runtime) and reflects the last check.
-struct UpdateToolbarButton: View {
-    @ObservedObject var vm: DirectMetalViewModel
-
-    var body: some View {
-        Group {
-            if vm.updateChecking {
-                HStack(spacing: 5) {
-                    ProgressView().controlSize(.small)
-                    Text("Checking…").font(.callout)
-                }
-            } else if let s = vm.dualStatus, s.anyUpdateAvailable {
-                Button {
-                    vm.showUpdatesSheet = true
-                } label: {
-                    Label(s.app.updateAvailable ? "Update \(s.app.latestVersion ?? "")" : "Runtime \(s.runtime.latestVersion ?? "")",
-                          systemImage: "arrow.down.circle.fill")
-                }
-                .tint(.green)
-                .help(s.app.updateAvailable
-                      ? "DirectMetal \(s.app.latestVersion ?? "") is available (you have \(s.app.currentVersion))"
-                      : "MetalSharp-Wine \(s.runtime.latestVersion ?? "") is available (you have \(s.runtime.currentVersion))")
-            } else if let r = vm.updateResult, r.error == nil, !r.disabled {
-                Button {
-                    vm.showUpdatesSheet = true
-                } label: {
-                    Label("Updates", systemImage: "checkmark.circle")
-                }
-                .help("DirectMetal \(r.currentVersion) is the latest release — open Updates")
-            } else {
-                Button {
-                    vm.showUpdatesSheet = true
-                } label: {
-                    Label("Updates", systemImage: "arrow.triangle.2.circlepath")
-                }
-                .help(vm.updateResult?.error ?? "Check GitHub Releases for DirectMetal and MetalSharp-Wine runtime updates")
-            }
-        }
-        .labelStyle(.titleAndIcon)
-    }
-}
+// Launcher shell: view model, root split view, library sidebar, game detail, welcome screen and app.
+// Components: LauncherComponents.swift · Updates/runtime: UpdatesAndRuntimeSheets.swift ·
+// Controllers: ControllerMappingSheet.swift
 
 // MARK: - View model
 
@@ -393,143 +60,22 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var runtimeUpdateDone: String?
     // Controller remapping sheet
     @Published var showControllerSheet: Bool = false
+    // Sidebar quick filter + sort (sort order persists across launches)
+    @Published var libraryFilter: LibraryFilter = .all
+    @Published var librarySort: LibrarySort =
+        LibrarySort(rawValue: UserDefaults.standard.string(forKey: LibrarySort.defaultsKey) ?? "") ?? .recent {
+        didSet { UserDefaults.standard.set(librarySort.rawValue, forKey: LibrarySort.defaultsKey) }
+    }
+    /// Bumped by ⌘F; the sidebar focuses its search field on change.
+    @Published var searchFocusRequest: Int = 0
+    /// Most recent launch per game ID, for the "Last Launch Diagnostics" drawer.
+    @Published var lastLaunches: [String: LaunchDiagnostics] = [:]
 
     private let manager = GameLibraryManager()
 
     /// Community profile that seeded `entry` (for the preset pill), if any.
     func profile(for entry: GameLibraryEntry) -> GameProfile? {
         manager.profileRegistry.profile(id: entry.profileID)
-    }
-
-    /// Checks DirectMetal + MetalSharp-Wine releases concurrently (never blocks the main thread).
-    func checkForUpdates() {
-        guard !updateChecking else { return }
-        updateChecking = true
-        AppUpdater.checkAllAsync { [weak self] status in
-            guard let self else { return }
-            self.updateChecking = false
-            self.dualStatus = status
-            let result = status.app
-            self.updateResult = result
-            if result.disabled {
-                self.statusMessage = "Update check disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1)."
-            } else if let err = result.error {
-                self.statusMessage = "Update check failed: \(err)"
-            } else if result.updateAvailable {
-                self.statusMessage = "DirectMetal \(result.latestVersion ?? "") is available (installed: \(result.currentVersion))."
-            } else if status.runtime.updateAvailable {
-                self.statusMessage = "MetalSharp-Wine \(status.runtime.latestVersion ?? "") runtime is available (installed: \(status.runtime.currentVersion))."
-            } else {
-                self.statusMessage = "DirectMetal \(result.currentVersion) is up to date."
-            }
-        }
-    }
-
-    /// Downloads the release DMG, verifies SHA-256 + code signature, and atomically replaces this `.app`.
-    func installAppUpdate() {
-        guard !appUpdateRunning else { return }
-        guard runningGameID == nil else {
-            appUpdateError = "Quit the running game before updating DirectMetal."
-            return
-        }
-        guard let app = dualStatus?.app ?? updateResult, let dmg = app.dmgURL, let dmgURL = URL(string: dmg) else {
-            appUpdateError = "This release has no \(AppUpdater.runningEdition().assetName) download."
-            return
-        }
-        let shaURL = app.sha256URL.flatMap { URL(string: $0) }
-        let version = app.latestVersion ?? "?"
-        appUpdateRunning = true
-        appUpdateError = nil
-        appUpdateInstalledURL = nil
-        appUpdatePhase = "Preparing…"
-        appUpdateFraction = -1
-        appUpdateBytes = 0
-        appUpdateTotal = app.assetSize ?? -1
-        statusMessage = "Downloading DirectMetal \(version)…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let installed = try AppUpdater.applyAppUpdate(dmgURL: dmgURL, expectedSHA256: nil, sha256URL: shaURL) { p in
-                    DispatchQueue.main.async {
-                        self.appUpdatePhase = p.message
-                        self.appUpdateFraction = p.fraction
-                        if p.phase == .downloading, p.bytesReceived > 0 {
-                            self.appUpdateBytes = p.bytesReceived
-                            self.appUpdateTotal = p.totalBytes
-                        }
-                    }
-                }
-                DispatchQueue.main.async {
-                    self.appUpdateRunning = false
-                    self.appUpdateInstalledURL = installed
-                    self.appUpdatePhase = "Installed — relaunch to finish."
-                    self.statusMessage = "DirectMetal \(version) installed at \(installed.path) — relaunch to finish."
-                }
-            } catch {
-                let msg = "\(error)"
-                DispatchQueue.main.async {
-                    self.appUpdateRunning = false
-                    self.appUpdateError = msg
-                    self.statusMessage = "DirectMetal update failed: \(msg)"
-                }
-            }
-        }
-    }
-
-    /// Starts the freshly installed bundle, then quits this (old) process.
-    func relaunchAfterUpdate() {
-        guard let url = appUpdateInstalledURL else { return }
-        AppUpdater.relaunchApp(at: url)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-            NSApp.terminate(nil)
-        }
-    }
-
-    /// Installs the latest MetalSharp-Wine release (SHA256SUMS + codesign verified) through RuntimeManager.
-    func updateRuntimeToLatest() {
-        guard !runtimeUpdateRunning, !runtimeInstallRunning else { return }
-        guard runningGameID == nil else {
-            runtimeUpdateError = "Quit the running game before updating the runtime."
-            return
-        }
-        runtimeUpdateRunning = true
-        runtimeUpdateError = nil
-        runtimeUpdateDone = nil
-        runtimeUpdatePhase = "Preparing…"
-        runtimeUpdateFraction = -1
-        statusMessage = "Updating MetalSharp-Wine runtime…"
-        WineserverPool.stopAll()
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let root = try AppUpdater.updateRuntime { p in
-                    DispatchQueue.main.async {
-                        self.runtimeUpdatePhase = p.message
-                        self.runtimeUpdateFraction = p.fraction
-                    }
-                }
-                let paths = try? RuntimeLauncher.resolveRuntimePaths()
-                let version = AppUpdater.installedRuntimeVersion()
-                DispatchQueue.main.async {
-                    self.runtimeUpdateRunning = false
-                    self.runtimePaths = paths
-                    self.runtimeUpdateDone = "MetalSharp-Wine \(version) ready at \(root.path)"
-                    self.statusMessage = "MetalSharp-Wine \(version) runtime ready."
-                    self.checkForUpdates()
-                }
-            } catch {
-                let msg = "\(error)"
-                DispatchQueue.main.async {
-                    self.runtimeUpdateRunning = false
-                    self.runtimeUpdateError = msg
-                    self.statusMessage = "Runtime update failed: \(msg)"
-                }
-            }
-        }
-    }
-
-    func openReleasePage() {
-        let fallback = "https://github.com/amoham42/DirectMetal/releases/latest"
-        guard let url = URL(string: updateResult?.releaseURL ?? fallback), url.scheme?.lowercased() == "https" else { return }
-        NSWorkspace.shared.open(url)
     }
 
     init() {
@@ -552,7 +98,8 @@ final class DirectMetalViewModel: ObservableObject {
         "\(gpuInfo.gpuName) • \(gpuInfo.supportsMetal4 ? "Metal 4" : (gpuInfo.supportsMetal3 ? "Metal 3" : "Metal"))"
     }
 
-    var filteredLibrary: [GameLibraryEntry] {
+    /// Library entries matching the search text (before the quick filter), in stored order.
+    var searchMatches: [GameLibraryEntry] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return library }
         return library.filter { e in
@@ -564,12 +111,69 @@ final class DirectMetalViewModel: ObservableObject {
         }
     }
 
+    /// What the sidebar shows: search, then quick filter, then the chosen sort order.
+    var filteredLibrary: [GameLibraryEntry] {
+        librarySort.sorted(searchMatches.filter(libraryFilter.matches))
+    }
+
+    /// Chip counts reflect the current search so they always match what a click would show.
+    func filterCount(_ filter: LibraryFilter) -> Int {
+        searchMatches.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
+    }
+
+    var isFiltering: Bool {
+        libraryFilter != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func clearFilters() {
+        libraryFilter = .all
+        searchText = ""
+    }
+
     var selectedEntry: GameLibraryEntry? {
         guard let id = selectedID else { return nil }
         return library.first(where: { $0.id == id })
     }
 
     var isRunning: Bool { runningGameID != nil }
+
+    var isPresentingModal: Bool {
+        showImportSheet || showUpdatesSheet || showControllerSheet || showRemoveConfirm
+    }
+
+    var canPlaySelected: Bool {
+        selectedEntry != nil && !isRunning && runtimePaths != nil
+    }
+
+    // MARK: Menu commands
+
+    func playSelected() {
+        guard canPlaySelected, let entry = selectedEntry else { return }
+        play(entry)
+    }
+
+    func requestSearchFocus() {
+        searchFocusRequest &+= 1
+    }
+
+    func openControllers() {
+        guard !isPresentingModal else { return }
+        showControllerSheet = true
+    }
+
+    /// ⌘U: open the Updates sheet and re-check GitHub Releases.
+    func openUpdates() {
+        guard !isPresentingModal || showUpdatesSheet else { return }
+        showUpdatesSheet = true
+        checkForUpdates()
+    }
+
+    func copyLaunchReport(_ diagnostics: LaunchDiagnostics) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(diagnostics.markdownReport, forType: .string)
+        statusMessage = "Copied \(diagnostics.title) launch diagnostics — paste it into a GitHub issue."
+    }
 
     // MARK: Per-game settings (auto-persisted)
 
@@ -724,6 +328,8 @@ final class DirectMetalViewModel: ObservableObject {
         reloadLibrary()
         runningGameID = current.id
         statusMessage = "Launching \(current.title) — cloning APFS prefix “\(current.launchPrefixName)” & starting DirectMetal…"
+        let startedAt = Date()
+        let gpu = gpuSummary
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -741,8 +347,11 @@ final class DirectMetalViewModel: ObservableObject {
                     warmServerSeconds: 180,
                     controllerProfileKey: current.id
                 )
+                let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: result,
+                                                            failure: nil, gpuSummary: gpu)
                 DispatchQueue.main.async {
                     self.runningGameID = nil
+                    self.lastLaunches[current.id] = diagnostics
                     self.refreshPrefixes()
                     self.statusMessage = String(
                         format: "%@ finished (exit=%d) in %.1f s [engine=%@, CoW=%.2f ms%@]",
@@ -751,57 +360,18 @@ final class DirectMetalViewModel: ObservableObject {
                     )
                 }
             } catch {
+                let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: nil,
+                                                            failure: "\(error)", gpuSummary: gpu)
                 DispatchQueue.main.async {
                     self.runningGameID = nil
+                    self.lastLaunches[current.id] = diagnostics
                     self.statusMessage = "Launch failed: \(error)"
                 }
             }
         }
     }
 
-    // MARK: Runtime install + warm launch pool
-
-    /// One-click DirectMetal-Lite runtime install: streaming download, SHA-256, ditto, codesign, atomic install.
-    func installRuntime() {
-        guard !runtimeInstallRunning else { return }
-        runtimeInstallRunning = true
-        runtimeInstallError = nil
-        runtimeInstallPhase = "Preparing…"
-        runtimeInstallFraction = -1
-        runtimeInstallBytes = 0
-        runtimeInstallTotal = -1
-        statusMessage = "Installing DirectMetal runtime \(RuntimeManager.arm64ecVersion)…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let root = try RuntimeManager.installARM64ECRuntime { p in
-                    DispatchQueue.main.async {
-                        self.runtimeInstallPhase = p.message
-                        self.runtimeInstallFraction = p.fraction
-                        if p.bytesReceived > 0 || p.phase == .downloading {
-                            self.runtimeInstallBytes = p.bytesReceived
-                            self.runtimeInstallTotal = p.totalBytes
-                        }
-                    }
-                }
-                let paths = try? RuntimeLauncher.resolveRuntimePaths()
-                DispatchQueue.main.async {
-                    self.runtimeInstallRunning = false
-                    self.runtimePaths = paths
-                    self.statusMessage = paths != nil
-                        ? "DirectMetal runtime installed at \(root.path) — Play is ready."
-                        : "Runtime installed at \(root.path), but it could not be resolved."
-                    self.prewarmSelectedPrefix()
-                }
-            } catch {
-                let msg = "\(error)"
-                DispatchQueue.main.async {
-                    self.runtimeInstallRunning = false
-                    self.runtimeInstallError = msg
-                    self.statusMessage = "Runtime install failed: \(msg)"
-                }
-            }
-        }
-    }
+    // MARK: Warm launch pool
 
     /// Fire-and-forget warm wineserver for the selected game's existing prefix => Play starts in ~220 ms.
     func prewarmSelectedPrefix() {
@@ -814,100 +384,6 @@ final class DirectMetalViewModel: ObservableObject {
         DispatchQueue.global(qos: .utility).async {
             guard FileManager.default.fileExists(atPath: prefix.path) else { return }
             WineserverPool.warm(prefixURL: prefix, wineserverBin: ws, persistSeconds: 180)
-        }
-    }
-
-    // MARK: Shader cache
-
-    func clearShaderCache() {
-        try? RuntimeLauncher.clearShaderCache()
-        cacheSummary = RuntimeLauncher.queryShaderCache()
-        statusMessage = "Cleared pre-compiled shader cache."
-    }
-
-    func exportShaderCache() {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "directmetal-shaders-\(gpuInfo.cacheKey).dmcache.tar.gz"
-        panel.canCreateDirectories = true
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        isCacheBusy = true
-        statusMessage = "Exporting shader cache…"
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let res = try ShaderCacheManager.exportArchive(to: url.path)
-                let mb = Double(res.archiveBytes) / (1024.0 * 1024.0)
-                let msg = String(format: "Exported %d shader files (%.2f MiB, SHA-256: %@…)",
-                                 res.fileCount, mb, String(res.manifestSha256.prefix(12)))
-                DispatchQueue.main.async {
-                    self.isCacheBusy = false
-                    self.statusMessage = msg
-                }
-            } catch {
-                let msg = "Cache export failed: \(error)"
-                DispatchQueue.main.async {
-                    self.isCacheBusy = false
-                    self.statusMessage = msg
-                }
-            }
-        }
-    }
-
-    func chooseImportFile() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.message = "Choose a DirectMetal shader cache archive (.dmcache.tar.gz)"
-        if panel.runModal() == .OK, let url = panel.url {
-            importSource = url.path
-        }
-    }
-
-    func importShaderCache(from rawSource: String) {
-        let source = rawSource.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !source.isEmpty else { return }
-        let lower = source.lowercased()
-        if lower.hasPrefix("http://") {
-            statusMessage = "Refusing insecure http:// cache URL — use https://."
-            return
-        }
-        let resolved = lower.hasPrefix("https://") ? source : (source as NSString).expandingTildeInPath
-        if !lower.hasPrefix("https://") && !FileManager.default.fileExists(atPath: resolved) {
-            statusMessage = "Cache archive not found: \(resolved)"
-            return
-        }
-        let allowCross = importAllowCrossBuild
-        let selectedHash = selectedEntry?.buildHash ?? ""
-        let isIndex = lower.hasSuffix(".json")
-        isCacheBusy = true
-        statusMessage = isIndex
-            ? "Syncing matching GPU/OS shader cache from index…"
-            : (lower.hasPrefix("https://") ? "Downloading & verifying shader cache…" : "Verifying & importing shader cache…")
-        DispatchQueue.global(qos: .userInitiated).async {
-            do {
-                let res: ShaderCacheImportResult
-                if isIndex, !selectedHash.isEmpty {
-                    res = try ShaderCacheManager.syncFromIndex(
-                        indexSource: resolved,
-                        buildHash: selectedHash,
-                        allowCrossBuild: allowCross
-                    )
-                } else {
-                    res = try ShaderCacheManager.importArchive(from: resolved, allowCrossBuild: allowCross)
-                }
-                let msg = "Synced & verified \(res.verifiedFiles) shader files (\(res.gpuFamily)/\(res.macosBuild))."
-                DispatchQueue.main.async {
-                    self.isCacheBusy = false
-                    self.cacheSummary = RuntimeLauncher.queryShaderCache()
-                    self.statusMessage = msg
-                }
-            } catch {
-                let msg = "Cache import failed: \(error)"
-                DispatchQueue.main.async {
-                    self.isCacheBusy = false
-                    self.statusMessage = msg
-                }
-            }
         }
     }
 
@@ -977,6 +453,7 @@ struct DirectMetalContentView: View {
             LauncherStatusBar(vm: vm)
         }
         .frame(minWidth: 920, minHeight: 600)
+        .focusedSceneObject(vm)
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -1021,6 +498,18 @@ struct DirectMetalContentView: View {
 
 struct LibrarySidebar: View {
     @ObservedObject var vm: DirectMetalViewModel
+    @FocusState private var searchFocused: Bool
+
+    private var headerText: String {
+        let shown = vm.filteredLibrary.count
+        return vm.isFiltering ? "Showing \(shown) of \(vm.library.count)" : "Library — \(vm.library.count)"
+    }
+
+    private var emptyText: String {
+        let q = vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scope = vm.libraryFilter == .all ? "" : " in \(vm.libraryFilter.rawValue)"
+        return q.isEmpty ? "No \(vm.libraryFilter.rawValue) games in your library" : "No matches for “\(q)”\(scope)"
+    }
 
     var body: some View {
         List(selection: $vm.selectedID) {
@@ -1041,11 +530,27 @@ struct LibrarySidebar: View {
                         }
                 }
             } header: {
-                Text(vm.searchText.isEmpty ? "Library — \(vm.library.count)" : "Results — \(vm.filteredLibrary.count)")
+                HStack {
+                    Text(headerText)
+                    Spacer()
+                    Label(vm.librarySort.rawValue, systemImage: vm.librarySort.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .listStyle(.sidebar)
-        .searchable(text: $vm.searchText, placement: .sidebar, prompt: "Search games")
+        .searchable(text: $vm.searchText, placement: .sidebar, prompt: "Search games (⌘F)")
+        .searchFocused($searchFocused)
+        .onChange(of: vm.searchFocusRequest) {
+            searchFocused = true
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !vm.library.isEmpty {
+                filterBar
+            }
+        }
         .overlay {
             if vm.library.isEmpty {
                 VStack(spacing: 8) {
@@ -1058,7 +563,16 @@ struct LibrarySidebar: View {
                     }
                 }
             } else if vm.filteredLibrary.isEmpty {
-                Text("No matches for “\(vm.searchText)”").font(.callout).foregroundStyle(.secondary)
+                VStack(spacing: 6) {
+                    Text(emptyText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Clear Filters") { vm.clearFilters() }
+                        .buttonStyle(.link)
+                        .font(.callout)
+                }
+                .padding(.horizontal, 16)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -1103,32 +617,39 @@ struct LibrarySidebar: View {
             .background(.bar)
         }
     }
-}
 
-struct GameRow: View {
-    let entry: GameLibraryEntry
-    let isRunning: Bool
-
-    var body: some View {
-        HStack(spacing: 10) {
-            GameArtworkView(entry: entry, style: .icon, size: 32)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(entry.title)
-                    .font(.system(.body, weight: .semibold))
-                    .lineLimit(1)
+    /// Quick filter chips (with live counts) + sort menu.
+    private var filterBar: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 4) {
-                    StorePill(source: entry.storeSource, gameID: entry.storeGameID)
-                    ForEach(LauncherStyle.apiBadges(for: entry)) { BadgeView(badge: $0) }
-                    ArchPill(architecture: entry.architecture)
+                    ForEach(LibraryFilter.allCases) { filter in
+                        FilterChip(title: filter.rawValue, count: vm.filterCount(filter), tint: filter.tint,
+                                   isSelected: vm.libraryFilter == filter) {
+                            vm.libraryFilter = (vm.libraryFilter == filter && filter != .all) ? .all : filter
+                        }
+                        .help(filter.help)
+                    }
                 }
+                .padding(.vertical, 1)
             }
-            Spacer(minLength: 0)
-            if isRunning {
-                ProgressView().controlSize(.small)
+            Menu {
+                Picker("Sort By", selection: $vm.librarySort) {
+                    ForEach(LibrarySort.allCases) { sort in
+                        Label(sort.rawValue, systemImage: sort.systemImage).tag(sort)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
             }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Sort library: \(vm.librarySort.rawValue)")
         }
-        .padding(.vertical, 3)
-        .help(entry.exePath)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
     }
 }
 
@@ -1151,8 +672,9 @@ struct GameDetailView: View {
                 PeripheralStrip(monitor: peripherals, onControllers: { vm.showControllerSheet = true })
                 peProfileCard
                 settingsPanel
+                LaunchDiagnosticsDrawer(diagnostics: vm.lastLaunches[entry.id]) { vm.copyLaunchReport($0) }
                 shaderCachePanel
-                securityCard
+                AttestationSecurityCard(vm: vm)
             }
             .padding(24)
             .frame(maxWidth: 980, alignment: .leading)
@@ -1215,7 +737,6 @@ struct GameDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.extraLarge)
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(vm.isRunning || vm.runtimePaths == nil)
                 if vm.runtimePaths == nil {
                     Text("Runtime not installed").font(.caption2).foregroundStyle(.red)
@@ -1451,64 +972,6 @@ struct GameDetailView: View {
             Label("Shader Cache", systemImage: "square.stack.3d.up")
         }
     }
-
-    // Security
-
-    private var securityCard: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                if let st = vm.attestationStatus {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 150), spacing: 8)], spacing: 8) {
-                        StatusPill(title: "Secure Enclave", value: st.secureEnclaveAvailable ? "Active" : "Unavailable", ok: st.secureEnclaveAvailable)
-                        StatusPill(title: "SIP", value: st.sipEnabled ? "Enabled" : "Disabled", ok: st.sipEnabled)
-                        StatusPill(title: "SSV", value: st.ssvSealed ? "Sealed" : "Open", ok: st.ssvSealed)
-                        StatusPill(title: "Hardened Runtime", value: st.hardenedRuntime ? "On" : "Off", ok: st.hardenedRuntime)
-                        StatusPill(
-                            title: "DCAppAttest",
-                            value: st.appAttestProvisioned ? "Provisioned" : (st.dcAppAttestSupported ? "OS Ready (Dev ID)" : "Unsupported"),
-                            ok: st.dcAppAttestSupported
-                        )
-                        StatusPill(title: "DCDevice", value: st.dcDeviceSupported ? "Supported" : "Unsupported", ok: st.dcDeviceSupported)
-                    }
-                    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
-                        GridRow {
-                            Text("key_id_sha256").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
-                            HStack(spacing: 6) {
-                                Text(vm.attestationKeyId.isEmpty ? "—" : vm.attestationKeyId)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                    .textSelection(.enabled)
-                                Text(vm.attestationVerified ? "SELF-VERIFY PASS" : "PENDING")
-                                    .font(.caption2.bold())
-                                    .foregroundStyle(vm.attestationVerified ? .green : .orange)
-                            }
-                        }
-                        GridRow {
-                            Text("CS Flags").foregroundStyle(.secondary)
-                            Text("\(st.csStatusFlagsHex)  (valid=\(st.csValid ? "1" : "0") runtime=\(st.csRuntime ? "1" : "0") debugged=\(st.csDebugged ? "1" : "0"))")
-                        }
-                    }
-                    .font(.caption.monospaced())
-                } else {
-                    HStack(spacing: 8) {
-                        ProgressView().controlSize(.small)
-                        Text("Collecting hardware attestation telemetry…").font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(6)
-        } label: {
-            HStack {
-                Label("Hardware Security & Secure Enclave Attestation", systemImage: "lock.shield")
-                Spacer()
-                if vm.attestationRunning { ProgressView().controlSize(.mini) }
-                Button("Run Attestation") { vm.runAttestationCheck() }
-                    .controlSize(.small)
-                    .disabled(vm.attestationRunning)
-            }
-        }
-    }
 }
 
 // MARK: - Welcome / empty state
@@ -1571,697 +1034,6 @@ struct WelcomeView: View {
     }
 }
 
-// MARK: - Status bar
-
-struct LauncherStatusBar: View {
-    @ObservedObject var vm: DirectMetalViewModel
-
-    var body: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(vm.isRunning ? Color.orange : (vm.isScanning || vm.isCacheBusy ? Color.blue : Color.green))
-                .frame(width: 8, height: 8)
-            Text(vm.statusMessage)
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .textSelection(.enabled)
-            Spacer(minLength: 12)
-            Text("\(vm.library.count) game\(vm.library.count == 1 ? "" : "s")")
-            Divider().frame(height: 12)
-            Label(vm.runtimePaths == nil ? "Runtime missing" : "Runtime ready",
-                  systemImage: vm.runtimePaths == nil ? "xmark.octagon" : "checkmark.circle")
-                .foregroundStyle(vm.runtimePaths == nil ? Color.red : Color.secondary)
-            Divider().frame(height: 12)
-            Text(vm.gpuSummary)
-            Divider().frame(height: 12)
-            Text("v\(RuntimeLauncher.appVersion())")
-        }
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
-        .background(.bar)
-    }
-}
-
-// MARK: - Cache import sheet
-
-struct CacheImportSheet: View {
-    @ObservedObject var vm: DirectMetalViewModel
-    @Environment(\.dismiss) private var dismiss
-
-    private var trimmed: String { vm.importSource.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label("Import Shader Cache", systemImage: "square.and.arrow.down")
-                .font(.title2.bold())
-            Text("Paste an https:// URL to a cloud index.json or .dmcache.tar.gz archive, or choose a local file. Archives and every individual shader file are SHA-256 verified before installation.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 8) {
-                TextField("https://example.com/index.json  or  /path/to/cache.dmcache.tar.gz",
-                          text: $vm.importSource)
-                    .textFieldStyle(.roundedBorder)
-                    .onSubmit(submit)
-                Button("Choose File…") { vm.chooseImportFile() }
-            }
-            Toggle("Allow archives from a different macOS build", isOn: $vm.importAllowCrossBuild)
-                .toggleStyle(.checkbox)
-                .font(.callout)
-            if trimmed.lowercased().hasPrefix("http://") {
-                Label("Only https:// URLs are allowed.", systemImage: "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            HStack {
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                Button("Import", action: submit)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(trimmed.isEmpty || trimmed.lowercased().hasPrefix("http://"))
-            }
-        }
-        .padding(22)
-        .frame(width: 560)
-    }
-
-    private func submit() {
-        guard !trimmed.isEmpty else { return }
-        vm.importShaderCache(from: trimmed)
-        dismiss()
-    }
-}
-
-// MARK: - Lite runtime setup card
-
-struct RuntimeSetupCard: View {
-    @ObservedObject var vm: DirectMetalViewModel
-
-    private func mb(_ bytes: Int64) -> String {
-        String(format: "%.0f MB", Double(max(bytes, 0)) / 1_000_000.0)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(alignment: .top, spacing: 14) {
-                Image(systemName: "shippingbox.and.arrow.backward.fill")
-                    .font(.system(size: 34))
-                    .foregroundStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Set up the DirectMetal Runtime")
-                        .font(.title3.bold())
-                    Text("DirectMetal Lite downloads the notarized MetalSharp-Wine \(RuntimeManager.arm64ecVersion) ARM64EC + FEX runtime once. Every byte is SHA-256 verified and its Apple Developer ID signature checked before install.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-
-            if vm.runtimeInstallRunning {
-                VStack(alignment: .leading, spacing: 6) {
-                    if vm.runtimeInstallFraction >= 0 {
-                        ProgressView(value: min(max(vm.runtimeInstallFraction, 0), 1))
-                    } else {
-                        ProgressView().progressViewStyle(.linear)
-                    }
-                    HStack {
-                        Text(vm.runtimeInstallPhase)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                        Spacer(minLength: 8)
-                        if vm.runtimeInstallBytes > 0 {
-                            Text(vm.runtimeInstallTotal > 0
-                                 ? "\(mb(vm.runtimeInstallBytes)) / \(mb(vm.runtimeInstallTotal))"
-                                 : mb(vm.runtimeInstallBytes))
-                                .monospacedDigit()
-                        }
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                }
-            } else {
-                HStack(spacing: 10) {
-                    Button {
-                        vm.installRuntime()
-                    } label: {
-                        Label("Install DirectMetal Runtime (\(RuntimeManager.archiveSizeLabel), SHA-256 & Apple Notarized)",
-                              systemImage: "arrow.down.circle.fill")
-                            .font(.headline)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    Spacer(minLength: 0)
-                }
-                if let err = vm.runtimeInstallError {
-                    Label(err, systemImage: "exclamationmark.triangle.fill")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                        .lineLimit(3)
-                        .textSelection(.enabled)
-                }
-            }
-
-            Text("Installs to \(RuntimeManager.userARM64ECRuntimeDir().path)")
-                .font(.caption2.monospaced())
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
-        }
-        .padding(18)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            LinearGradient(colors: [Color.blue.opacity(0.16), Color.purple.opacity(0.10)],
-                           startPoint: .topLeading, endPoint: .bottomTrailing),
-            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
-        )
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.accentColor.opacity(0.35)))
-    }
-}
-
-// MARK: - Updates sheet (DirectMetal app + MetalSharp-Wine runtime)
-
-struct UpdatesSheet: View {
-    @ObservedObject var vm: DirectMetalViewModel
-    @Environment(\.dismiss) private var dismiss
-
-    private var busy: Bool { vm.appUpdateRunning || vm.runtimeUpdateRunning }
-
-    private func mb(_ bytes: Int64) -> String {
-        String(format: "%.1f MB", Double(max(bytes, 0)) / 1_000_000.0)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(spacing: 10) {
-                Label("Software Updates", systemImage: "arrow.down.circle")
-                    .font(.title2.bold())
-                Spacer()
-                if vm.updateChecking { ProgressView().controlSize(.small) }
-                Button("Check Again") { vm.checkForUpdates() }
-                    .disabled(vm.updateChecking || busy)
-            }
-            appCard
-            runtimeCard
-            HStack(alignment: .top) {
-                Text("Downloads come from GitHub Releases over HTTPS. Every update is SHA-256 verified and code-signature checked before anything on disk is replaced; the app swap is atomic and rolls back on failure.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-                Spacer(minLength: 12)
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
-                    .disabled(busy)
-            }
-        }
-        .padding(22)
-        .frame(width: 620)
-        .onAppear {
-            if vm.dualStatus == nil && !vm.updateChecking { vm.checkForUpdates() }
-        }
-    }
-
-    private func versionRow(current: String, latest: String?, available: Bool) -> some View {
-        HStack(spacing: 8) {
-            Text(current).font(.system(.title3, design: .monospaced).weight(.semibold))
-            Image(systemName: "arrow.right").foregroundStyle(.secondary)
-            Text(latest ?? "—")
-                .font(.system(.title3, design: .monospaced).weight(.semibold))
-                .foregroundStyle(available ? Color.green : Color.primary)
-            if available {
-                Text("NEW")
-                    .font(.caption2.bold())
-                    .padding(.horizontal, 6).padding(.vertical, 1.5)
-                    .foregroundStyle(.white)
-                    .background(Color.green, in: Capsule())
-            }
-        }
-    }
-
-    private func progressBlock(fraction: Double, phase: String, bytes: Int64, total: Int64) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if fraction >= 0 {
-                ProgressView(value: min(max(fraction, 0), 1))
-            } else {
-                ProgressView().progressViewStyle(.linear)
-            }
-            HStack {
-                Text(phase).lineLimit(1).truncationMode(.middle)
-                Spacer(minLength: 8)
-                if bytes > 0 {
-                    Text(total > 0 ? "\(mb(bytes)) / \(mb(total))" : mb(bytes)).monospacedDigit()
-                }
-            }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
-    }
-
-    private var appCard: some View {
-        let app = vm.dualStatus?.app ?? vm.updateResult
-        let edition = AppUpdater.runningEdition()
-        return GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                versionRow(current: app?.currentVersion ?? RuntimeLauncher.appVersion(), latest: app?.latestVersion,
-                           available: app?.updateAvailable ?? false)
-                if let app {
-                    if app.disabled {
-                        Text("Update checks are disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1).").font(.callout).foregroundStyle(.secondary)
-                    } else if let err = app.error {
-                        Label(err, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
-                    } else if !app.updateAvailable && vm.appUpdateInstalledURL == nil {
-                        Label("DirectMetal is up to date.", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.green)
-                    }
-                } else if vm.updateChecking {
-                    Text("Checking GitHub Releases…").font(.callout).foregroundStyle(.secondary)
-                }
-
-                if vm.appUpdateRunning {
-                    progressBlock(fraction: vm.appUpdateFraction, phase: vm.appUpdatePhase,
-                                  bytes: vm.appUpdateBytes, total: vm.appUpdateTotal)
-                } else if let installed = vm.appUpdateInstalledURL {
-                    HStack(spacing: 10) {
-                        Label("Installed \(installed.lastPathComponent) — relaunch to finish.", systemImage: "checkmark.seal.fill")
-                            .font(.callout)
-                            .foregroundStyle(.green)
-                        Spacer(minLength: 8)
-                        Button {
-                            vm.relaunchAfterUpdate()
-                        } label: {
-                            Label("Relaunch DirectMetal", systemImage: "arrow.clockwise.circle.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                } else if let app, app.updateAvailable {
-                    HStack(spacing: 10) {
-                        Button {
-                            vm.installAppUpdate()
-                        } label: {
-                            Label("Download & Install Update" + (app.assetSize.map { " (\(mb($0)))" } ?? ""),
-                                  systemImage: "arrow.down.circle.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(app.dmgURL == nil || vm.isRunning || vm.runtimeUpdateRunning)
-                        Button("Release Notes") { vm.openReleasePage() }
-                            .buttonStyle(.link)
-                        Spacer(minLength: 0)
-                    }
-                    if app.dmgURL == nil {
-                        Text("This release has no \(edition.assetName) download yet.").font(.caption).foregroundStyle(.orange)
-                    } else if app.sha256URL == nil {
-                        Text("This release publishes no .sha256 checksum, so in-app install is refused for safety.")
-                            .font(.caption).foregroundStyle(.orange)
-                    }
-                }
-                if let err = vm.appUpdateError {
-                    Label(err, systemImage: "xmark.octagon.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(4)
-                        .textSelection(.enabled)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(6)
-        } label: {
-            Label("\(edition.displayName) App", systemImage: "app.badge")
-        }
-    }
-
-    private var runtimeCard: some View {
-        let rt = vm.dualStatus?.runtime
-        return GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                versionRow(current: rt?.currentVersion ?? RuntimeManager.arm64ecVersion, latest: rt?.latestVersion,
-                           available: rt?.updateAvailable ?? false)
-                if let rt {
-                    if let err = rt.error, !rt.disabled {
-                        Label(err, systemImage: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(.orange)
-                    } else if !rt.installed {
-                        Text("No runtime installed yet — use “Install DirectMetal Runtime”, or install the latest release below.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    } else if !rt.updateAvailable && !rt.disabled {
-                        Label("MetalSharp-Wine runtime is up to date.", systemImage: "checkmark.circle.fill")
-                            .font(.callout).foregroundStyle(.green)
-                    }
-                }
-                if vm.runtimeUpdateRunning {
-                    progressBlock(fraction: vm.runtimeUpdateFraction, phase: vm.runtimeUpdatePhase, bytes: 0, total: -1)
-                } else if let rt, rt.updateAvailable || (!rt.installed && rt.zipURL != nil) {
-                    HStack(spacing: 10) {
-                        Button {
-                            vm.updateRuntimeToLatest()
-                        } label: {
-                            Label("Update Runtime" + (rt.assetSize.map { " (\(mb($0)))" } ?? ""), systemImage: "shippingbox.and.arrow.backward.fill")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(rt.zipURL == nil || vm.isRunning || vm.appUpdateRunning)
-                        if let page = rt.releaseURL, let url = URL(string: page), url.scheme == "https" {
-                            Button("Release Notes") { NSWorkspace.shared.open(url) }.buttonStyle(.link)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
-                if let done = vm.runtimeUpdateDone {
-                    Label(done, systemImage: "checkmark.seal.fill").font(.caption).foregroundStyle(.green).textSelection(.enabled)
-                }
-                if let err = vm.runtimeUpdateError {
-                    Label(err, systemImage: "xmark.octagon.fill")
-                        .font(.caption)
-                        .foregroundStyle(.red)
-                        .lineLimit(4)
-                        .textSelection(.enabled)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(6)
-        } label: {
-            Label("MetalSharp-Wine Runtime (ARM64EC + FEX)", systemImage: "shippingbox")
-        }
-    }
-}
-
-// MARK: - Controller mapping, dead zones + live tester
-
-struct ControllerMappingSheet: View {
-    let entry: GameLibraryEntry?
-    @Environment(\.dismiss) private var dismiss
-    @StateObject private var tester = ControllerLiveTester()
-    @State private var perGame: Bool
-    @State private var draft: ControllerMappingProfile
-    @State private var source: String
-    @State private var saveError: String?
-    @State private var showEnv = false
-
-    init(entry: GameLibraryEntry?) {
-        self.entry = entry
-        let hasGameProfile = entry.map { ControllerMappingManager.storedProfile(for: $0.id) != nil } ?? false
-        let resolved = ControllerMappingManager.resolvedProfile(for: hasGameProfile ? entry?.id : nil)
-        _perGame = State(initialValue: hasGameProfile)
-        _draft = State(initialValue: resolved.profile)
-        _source = State(initialValue: resolved.source)
-    }
-
-    private var scopeKey: String {
-        perGame ? (entry?.id ?? ControllerMappingManager.defaultKey) : ControllerMappingManager.defaultKey
-    }
-
-    private func reload() {
-        let r = ControllerMappingManager.resolvedProfile(for: perGame ? entry?.id : nil)
-        draft = r.profile
-        source = r.source
-    }
-
-    private func persist() {
-        do {
-            try ControllerMappingManager.setProfile(draft, for: scopeKey)
-            saveError = nil
-        } catch {
-            saveError = "Could not save controller profile: \(error.localizedDescription)"
-        }
-        source = ControllerMappingManager.resolvedProfile(for: perGame ? entry?.id : nil).source
-    }
-
-    /// Edits that save immediately.
-    private func binding<T>(_ kp: WritableKeyPath<ControllerMappingProfile, T>) -> Binding<T> {
-        Binding(get: { draft[keyPath: kp] }, set: { draft[keyPath: kp] = $0; persist() })
-    }
-
-    private var sourceText: String {
-        switch source {
-        case "game": return "Custom profile for this game"
-        case "global": return perGame ? "Inherits the global profile until you change something" : "Global profile (all games without their own)"
-        default: return "Stock behavior — no controller environment is added at launch"
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: 10) {
-                Label("Controller Mapping & Dead Zones", systemImage: "gamecontroller.fill")
-                    .font(.title2.bold())
-                Spacer()
-                Label(tester.activeControllerName ?? "No controller", systemImage: tester.activeControllerName == nil ? "gamecontroller" : "dot.radiowaves.left.and.right")
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(tester.activeControllerName == nil ? Color.secondary : Color.green)
-            }
-            .padding([.horizontal, .top], 22)
-            .padding(.bottom, 12)
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    scopeAndPreset
-                    HStack(alignment: .top, spacing: 16) {
-                        remapGrid
-                            .frame(maxWidth: .infinity, alignment: .topLeading)
-                        VStack(alignment: .leading, spacing: 14) {
-                            sticksAndOptions
-                            GroupBox {
-                                ControllerTesterView(tester: tester, profile: draft)
-                                    .padding(4)
-                            } label: {
-                                Label("Live Input Tester", systemImage: "waveform.path.ecg")
-                            }
-                        }
-                        .frame(width: 330)
-                    }
-                    envPreview
-                }
-                .padding(.horizontal, 22)
-                .padding(.bottom, 12)
-            }
-
-            Divider()
-            HStack(spacing: 10) {
-                Button(role: .destructive) {
-                    do {
-                        try ControllerMappingManager.resetProfile(for: scopeKey)
-                        saveError = nil
-                    } catch {
-                        saveError = "Could not reset: \(error.localizedDescription)"
-                    }
-                    reload()
-                } label: {
-                    Label(perGame ? "Reset Game Profile" : "Reset Global Profile", systemImage: "arrow.counterclockwise")
-                }
-                if let saveError {
-                    Text(saveError).font(.caption).foregroundStyle(.red).lineLimit(2)
-                } else {
-                    Text("Changes save automatically to \(ControllerMappingManager.profilesURL.lastPathComponent) and apply on the next launch.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 22)
-            .padding(.vertical, 12)
-        }
-        .frame(width: 820, height: 680)
-        .onAppear { tester.start() }
-        .onDisappear { tester.stop() }
-    }
-
-    private var scopeAndPreset: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) {
-                Picker("Scope", selection: Binding(get: { perGame }, set: { perGame = $0; reload() })) {
-                    Text("Global (all games)").tag(false)
-                    Text(entry.map { "This game: \($0.title)" } ?? "This game").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .disabled(entry == nil)
-                Text(sourceText).font(.caption).foregroundStyle(.secondary)
-                HStack(spacing: 10) {
-                    Text("Preset").foregroundStyle(.secondary)
-                    Picker("Preset", selection: Binding(get: { draft.preset }, set: { draft.applyPreset($0); persist() })) {
-                        ForEach(ControllerPreset.allCases) { p in Text(p.displayName).tag(p) }
-                    }
-                    .labelsHidden()
-                    .frame(maxWidth: 300)
-                    Text(draft.preset.summary).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(6)
-        } label: {
-            Label("Profile", systemImage: "person.crop.circle")
-        }
-    }
-
-    private var remapGrid: some View {
-        GroupBox {
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 5) {
-                GridRow {
-                    Text("Press").font(.caption.bold()).foregroundStyle(.secondary)
-                    Text("Game receives").font(.caption.bold()).foregroundStyle(.secondary)
-                }
-                ForEach(ControllerMappingProfile.canonicalButtons, id: \.self) { b in
-                    GridRow {
-                        Text(ControllerMappingProfile.label(for: b))
-                            .font(.callout)
-                            .foregroundStyle(tester.pressedButtons.contains(b) ? Color.green : Color.primary)
-                        Picker(ControllerMappingProfile.label(for: b), selection: Binding(
-                            get: { draft.buttonMap[b] ?? b },
-                            set: { draft.buttonMap[b] = $0; draft.preset = .custom; persist() }
-                        )) {
-                            ForEach(ControllerMappingProfile.canonicalButtons, id: \.self) { t in
-                                Text(ControllerMappingProfile.label(for: t)).tag(t)
-                            }
-                        }
-                        .labelsHidden()
-                        .frame(width: 170)
-                    }
-                }
-            }
-            .padding(6)
-        } label: {
-            Label("Button Remapping", systemImage: "arrow.left.arrow.right")
-        }
-    }
-
-    private var sticksAndOptions: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 8) {
-                deadzoneSlider("Left stick", \.leftDeadzone)
-                deadzoneSlider("Right stick", \.rightDeadzone)
-                Toggle("Invert right stick Y (look)", isOn: binding(\.invertRightY))
-                Toggle("Haptics / rumble", isOn: binding(\.enableHaptics))
-            }
-            .toggleStyle(.checkbox)
-            .padding(6)
-        } label: {
-            Label("Sticks & Feedback", systemImage: "dial.medium")
-        }
-    }
-
-    private func deadzoneSlider(_ title: String, _ kp: WritableKeyPath<ControllerMappingProfile, Double>) -> some View {
-        HStack(spacing: 8) {
-            Text(title).frame(width: 78, alignment: .leading)
-            Slider(value: Binding(get: { draft[keyPath: kp] }, set: { draft[keyPath: kp] = ControllerMappingProfile.clampDeadzone($0) }),
-                   in: ControllerMappingProfile.deadzoneRange, step: 0.01) { editing in
-                if !editing { persist() }
-            }
-            Text(String(format: "%2.0f%%", draft[keyPath: kp] * 100))
-                .font(.callout.monospacedDigit())
-                .frame(width: 38, alignment: .trailing)
-        }
-    }
-
-    private var envPreview: some View {
-        let env = ControllerMappingManager.environmentOverrides(profile: draft, key: scopeKey)
-        return DisclosureGroup(isExpanded: $showEnv) {
-            ScrollView(.horizontal) {
-                Text(env.isEmpty ? "No variables (stock profile)."
-                     : env.keys.sorted().map { "\($0)=\(env[$0]!.split(separator: "\n").first.map(String.init) ?? "")" }.joined(separator: "\n"))
-                    .font(.caption.monospaced())
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(8)
-            }
-            .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
-        } label: {
-            Text("Launch environment (\(env.count) variable\(env.count == 1 ? "" : "s"); SDL_GAMECONTROLLERCONFIG shows its first mapping)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-/// Visualizes live stick, trigger and button state; buttons show their remapped output.
-struct ControllerTesterView: View {
-    @ObservedObject var tester: ControllerLiveTester
-    let profile: ControllerMappingProfile
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if tester.activeControllerName == nil {
-                Text("Connect a Bluetooth or USB controller and press any button.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
-            HStack(alignment: .center, spacing: 14) {
-                StickIndicator(label: "L", point: tester.leftStick, deadzone: profile.leftDeadzone, invertY: false)
-                StickIndicator(label: "R", point: tester.rightStick, deadzone: profile.rightDeadzone, invertY: profile.invertRightY)
-                VStack(spacing: 8) {
-                    TriggerIndicator(label: "LT", value: tester.leftTrigger)
-                    TriggerIndicator(label: "RT", value: tester.rightTrigger)
-                }
-            }
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 4), count: 8), spacing: 4) {
-                ForEach(ControllerMappingProfile.canonicalButtons, id: \.self) { b in
-                    let pressed = tester.pressedButtons.contains(b)
-                    let out = profile.buttonMap[b] ?? b
-                    VStack(spacing: 0) {
-                        Text(ControllerMappingProfile.shortLabel(for: b))
-                            .font(.system(size: 10, weight: .bold, design: .rounded))
-                        if out != b {
-                            Text("→\(ControllerMappingProfile.shortLabel(for: out))")
-                                .font(.system(size: 8, weight: .semibold, design: .rounded))
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 28)
-                    .foregroundStyle(pressed ? Color.white : Color.primary)
-                    .background(pressed ? Color.green.opacity(0.85) : Color.secondary.opacity(0.12),
-                                in: RoundedRectangle(cornerRadius: 5, style: .continuous))
-                }
-            }
-        }
-    }
-}
-
-struct StickIndicator: View {
-    let label: String
-    let point: CGPoint
-    let deadzone: Double
-    let invertY: Bool
-    private let size: CGFloat = 78
-
-    var body: some View {
-        let magnitude = sqrt(point.x * point.x + point.y * point.y)
-        let inDeadzone = magnitude <= CGFloat(deadzone)
-        let r = size / 2
-        VStack(spacing: 3) {
-            ZStack {
-                Circle().fill(Color.secondary.opacity(0.08))
-                Circle().strokeBorder(Color.secondary.opacity(0.35), lineWidth: 1)
-                Circle()
-                    .fill(Color.orange.opacity(0.18))
-                    .frame(width: size * CGFloat(deadzone), height: size * CGFloat(deadzone))
-                Circle()
-                    .fill(inDeadzone ? Color.secondary : Color.accentColor)
-                    .frame(width: 10, height: 10)
-                    .offset(x: max(-1, min(1, point.x)) * (r - 6), y: -max(-1, min(1, point.y)) * (r - 6))
-            }
-            .frame(width: size, height: size)
-            Text("\(label) · DZ \(Int((deadzone * 100).rounded()))%\(invertY ? " · Y inv" : "")")
-                .font(.system(size: 9.5, weight: .medium))
-                .foregroundStyle(.secondary)
-        }
-    }
-}
-
-struct TriggerIndicator: View {
-    let label: String
-    let value: Float
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(label).font(.system(size: 10, weight: .bold, design: .rounded)).frame(width: 18)
-            ZStack(alignment: .leading) {
-                Capsule().fill(Color.secondary.opacity(0.12))
-                Capsule().fill(Color.accentColor).frame(width: 90 * CGFloat(max(0, min(1, value))))
-            }
-            .frame(width: 90, height: 8)
-            Text(String(format: "%3.0f%%", value * 100)).font(.system(size: 9.5).monospacedDigit()).frame(width: 34, alignment: .trailing)
-        }
-    }
-}
-
 // MARK: - App
 
 /// Stops every warm wineserver this GUI started, so quitting leaves zero orphan daemons.
@@ -2280,5 +1052,70 @@ struct DirectMetalDesktopApp: App {
         }
         .defaultSize(width: 1120, height: 760)
         .windowToolbarStyle(.unified(showsTitle: true))
+        .commands { DirectMetalCommands() }
+    }
+}
+
+/// Native menu bar commands + keyboard shortcuts, routed to the key window's view model.
+struct DirectMetalCommands: Commands {
+    @FocusedObject private var vm: DirectMetalViewModel?
+
+    private var modal: Bool { vm?.isPresentingModal ?? true }
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { vm?.openUpdates() }
+                .keyboardShortcut("u", modifiers: .command)
+                .disabled(vm == nil || (modal && vm?.showUpdatesSheet != true))
+        }
+        CommandGroup(replacing: .appSettings) {
+            Button("Controllers…") { vm?.openControllers() }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(modal)
+        }
+        CommandGroup(after: .newItem) {
+            Divider()
+            Button("Add .exe or Game Folder…") { vm?.openAddPanel() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(modal)
+            Button("Scan Library") { vm?.scanLibrary() }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(vm == nil || vm?.isScanning == true)
+        }
+        CommandMenu("Library") {
+            Button(vm?.selectedEntry.map { "Play \($0.title)" } ?? "Play Selected Game") { vm?.playSelected() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(modal || !(vm?.canPlaySelected ?? false))
+            Button("Find Game…") { vm?.requestSearchFocus() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(vm == nil)
+            Divider()
+            Picker("Filter", selection: Binding(get: { vm?.libraryFilter ?? .all },
+                                                set: { vm?.libraryFilter = $0 })) {
+                ForEach(LibraryFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .disabled(vm == nil)
+            Picker("Sort By", selection: Binding(get: { vm?.librarySort ?? .recent },
+                                                 set: { vm?.librarySort = $0 })) {
+                ForEach(LibrarySort.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .disabled(vm == nil)
+            Divider()
+            Button("Show in Finder") {
+                if let vm, let e = vm.selectedEntry { vm.revealInFinder(e) }
+            }
+            .disabled(vm?.selectedEntry == nil)
+            Button("Re-inspect Executable") {
+                if let vm, let e = vm.selectedEntry { vm.reinspect(e) }
+            }
+            .disabled(vm?.selectedEntry == nil)
+            Button("Copy Last Launch Report") {
+                if let vm, let id = vm.selectedID, let d = vm.lastLaunches[id] { vm.copyLaunchReport(d) }
+            }
+            .disabled(vm?.selectedID.flatMap { vm?.lastLaunches[$0] } == nil)
+            Divider()
+            Button("Remove from Library…") { vm?.showRemoveConfirm = true }
+                .disabled(modal || vm?.selectedEntry == nil)
+        }
     }
 }
