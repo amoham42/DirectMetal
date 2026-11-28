@@ -4,18 +4,20 @@ All notable changes to **DirectMetal** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-11-28
 
 ### Added
 
-- **Interactive Launch Log Crash Triage (`⇧⌘L`, `LaunchLogAnalyzer.swift`, `LaunchLogTriageSheet.swift`, `DirectMetal diagnose-log`):** Single-pass Wine/DirectX/Metal log scanner and native macOS 15 SwiftUI triage viewer (drag-and-drop, file picker, clipboard paste, severity/category filters, redacted excerpts, DirectMetal-specific remediations, Markdown/text report export).
+- **Interactive Launch Log Crash Triage (`⇧⌘L`, `LaunchLogAnalyzer.swift`, `LaunchLogTriageSheet.swift`, `LaunchLogTriageComponents.swift`, `DirectMetal diagnose-log`):** Single-pass Wine/DirectX/Metal log scanner and native macOS 15 SwiftUI triage viewer (drag-and-drop, file picker, clipboard paste, severity/category filters, redacted excerpts, DirectMetal-specific remediations, Markdown/text report export).
 - **Live Metal Performance HUD Customizer (`⇧⌘M`, `MetalHUDConfig.swift`, `MetalHUDCustomizerSheet.swift`, `DirectMetal hud`):** Interactive overlay preset, corner alignment, scale, opacity, and DXVK HUD customizer with live 16:9 canvas preview wired directly into `MTL_HUD_*` launch environments.
-- **Privacy-Redacted Support Bundle Exporter (`SupportBundleExporter.swift`, `DirectMetal support-bundle`):** One-click `.tar.gz` diagnostics bundle omitting secrets and raw home paths for GitHub bug reports.
-- **Per-Game Configuration Diff & Baseline Reset (`ConfigDiffEngine.swift`, `DirectMetal library diff|reset-settings`):** Shows `"N customized"` pills in the launcher and restores baseline settings without touching playtime, favorites, or prefix state.
+- **Privacy-Redacted Diagnostics Support Bundle Exporter (`SupportBundleExporter.swift`, `DirectMetal support-bundle`):** One-click `.tar.gz` diagnostics bundle omitting secrets and raw home paths for GitHub bug reports.
+- **Per-Game Configuration Diff, Baseline Reset & Launch Env/Args Linter (`ConfigDiffEngine.swift`, `LaunchEnvValidator.swift`, `DirectMetal library diff|reset-settings|lint`):** Shows `"N customized"` pills and real-time inline launch env/args advisories (catching blocked security keys, Linux/Proton no-ops like `MANGOHUD`/`PROTON_*`/`%command%`, HUD/FPS conflicts, and malformed quotes without ever echoing secrets).
+- **7-Point Per-Game Pre-Flight Readiness Checker (`PreflightChecker.swift`, `LaunchPlanSheet.swift`, `DirectMetal library preflight`):** Fast, read-only launch readiness audit verifying executable presence, runtime resolution, kernel anti-cheat signatures (EAC/BattlEye/Vanguard), free disk headroom, APFS prefix state, graphics pipeline, and custom env.
 - **Shader Cache Integrity Verifier & Safe Quarantine (`ShaderCacheVerifier.swift`, `DirectMetal cache verify [--quarantine]`):** Symlink-safe verifier recognizing real macOS `MTLBinaryArchive` (`0xCBFEBABE`), `MTLB`, SQLite `.db`/WAL/lock sidecars, DXVK caches, and JSON manifests; safely quarantines corrupt artifacts without wiping healthy caches.
-- **Batch Community Profile Sync & 150 Validated Profiles (`ProfileBatchSync.swift`, `DirectMetal library sync-profiles`, `runtime/profiles/game_profiles.json`):** Expanded community game profiles from `100` to **150** (`5` hardware-verified + `145` presets) with safe library-wide batch sync preserving user customizations.
+- **Unified Storage Footprint & Reclamation Tab (`⌘D`, `StorageFootprintAnalyzer.swift`, `StorageFootprintTab.swift`, `DirectMetal storage`):** Symlink-safe 6-category disk footprint audit (prefixes, shader caches, `_quarantine`, save backups, user runtimes, metadata) with proportional stacked chart, prioritized reclamation tips, and 1-click cleanup actions.
+- **200 Validated Community Game Profiles & Batch Library Sync (`ProfileBatchSync.swift`, `DirectMetal library sync-profiles`, `runtime/profiles/game_profiles.json`):** Doubled bundled community game profiles from `100` to **200** (`5` hardware-verified + `195` community presets across `216` unique executables) with safe library-wide batch sync preserving user customizations.
 - **Per-Game Launch Stability Analytics & Pre-Reset Save Backup (`GameSessionAnalytics.swift`, `DirectMetal history stats`, `PrefixManagerSheet.swift`):** Stability tier classification, ARM64EC/Rosetta ratio, median APFS CoW latency, and one-click **"Backup Saves & Reset"** protection in the APFS Prefix Manager.
-- **Expanded Verification Suite (`89` Automated Tests):** `46` Swift unit tests (`-warnings-as-errors`), `26` Python packaging/script/release-contract tests, `7` PSNR/SSIM visual-diff tests, and `10` C/Obj-C++ CTest suites (`make ctest`).
+- **`dm_vk_compat` C11 Runtime Unit Test & 94-Test Verification Suite:** Added `graphics/dm_vk_compat/tests/dm_vk_compat_test.c` (testing the universal `arm64+x86_64` Vulkan layer via `dlopen` + loader chains + subprocess env toggles), shell/Homebrew Cask/`Info.plist` contract tests, and expanded automated coverage to **94 tests** (**50** Swift `-warnings-as-errors` + **26** Python + **7** PSNR/SSIM + **11** C/Obj-C++ CTest via `make ctest`).
 
 ### Changed
 

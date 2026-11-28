@@ -1,6 +1,6 @@
 # Community Game Profiles Guide
 
-DirectMetal ships with **150 built-in game profiles** (`5` hardware-verified on Apple Silicon + `145` community presets) in [`runtime/profiles/game_profiles.json`](../runtime/profiles/game_profiles.json). When a game is discovered by `DirectMetal library scan` or added for the first time, the first matching profile automatically seeds optimal per-game settings (`perfProfile`, `dx9Backend`, `upscaleMode`, `retinaMode`, `enableHUD`, `enableSandbox`) without ever overwriting existing user customizations. Existing libraries can pull newly added presets safely anytime via `DirectMetal library sync-profiles` or the **Sync Library** button in the Community Game Profiles Browser (`⇧⌘B`).
+DirectMetal ships with **200 built-in game profiles** (`5` hardware-verified on Apple Silicon + `195` community presets) in [`runtime/profiles/game_profiles.json`](../runtime/profiles/game_profiles.json). When a game is discovered by `DirectMetal library scan` or added for the first time, the first matching profile automatically seeds optimal per-game settings (`perfProfile`, `dx9Backend`, `upscaleMode`, `retinaMode`, `enableHUD`, `enableSandbox`) without ever overwriting existing user customizations. Existing libraries can pull newly added presets safely anytime via `DirectMetal library sync-profiles` or the **Sync Library** button in the Community Game Profiles Browser (`⇧⌘B`).
 
 ---
 

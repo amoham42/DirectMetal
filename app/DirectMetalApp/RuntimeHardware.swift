@@ -175,11 +175,11 @@ extension RuntimeLauncher {
         )
     }
 
-    /// Marketing version of the running app (`CFBundleShortVersionString`), `1.1.0` for bare CLI builds.
+    /// Marketing version of the running app (`CFBundleShortVersionString`), `1.2.0` for bare CLI builds.
     static func appVersion() -> String {
         let v = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (v?.isEmpty == false) ? v! : "1.1.0"
+        return (v?.isEmpty == false) ? v! : "1.2.0"
     }
 
     static func shaderCacheRoot() -> URL {
