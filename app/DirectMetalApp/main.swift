@@ -545,6 +545,7 @@ private func runCLI(args: [String]) -> Int32 {
         var virtualDesktop: String? = nil
         var warmServerSeconds: Int? = nil
         var fpsCap = 0
+        var customEnvPairs: [String: String] = [:]
         var childArgs: [String] = []
 
         var i = 2
@@ -568,6 +569,11 @@ private func runCLI(args: [String]) -> Int32 {
                 i += 2
             } else if a == "--fps-cap", i + 1 < args.count {
                 fpsCap = max(0, min(Int(args[i + 1]) ?? 0, 360))
+                i += 2
+            } else if a == "--env", i + 1 < args.count {
+                for (k, v) in GameLibraryManager.parseCustomEnv(args[i + 1]) {
+                    customEnvPairs[k] = v
+                }
                 i += 2
             } else if a == "--engine", i + 1 < args.count {
                 engine = ExecutionEngine(rawValue: args[i + 1].lowercased()) ?? .auto
@@ -633,7 +639,8 @@ private func runCLI(args: [String]) -> Int32 {
                 sandboxOutputDir: sandboxOutDir,
                 fexTSOOverride: fexTSOOverride,
                 warmServerSeconds: warmServerSeconds,
-                fpsCap: fpsCap
+                fpsCap: fpsCap,
+                customEnv: customEnvPairs
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)

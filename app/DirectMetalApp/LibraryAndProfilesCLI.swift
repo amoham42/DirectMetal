@@ -193,6 +193,7 @@ func runLibraryCLI(args: [String]) -> Int32 {
             case "sandbox":
                 if let v = parseBool(value) { entries[idx].enableSandbox = v } else { ok = false }
             case "args", "extra-args", "extraargs": entries[idx].extraArgs = value
+            case "env", "custom-env", "customenv": entries[idx].customEnv = value
             case "store", "storesource":
                 let v = value.lowercased()
                 if ["steam", "gog", "epic", "standalone"].contains(v) { entries[idx].storeSource = v } else { ok = false }
@@ -261,7 +262,8 @@ func runLibraryCLI(args: [String]) -> Int32 {
                 sandboxed: entry.enableSandbox,
                 warmServerSeconds: warmServerSeconds,
                 controllerProfileKey: entry.id,
-                fpsCap: entry.fpsCap
+                fpsCap: entry.fpsCap,
+                customEnv: entry.customEnvDictionary
             )
             mgr.recordSessionDuration(id: entry.id, seconds: res.elapsedSeconds)
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)

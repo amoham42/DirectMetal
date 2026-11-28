@@ -312,6 +312,7 @@ _directmetal() {
         '--perf-mode[Performance profile]:mode:(balanced ultra)' \
         '--upscale[MetalFX upscaling mode]:upscale:(quality balanced performance ultra_performance)' \
         '--fps-cap[Frame-rate cap in FPS (0=uncapped)]:fps:(0 30 40 60 90 120 144)' \
+        '*--env[Custom environment override KEY=VAL]:env:' \
         '--retina[Enable Retina backing scale and HiDPI]' \
         '--no-retina[Disable Retina scaling]' \
         '--sandbox[Run inside macOS Seatbelt sandbox]' \
@@ -373,7 +374,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "zsh bash" -- "${cur}") )
       ;;
     run)
-      COMPREPLY=( $(compgen -W "--prefix --engine --dx9-backend --perf-mode --upscale --fps-cap --retina --no-retina --desktop --fex-tso --sandbox --sandbox-offline --sandbox-out --hud --reset-prefix --warm-server --no-warm-server" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "--prefix --engine --dx9-backend --perf-mode --upscale --fps-cap --env --retina --no-retina --desktop --fex-tso --sandbox --sandbox-offline --sandbox-out --hud --reset-prefix --warm-server --no-warm-server" -- "${cur}") )
       ;;
   esac
 }

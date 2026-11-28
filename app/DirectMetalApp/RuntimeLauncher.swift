@@ -263,7 +263,8 @@ enum RuntimeLauncher {
         fexTSOOverride: Bool? = nil,
         warmServerSeconds: Int? = nil,
         controllerProfileKey: String? = nil,
-        fpsCap: Int = 0
+        fpsCap: Int = 0,
+        customEnv: [String: String] = [:]
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -490,6 +491,7 @@ enum RuntimeLauncher {
                 env["MULLION_CONFIG"] = joined
             }
         }
+        Self.applyCustomEnv(customEnv, to: &env)
         let is64BitExe = profile?.is64Bit ?? true
         let useDXVKForD3D9: Bool = {
             guard isPureD3D9 || dx9Backend != .auto else { return false }
@@ -654,5 +656,21 @@ enum RuntimeLauncher {
             outEnv["DXVK_FRAME_RATE"] = str
         }
         return (outEnv, ["dxgi.maxFrameRate=\(str)"])
+    }
+
+    /// Merges sanitized per-game custom environment variables into `env`.
+    /// Appends `WINEDLLOVERRIDES` and `MULLION_CONFIG` with `;` so DirectMetal's D3D12 guard is never clobbered.
+    static func applyCustomEnv(_ custom: [String: String], to env: inout [String: String]) {
+        for key in custom.keys.sorted() {
+            guard GameLibraryManager.isValidEnvKey(key),
+                  !GameLibraryManager.blockedCustomEnvKeys.contains(key.uppercased()),
+                  let val = custom[key] else { continue }
+            if (key == "WINEDLLOVERRIDES" || key == "MULLION_CONFIG"),
+               let existing = env[key], !existing.isEmpty, !val.isEmpty {
+                env[key] = "\(existing);\(val)"
+            } else {
+                env[key] = val
+            }
+        }
     }
 }

@@ -326,6 +326,9 @@ struct DirectMetalTests {
             ("RuntimeLauncher & GameLibraryEntry: FPS cap clamping, env/config & user override precedence", {
                 try testFPSCapEnvironmentAndClamping()
             }),
+            ("GameLibraryManager & RuntimeLauncher: customEnv parsing, isolation blocklist & WINEDLLOVERRIDES merge", {
+                try testCustomEnvParsingAndMerging()
+            }),
         ]
 
         var passed = 0
@@ -1703,5 +1706,23 @@ struct DirectMetalTests {
         try expectNil(withUser.env["DXVK_FRAME_RATE"], "explicit user DXVK_FRAME_RATE should not be overwritten")
         try expectEqual(withUser.env["DXMT_FRAME_RATE_CAP"], "60")
         try expectEqual(withUser.mullionConfig, ["dxgi.maxFrameRate=60"])
+    }
+
+    private static func testCustomEnvParsingAndMerging() throws {
+        let parsed = GameLibraryManager.parseCustomEnv(
+            #"DXVK_ASYNC=1 WINEDLLOVERRIDES="version=n,b" WINEPREFIX=/evil DYLD_INSERT_LIBRARIES=/bad.dylib 123BAD=x LC_ALL=ja_JP.UTF-8"#
+        )
+        try expectEqual(parsed["DXVK_ASYNC"], "1")
+        try expectEqual(parsed["WINEDLLOVERRIDES"], "version=n,b")
+        try expectEqual(parsed["LC_ALL"], "ja_JP.UTF-8")
+        try expectNil(parsed["WINEPREFIX"], "WINEPREFIX must be blocked in customEnv")
+        try expectNil(parsed["DYLD_INSERT_LIBRARIES"], "DYLD_INSERT_LIBRARIES must be blocked in customEnv")
+        try expectNil(parsed["123BAD"], "invalid POSIX env key must be ignored")
+
+        var env: [String: String] = ["WINEDLLOVERRIDES": "d3d12=n"]
+        RuntimeLauncher.applyCustomEnv(parsed, to: &env)
+        try expectEqual(env["WINEDLLOVERRIDES"], "d3d12=n;version=n,b", "WINEDLLOVERRIDES must append rather than clobber d3d12=n")
+        try expectEqual(env["DXVK_ASYNC"], "1")
+        try expectEqual(env["LC_ALL"], "ja_JP.UTF-8")
     }
 }

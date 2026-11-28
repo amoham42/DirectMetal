@@ -27,7 +27,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal library scan [dir ...]` | Auto-discover Steam, GOG Galaxy, Epic Games Store, Heroic, and local Windows executables, inspect PE headers (`PEInspector`), and seed matching community profiles. |
 | `DirectMetal library list [--json]` | List all saved games with API badges, architecture, store source, and prefix name. |
 | `DirectMetal library add <exe> [--title <name>]` | Inspect and register a standalone Windows `.exe`. |
-| `DirectMetal library set <id\|title> <key=val ...>` | Configure per-game overrides: `perf=balanced\|ultra`, `engine=auto\|arm64ec\|rosetta`, `dx9=auto\|dxvk\|wined3d`, `upscale=off\|quality\|balanced\|performance`, `fps-cap=0\|30\|40\|60\|90\|120\|144`, `retina=true\|false`, `hud=true\|false`, `sandbox=true\|false`, `prefix=<name>`, `args=<string>`. |
+| `DirectMetal library set <id\|title> <key=val ...>` | Configure per-game overrides: `perf=balanced\|ultra`, `engine=auto\|arm64ec\|rosetta`, `dx9=auto\|dxvk\|wined3d`, `upscale=off\|quality\|balanced\|performance`, `fps-cap=0\|30\|40\|60\|90\|120\|144`, `retina=true\|false`, `hud=true\|false`, `sandbox=true\|false`, `prefix=<name>`, `args=<string>`, `env=<KEY=VAL ...>`. |
 | `DirectMetal library artwork <id\|title> [--style banner\|icon]` | Inspect resolved storefront artwork or embedded PE `.exe` icon provenance and dimensions. |
 | `DirectMetal library play <id\|title> [--warm-server]` | Launch a library title using its saved settings (`--warm-server` uses the persistent `wineserver` pool for `70–100 ms` repeat launches). |
 | `DirectMetal library remove <id\|title>` | Hide and remove a title from the library without deleting game files. |

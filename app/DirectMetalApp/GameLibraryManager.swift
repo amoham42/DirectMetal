@@ -17,6 +17,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     var enableHUD: Bool
     var enableSandbox: Bool
     var extraArgs: String
+    var customEnv: String
     var architecture: String
     var detectedAPIs: [String]
     var detectedUpscalers: [String]
@@ -48,6 +49,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         enableHUD: Bool = true,
         enableSandbox: Bool = false,
         extraArgs: String = "",
+        customEnv: String = "",
         architecture: String = "unknown",
         detectedAPIs: [String] = [],
         detectedUpscalers: [String] = [],
@@ -75,6 +77,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         self.enableHUD = enableHUD
         self.enableSandbox = enableSandbox
         self.extraArgs = extraArgs
+        self.customEnv = customEnv
         self.architecture = architecture
         self.detectedAPIs = detectedAPIs
         self.detectedUpscalers = detectedUpscalers
@@ -91,7 +94,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, exePath, prefixName, engine, perfProfile, dx9Backend, upscaleMode, fpsCap
-        case retinaMode, enableHUD, enableSandbox, extraArgs, architecture, detectedAPIs
+        case retinaMode, enableHUD, enableSandbox, extraArgs, customEnv, architecture, detectedAPIs
         case detectedUpscalers, buildHash, playCount, totalPlaySeconds, lastPlayedUtc
         case steamAppID, profileID, profileNote
         case storeSource, storeGameID
@@ -118,6 +121,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         enableHUD = opt(Bool.self, .enableHUD) ?? true
         enableSandbox = opt(Bool.self, .enableSandbox) ?? false
         extraArgs = opt(String.self, .extraArgs) ?? ""
+        customEnv = opt(String.self, .customEnv) ?? ""
         architecture = opt(String.self, .architecture) ?? "unknown"
         detectedAPIs = opt([String].self, .detectedAPIs) ?? []
         detectedUpscalers = opt([String].self, .detectedUpscalers) ?? []
@@ -155,6 +159,9 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
 
     /// Saved extra launch arguments, split shell-style.
     var extraArgList: [String] { GameLibraryManager.splitArguments(extraArgs) }
+
+    /// Saved custom environment variables (`KEY=VAL` tokens, sanitized against reserved isolation keys).
+    var customEnvDictionary: [String: String] { GameLibraryManager.parseCustomEnv(customEnv) }
 
     /// Upscale mode suitable for `RuntimeLauncher.runExecutable` (nil == off).
     var launchUpscaleMode: String? {
@@ -936,5 +943,37 @@ final class GameLibraryManager {
         }
         if hasToken { args.append(cur) }
         return args
+    }
+
+    /// Reserved host-isolation variables that per-game custom env strings are not allowed to override.
+    static let blockedCustomEnvKeys: Set<String> = [
+        "WINEPREFIX",
+        "DYLD_INSERT_LIBRARIES",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FRAMEWORK_PATH",
+        "LD_PRELOAD",
+    ]
+
+    /// Parses shell-style `KEY=VALUE` tokens into a sanitized dictionary, skipping invalid identifiers
+    /// and blocked host-isolation variables.
+    static func parseCustomEnv(_ raw: String) -> [String: String] {
+        var result: [String: String] = [:]
+        for token in splitArguments(raw) {
+            guard let eq = token.firstIndex(of: "=") else { continue }
+            let key = String(token[..<eq]).trimmingCharacters(in: .whitespaces)
+            let val = String(token[token.index(after: eq)...])
+            guard isValidEnvKey(key), !blockedCustomEnvKeys.contains(key.uppercased()) else { continue }
+            result[key] = val
+        }
+        return result
+    }
+
+    static func isValidEnvKey(_ key: String) -> Bool {
+        guard let first = key.unicodeScalars.first else { return false }
+        let isStart = (first >= "A" && first <= "Z") || (first >= "a" && first <= "z") || first == "_"
+        guard isStart else { return false }
+        return key.unicodeScalars.allSatisfy { s in
+            (s >= "A" && s <= "Z") || (s >= "a" && s <= "z") || (s >= "0" && s <= "9") || s == "_"
+        }
     }
 }
