@@ -60,6 +60,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var runtimeUpdateDone: String?
     // Controller remapping sheet
     @Published var showControllerSheet: Bool = false
+    // System health & shader cache maintenance sheet
+    @Published var showSystemHealthSheet: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
     @Published var libraryFilter: LibraryFilter = .all
     @Published var librarySort: LibrarySort =
@@ -138,7 +140,7 @@ final class DirectMetalViewModel: ObservableObject {
     var isRunning: Bool { runningGameID != nil }
 
     var isPresentingModal: Bool {
-        showImportSheet || showUpdatesSheet || showControllerSheet || showRemoveConfirm
+        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -159,6 +161,12 @@ final class DirectMetalViewModel: ObservableObject {
     func openControllers() {
         guard !isPresentingModal else { return }
         showControllerSheet = true
+    }
+
+    /// ⌘D: open the System Health & Shader Cache sheet.
+    func openSystemHealth() {
+        guard !isPresentingModal || showSystemHealthSheet else { return }
+        showSystemHealthSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -205,6 +213,10 @@ final class DirectMetalViewModel: ObservableObject {
 
     func refreshPrefixes() {
         prefixes = PrefixManager().listPrefixes()
+        refreshShaderCache()
+    }
+
+    func refreshShaderCache() {
         cacheSummary = RuntimeLauncher.queryShaderCache()
     }
 
@@ -438,6 +450,15 @@ struct DirectMetalContentView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
+                        vm.showSystemHealthSheet = true
+                    } label: {
+                        Label("Health", systemImage: "stethoscope")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help("System health diagnostics and shader cache maintenance (⌘D)")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
                         vm.showControllerSheet = true
                     } label: {
                         Label("Controllers", systemImage: "gamecontroller")
@@ -480,6 +501,9 @@ struct DirectMetalContentView: View {
         }
         .sheet(isPresented: $vm.showControllerSheet) {
             ControllerMappingSheet(entry: vm.selectedEntry)
+        }
+        .sheet(isPresented: $vm.showSystemHealthSheet) {
+            SystemHealthSheet(vm: vm)
         }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
@@ -1067,6 +1091,9 @@ struct DirectMetalCommands: Commands {
             Button("Check for Updates…") { vm?.openUpdates() }
                 .keyboardShortcut("u", modifiers: .command)
                 .disabled(vm == nil || (modal && vm?.showUpdatesSheet != true))
+            Button("System Health & Cache…") { vm?.openSystemHealth() }
+                .keyboardShortcut("d", modifiers: .command)
+                .disabled(vm == nil || (modal && vm?.showSystemHealthSheet != true))
         }
         CommandGroup(replacing: .appSettings) {
             Button("Controllers…") { vm?.openControllers() }
