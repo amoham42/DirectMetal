@@ -60,7 +60,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|play|explain|shortcut|export|import)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|play|explain|shortcut|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -306,6 +306,49 @@ func runLibraryCLI(args: [String]) -> Int32 {
             fputs("library play failed: \(error)\n", stderr)
             return 1
         }
+
+    case "diff":
+        let asJSON = rest.contains("--json")
+        let key = rest.filter { $0 != "--json" }.joined(separator: " ")
+        guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library diff failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        let profile = mgr.profileRegistry.profile(id: entry.profileID)
+            ?? mgr.profileRegistry.match(title: entry.title, exePath: entry.exePath,
+                                         steamAppID: entry.steamAppID, storeSource: entry.storeSource,
+                                         storeGameID: entry.storeGameID)
+        let report = ConfigDiffEngine.diff(entry: entry, profile: profile)
+        if asJSON {
+            printLibraryJSON(report)
+        } else {
+            print(ConfigDiffEngine.formatText(report))
+        }
+        return 0
+
+    case "reset-settings":
+        let asJSON = rest.contains("--json")
+        let key = rest.filter { $0 != "--json" }.joined(separator: " ")
+        var entries = mgr.load()
+        guard !key.isEmpty,
+              let target = GameLibraryManager.find(key, in: entries),
+              let idx = entries.firstIndex(where: { $0.id == target.id }) else {
+            fputs("library reset-settings failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        let profile = mgr.profileRegistry.profile(id: entries[idx].profileID)
+            ?? mgr.profileRegistry.match(title: entries[idx].title, exePath: entries[idx].exePath,
+                                         steamAppID: entries[idx].steamAppID, storeSource: entries[idx].storeSource,
+                                         storeGameID: entries[idx].storeGameID)
+        ConfigDiffEngine.resetSettings(of: &entries[idx], using: profile)
+        mgr.save(entries)
+        if asJSON {
+            printLibraryJSON(entries[idx])
+        } else {
+            let baseline = profile.map { "Community Preset: \($0.title)" } ?? "DirectMetal Zero-Config Defaults"
+            print("Reset settings for \"\(entries[idx].title)\" to \(baseline).")
+        }
+        return 0
 
     case "explain", "plan":
         let asJSON = rest.contains("--json")

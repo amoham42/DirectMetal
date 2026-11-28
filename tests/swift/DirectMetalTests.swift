@@ -368,6 +368,9 @@ struct DirectMetalTests {
             ("MetalHUDConfigManager: presets, clamping/NaN guards, MTL_HUD_* env & persistence", {
                 try testMetalHUDConfigPersistenceAndEnv(tempRoot: tempRoot)
             }),
+            ("ConfigDiffEngine: baseline diffing, customization counts & stats-preserving reset", {
+                try testConfigDiffAndBaselineReset()
+            }),
         ]
 
         var passed = 0
@@ -2348,5 +2351,43 @@ struct DirectMetalTests {
 
         try MetalHUDConfigManager.reset()
         try expectEqual(MetalHUDConfigManager.load(), MetalHUDConfiguration.defaultConfig)
+    }
+
+    private static func testConfigDiffAndBaselineReset() throws {
+        let registry = GameProfileRegistry.load()
+        let hadesProfile = try expectNotNil(registry.profile(id: "hades"), "bundled Hades profile should exist")
+
+        var entry = GameLibraryEntry(
+            title: "Hades",
+            exePath: "/Games/Hades/x64/Hades.exe",
+            prefixName: "Hades",
+            playCount: 12,
+            totalPlaySeconds: 7200,
+            lastPlayedUtc: "2026-11-27T12:00:00Z",
+            isFavorite: true
+        )
+        entry.apply(gameProfile: hadesProfile)
+
+        // Freshly seeded entry has 0 customizations vs its profile
+        let cleanDiff = ConfigDiffEngine.diff(entry: entry, profile: hadesProfile)
+        try expectEqual(cleanDiff.modifiedCount, 0)
+        try expectEqual(cleanDiff.hasCustomizations, false)
+
+        // Customize 3 settings
+        entry.fpsCap = 120
+        entry.upscaleMode = "quality"
+        entry.extraArgs = "-fullscreen"
+        let dirtyDiff = ConfigDiffEngine.diff(entry: entry, profile: hadesProfile)
+        try expectEqual(dirtyDiff.modifiedCount, 3)
+        try expectEqual(dirtyDiff.hasCustomizations, true)
+        try expect(ConfigDiffEngine.formatText(dirtyDiff).contains("120"), "formatted diff should show customized FPS cap")
+
+        // Reset restores baseline while keeping identity, playtime & favorite status
+        ConfigDiffEngine.resetSettings(of: &entry, using: hadesProfile)
+        try expectEqual(ConfigDiffEngine.diff(entry: entry, profile: hadesProfile).modifiedCount, 0)
+        try expectEqual(entry.playCount, 12, "reset must preserve playCount")
+        try expectEqual(entry.totalPlaySeconds, 7200, "reset must preserve playtime")
+        try expectEqual(entry.isFavorite, true, "reset must preserve isFavorite")
+        try expectEqual(entry.prefixName, "Hades", "reset must preserve prefixName")
     }
 }

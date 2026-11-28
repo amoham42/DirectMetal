@@ -31,6 +31,8 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal library list [--json]` | List all saved games with API badges, architecture, store source, and prefix name. |
 | `DirectMetal library add <exe> [--title <name>]` | Inspect and register a standalone Windows `.exe`. |
 | `DirectMetal library set <id\|title> <key=val ...>` | Configure per-game overrides: `perf=balanced\|ultra`, `engine=auto\|arm64ec\|rosetta`, `dx9=auto\|dxvk\|wined3d`, `upscale=off\|quality\|balanced\|performance`, `fps-cap=0\|30\|40\|60\|90\|120\|144`, `retina=true\|false`, `hud=true\|false`, `sandbox=true\|false`, `favorite=true\|false`, `prefix=<name>`, `args=<string>`, `env=<KEY=VAL ...>`. |
+| `DirectMetal library diff <id\|title> [--json]` | Compare a game's current settings against its matched community profile (or DirectMetal defaults). |
+| `DirectMetal library reset-settings <id\|title> [--json]` | Restore a game's launch settings back to its community preset or defaults while keeping playtime, favorites, and prefix intact. |
 | `DirectMetal library artwork <id\|title> [--style banner\|icon]` | Inspect resolved storefront artwork or embedded PE `.exe` icon provenance and dimensions. |
 | `DirectMetal library play <id\|title> [--warm-server]` | Launch a library title using its saved settings (`--warm-server` uses the persistent `wineserver` pool for `70–100 ms` repeat launches). |
 | `DirectMetal library explain <id\|title> [--json\|--markdown]` | Dry-run inspect a game's resolved engine, graphics translator, MetalFX upscaling, FPS cap env, prefix, shader cache, sandbox, and sanitized custom env without launching it. |

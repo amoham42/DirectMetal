@@ -475,7 +475,29 @@ struct GameDetailView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(6)
         } label: {
-            Label("Per-Game Settings", systemImage: "slider.horizontal.3")
+            let matchedProfile = vm.profile(for: e)
+            let diff = ConfigDiffEngine.diff(entry: e, profile: matchedProfile)
+            HStack(spacing: 8) {
+                Label("Per-Game Settings", systemImage: "slider.horizontal.3")
+                if diff.hasCustomizations {
+                    Text("\(diff.modifiedCount) customized")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 1.5)
+                        .foregroundStyle(.blue)
+                        .background(Color.blue.opacity(0.14), in: Capsule())
+                }
+                Spacer()
+                if diff.hasCustomizations {
+                    Button(matchedProfile != nil ? "Reset to Preset" : "Reset to Defaults") {
+                        vm.update(e.id) { ConfigDiffEngine.resetSettings(of: &$0, using: matchedProfile) }
+                        vm.statusMessage = "Reset \(e.title) settings to \(diff.baselineName)."
+                    }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Restore per-game settings to \(diff.baselineName) (playtime, favorites, and prefix stay untouched)")
+                }
+            }
         }
     }
 
