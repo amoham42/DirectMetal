@@ -499,10 +499,17 @@ enum DirectMetalSandbox {
   (subpath "${USER_HOME}/.gnupg")
   (subpath "${USER_HOME}/.aws")
   (subpath "${USER_HOME}/.kube")
+  (subpath "${USER_HOME}/.config/gcloud")
+  (literal "${USER_HOME}/.netrc")
+  (literal "${USER_HOME}/.npmrc")
+  (literal "${USER_HOME}/.pypirc")
   (subpath "${USER_HOME}/Library/Keychains")
   (subpath "${USER_HOME}/Library/Cookies")
   (subpath "${USER_HOME}/Library/Safari")
   (subpath "${USER_HOME}/Library/Application Support/Google/Chrome")
+  (subpath "${USER_HOME}/Library/Application Support/BraveSoftware")
+  (subpath "${USER_HOME}/Library/Application Support/Microsoft Edge")
+  (subpath "${USER_HOME}/Library/Application Support/Arc")
   (subpath "${USER_HOME}/Library/Application Support/Firefox"))
 (deny file-read* file-write*
   (subpath "${PREFIXES_ROOT}"))
@@ -542,6 +549,8 @@ ${NETWORK_RULES}
     private static func escapeSBPL(_ path: String) -> String {
         path.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\n", with: "")
+            .replacingOccurrences(of: "\r", with: "")
     }
 
     static func resolveTemplateString() -> String {
