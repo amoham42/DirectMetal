@@ -163,11 +163,13 @@ for sub in "${SUBSYSTEMS[@]}"; do
   echo "  [OK] Built ${name}"
 done
 
+cmake -S "${REPO_ROOT}/graphics/dm_vk_compat" -B "${REPO_ROOT}/build/dm_vk_compat_cmake" >/dev/null
+cmake --build "${REPO_ROOT}/build/dm_vk_compat_cmake" -j >/dev/null
 mkdir -p "${REPO_ROOT}/build/dm_vk_compat"
 xcrun clang -O3 -Wall -Wextra -Werror -arch arm64 -arch x86_64 -dynamiclib -fvisibility=hidden \
   "${REPO_ROOT}/graphics/dm_vk_compat/dm_vk_compat_layer.c" \
   -o "${REPO_ROOT}/build/dm_vk_compat/libdm_vk_compat_layer.dylib"
-echo "  [OK] Built dm_vk_compat_layer (-Wall -Wextra -Werror, universal arm64+x86_64)"
+echo "  [OK] Built dm_vk_compat_layer (-Wall -Wextra -Werror, universal arm64+x86_64) & dm_vk_compat_test"
 
 MINGW_CLANG=""
 if [[ -x "${REPO_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang" ]]; then
@@ -187,6 +189,7 @@ if [[ -n "${MINGW_CLANG}" && -f "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d
 fi
 
 echo "=== [5/7] CMake Host Subsystem Tests ==="
+"${REPO_ROOT}/build/dm_vk_compat_cmake/dm_vk_compat_test" "${REPO_ROOT}/build/dm_vk_compat/libdm_vk_compat_layer.dylib"
 "${REPO_ROOT}/build/dm_sync/dm_sync_test"
 "${REPO_ROOT}/build/dm_prefix/dm_prefix_test"
 mkdir -p "${HOME}/.ssh"
@@ -264,6 +267,7 @@ echo "  [OK] DirectMetal info emitted valid JSON"
 "${DM_BIN}" history stats --json | python3 -m json.tool >/dev/null
 "${DM_BIN}" hud show --json | python3 -m json.tool >/dev/null
 "${DM_BIN}" cache verify --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" storage --json | python3 -m json.tool >/dev/null
 "${DM_BIN}" library sync-profiles --dry-run --json | python3 -m json.tool >/dev/null
 "${DM_BIN}" prefix prune --dry-run --json | python3 -m json.tool >/dev/null
 echo "  [OK] DirectMetal CLI completions, profiles, history, hud, cache verify, sync-profiles & prefix prune smoke passed"
