@@ -57,6 +57,13 @@ jobs:
           print(f"Validated {len(json_files)} JSON file(s).")
           PY
 
+          if [[ -f scripts/validate_profiles.py ]]; then
+            echo "=== Game profile schema validation (scripts/validate_profiles.py) ==="
+            python3 scripts/validate_profiles.py
+          else
+            echo "[SKIP] scripts/validate_profiles.py not present; skipping profile schema validation."
+          fi
+
       - name: Run Python visual-diff harness unit tests
         run: |
           VENV_DIR="${RUNNER_TEMP}/directmetal-ci-venv"
@@ -83,6 +90,12 @@ jobs:
             cmake --build "build/${name}" -j
           done
 
+          echo "=== Building dm_vk_compat_layer (-Wall -Wextra -Werror) ==="
+          mkdir -p build/dm_vk_compat
+          xcrun clang -O3 -Wall -Wextra -Werror -arch arm64 -arch x86_64 -dynamiclib -fvisibility=hidden \
+            graphics/dm_vk_compat/dm_vk_compat_layer.c \
+            -o build/dm_vk_compat/libdm_vk_compat_layer.dylib
+
           echo "=== Running dm_sync_test ==="
           ./build/dm_sync/dm_sync_test
 
@@ -108,6 +121,47 @@ jobs:
             ./build/dm_attestation/dm_attestation_test
           else
             echo "[SKIP] Headless CI VM image runs with SIP/SSV disabled; dm_attestation compiled cleanly (-Werror)."
+          fi
+
+      - name: Run Swift unit tests (DirectMetalTests)
+        run: |
+          if [[ -f tests/swift/DirectMetalTests.swift ]]; then
+            echo "=== Compiling & running tests/swift/DirectMetalTests.swift ==="
+            mkdir -p build/swift_tests
+            SWIFT_LIB_SOURCES=()
+            for sf in app/DirectMetalApp/*.swift; do
+              [[ "$(basename "${sf}")" == "main.swift" ]] && continue
+              SWIFT_LIB_SOURCES+=("${sf}")
+            done
+            SWIFT_EXTRA_TESTS=()
+            for tf in tests/swift/*.swift; do
+              [[ "$(basename "${tf}")" == "DirectMetalTests.swift" ]] && continue
+              SWIFT_EXTRA_TESTS+=("${tf}")
+            done
+            SWIFT_TEST_ENTRY="tests/swift/DirectMetalTests.swift"
+            if ! grep -Eq '^[[:space:]]*@main\b' "${SWIFT_TEST_ENTRY}"; then
+              cp "${SWIFT_TEST_ENTRY}" build/swift_tests/main.swift
+              SWIFT_TEST_ENTRY="build/swift_tests/main.swift"
+            fi
+            xcrun swiftc \
+              -target arm64-apple-macos15.0 \
+              -framework SwiftUI \
+              -framework AppKit \
+              -framework CoreGraphics \
+              -framework Metal \
+              -framework MetalFX \
+              -framework GameController \
+              -framework CryptoKit \
+              -framework Security \
+              -framework DeviceCheck \
+              -framework UniformTypeIdentifiers \
+              "${SWIFT_LIB_SOURCES[@]}" \
+              ${SWIFT_EXTRA_TESTS[@]+"${SWIFT_EXTRA_TESTS[@]}"} \
+              "${SWIFT_TEST_ENTRY}" \
+              -o build/swift_tests/DirectMetalTests
+            ./build/swift_tests/DirectMetalTests
+          else
+            echo "[SKIP] tests/swift/DirectMetalTests.swift not present; skipping Swift unit tests."
           fi
 
       - name: Build DirectMetal-Lite.app & smoke test CLI

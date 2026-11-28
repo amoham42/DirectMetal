@@ -3,12 +3,13 @@ set -euo pipefail
 
 # DirectMetal Local CI Verification Gate
 # Mirrors .github/workflows/ci.yml on an Apple Silicon development machine:
-#   1. Shell syntax (bash -n scripts/*.sh)
-#   2. Python syntax (py_compile scripts/*.py tools/*.py)
-#   3. JSON & GitHub Actions workflow YAML validation
-#   4. Python PSNR/SSIM diff-harness unit tests (tools/test_diff_harness.py)
-#   5. CMake C/Obj-C++ native subsystem builds + host tests
-#   6. DirectMetal-Lite.app build, strict codesign verification, and CLI smoke checks
+#   1. Shell syntax (bash -n scripts/*.sh) & Python syntax (py_compile)
+#   2. JSON, game profile schema (scripts/validate_profiles.py), & workflow YAML validation
+#   3. Python PSNR/SSIM diff-harness unit tests (tools/test_diff_harness.py)
+#   4. CMake C/Obj-C++ native subsystem builds + strict Vulkan/D3D12 layer -Werror checks
+#   5. CMake host subsystem tests
+#   6. Swift unit tests (tests/swift/DirectMetalTests.swift when present)
+#   7. DirectMetal-Lite.app build, strict codesign verification, and CLI smoke checks
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -26,9 +27,10 @@ while [[ $# -gt 0 ]]; do
 Usage: $(basename "$0") [--clean]
 
 Runs all DirectMetal local CI checks end-to-end:
-  • Shell, Python, JSON, and workflow YAML validation
+  • Shell, Python, JSON, profile schema, and workflow YAML validation
   • Python visual-diff harness unit tests (tools/test_diff_harness.py)
-  • Native C/Obj-C++ CMake subsystem builds & tests
+  • Native C/Obj-C++ CMake subsystem builds, strict -Werror layer checks, & host tests
+  • Swift unit tests (tests/swift/DirectMetalTests.swift when present)
   • DirectMetal-Lite.app build, codesign verification, and CLI smoke tests
 
 Options:
@@ -58,13 +60,13 @@ trap cleanup EXIT
 
 T0="$(python3 -c 'import time; print(f"{time.monotonic():.3f}")')"
 
-echo "=== [1/6] Shell & Python Syntax Checks ==="
+echo "=== [1/7] Shell & Python Syntax Checks ==="
 bash -n scripts/*.sh
 echo "  [OK] bash -n passed on $(ls -1 scripts/*.sh | wc -l | tr -d ' ') shell scripts."
 python3 -m py_compile scripts/*.py tools/*.py
 echo "  [OK] py_compile passed on Python scripts and tools."
 
-echo "=== [2/6] JSON & Workflow YAML Validation ==="
+echo "=== [2/7] JSON, Profile Schema & Workflow YAML Validation ==="
 python3 - <<'PY'
 import json
 import pathlib
@@ -80,6 +82,13 @@ for jf in json_files:
         json.load(fh)
 print(f"  [OK] Validated {len(json_files)} JSON file(s).")
 PY
+
+if [[ -f "${REPO_ROOT}/scripts/validate_profiles.py" ]]; then
+  python3 "${REPO_ROOT}/scripts/validate_profiles.py"
+  echo "  [OK] Validated game profiles schema via scripts/validate_profiles.py."
+else
+  echo "  [SKIP] scripts/validate_profiles.py not present; skipping profile schema validator."
+fi
 
 if [[ -d ".github/workflows" ]]; then
   if python3 -c "import yaml" >/dev/null 2>&1; then
@@ -106,21 +115,21 @@ PY
   fi
 fi
 
-echo "=== [3/6] Python Visual-Diff Harness Unit Tests ==="
+COMMON_GIT_DIR="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir 2>/dev/null || true)"
+COMMON_ROOT=""
+if [[ -n "${COMMON_GIT_DIR}" ]]; then
+  [[ "${COMMON_GIT_DIR}" != /* ]] && COMMON_GIT_DIR="${REPO_ROOT}/${COMMON_GIT_DIR}"
+  COMMON_ROOT="$(cd "${COMMON_GIT_DIR}/.." 2>/dev/null && pwd || true)"
+fi
+
+echo "=== [3/7] Python Visual-Diff Harness Unit Tests ==="
 PY_RUNNER=""
 if [[ -x "${REPO_ROOT}/.venv/bin/python" ]] && "${REPO_ROOT}/.venv/bin/python" -c "import PIL, numpy" >/dev/null 2>&1; then
   PY_RUNNER="${REPO_ROOT}/.venv/bin/python"
 elif python3 -c "import PIL, numpy" >/dev/null 2>&1; then
   PY_RUNNER="python3"
-else
-  COMMON_GIT_DIR="$(git -C "${REPO_ROOT}" rev-parse --git-common-dir 2>/dev/null || true)"
-  if [[ -n "${COMMON_GIT_DIR}" ]]; then
-    [[ "${COMMON_GIT_DIR}" != /* ]] && COMMON_GIT_DIR="${REPO_ROOT}/${COMMON_GIT_DIR}"
-    COMMON_ROOT="$(cd "${COMMON_GIT_DIR}/.." 2>/dev/null && pwd || true)"
-    if [[ -n "${COMMON_ROOT}" && -x "${COMMON_ROOT}/.venv/bin/python" ]] && "${COMMON_ROOT}/.venv/bin/python" -c "import PIL, numpy" >/dev/null 2>&1; then
-      PY_RUNNER="${COMMON_ROOT}/.venv/bin/python"
-    fi
-  fi
+elif [[ -n "${COMMON_ROOT}" && -x "${COMMON_ROOT}/.venv/bin/python" ]] && "${COMMON_ROOT}/.venv/bin/python" -c "import PIL, numpy" >/dev/null 2>&1; then
+  PY_RUNNER="${COMMON_ROOT}/.venv/bin/python"
 fi
 
 if [[ -z "${PY_RUNNER}" ]]; then
@@ -132,7 +141,7 @@ if [[ -z "${PY_RUNNER}" ]]; then
 fi
 PYTHONPATH="${REPO_ROOT}/tools" "${PY_RUNNER}" "${REPO_ROOT}/tools/test_diff_harness.py"
 
-echo "=== [4/6] CMake Native C/Obj-C++ Subsystem Build ==="
+echo "=== [4/7] CMake Native C/Obj-C++ Subsystem Build & Strict Layer Warning Gate ==="
 SUBSYSTEMS=(
   runtime/dm_sync
   runtime/dm_prefix
@@ -150,7 +159,30 @@ for sub in "${SUBSYSTEMS[@]}"; do
   echo "  [OK] Built ${name}"
 done
 
-echo "=== [5/6] CMake Host Subsystem Tests ==="
+mkdir -p "${REPO_ROOT}/build/dm_vk_compat"
+xcrun clang -O3 -Wall -Wextra -Werror -arch arm64 -arch x86_64 -dynamiclib -fvisibility=hidden \
+  "${REPO_ROOT}/graphics/dm_vk_compat/dm_vk_compat_layer.c" \
+  -o "${REPO_ROOT}/build/dm_vk_compat/libdm_vk_compat_layer.dylib"
+echo "  [OK] Built dm_vk_compat_layer (-Wall -Wextra -Werror, universal arm64+x86_64)"
+
+MINGW_CLANG=""
+if [[ -x "${REPO_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang" ]]; then
+  MINGW_CLANG="${REPO_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang"
+elif [[ -n "${COMMON_ROOT}" && -x "${COMMON_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang" ]]; then
+  MINGW_CLANG="${COMMON_ROOT}/.directmetal_cache/toolchains/llvm-mingw/bin/x86_64-w64-mingw32-clang"
+elif command -v x86_64-w64-mingw32-clang >/dev/null 2>&1; then
+  MINGW_CLANG="$(command -v x86_64-w64-mingw32-clang)"
+fi
+if [[ -n "${MINGW_CLANG}" && -f "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d12_guard.c" ]]; then
+  mkdir -p "${REPO_ROOT}/build/dm_d3d12_placed_guard"
+  "${MINGW_CLANG}" -O3 -Wall -Wextra -Werror -shared \
+    "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d12_guard.c" \
+    "${REPO_ROOT}/graphics/dm_d3d12_placed_guard/d3d12_guard.def" \
+    -o "${REPO_ROOT}/build/dm_d3d12_placed_guard/d3d12_x64.dll"
+  echo "  [OK] Built d3d12_guard (-Wall -Wextra -Werror, x86_64 PE DLL)"
+fi
+
+echo "=== [5/7] CMake Host Subsystem Tests ==="
 "${REPO_ROOT}/build/dm_sync/dm_sync_test"
 "${REPO_ROOT}/build/dm_prefix/dm_prefix_test"
 mkdir -p "${HOME}/.ssh"
@@ -169,7 +201,47 @@ else
   echo "  [SKIP] SIP/SSV disabled in this environment; skipping live SIP assertion in dm_attestation_test."
 fi
 
-echo "=== [6/6] DirectMetal-Lite.app Packaging & Smoke Verification ==="
+echo "=== [6/7] Swift Unit Tests ==="
+if [[ -f "${REPO_ROOT}/tests/swift/DirectMetalTests.swift" ]]; then
+  mkdir -p "${REPO_ROOT}/build/swift_tests"
+  SWIFT_LIB_SOURCES=()
+  for sf in "${REPO_ROOT}/app/DirectMetalApp"/*.swift; do
+    [[ "$(basename "${sf}")" == "main.swift" ]] && continue
+    SWIFT_LIB_SOURCES+=("${sf}")
+  done
+  SWIFT_EXTRA_TESTS=()
+  for tf in "${REPO_ROOT}/tests/swift"/*.swift; do
+    [[ "$(basename "${tf}")" == "DirectMetalTests.swift" ]] && continue
+    SWIFT_EXTRA_TESTS+=("${tf}")
+  done
+  SWIFT_TEST_ENTRY="${REPO_ROOT}/tests/swift/DirectMetalTests.swift"
+  if ! grep -Eq '^[[:space:]]*@main\b' "${SWIFT_TEST_ENTRY}"; then
+    cp "${SWIFT_TEST_ENTRY}" "${REPO_ROOT}/build/swift_tests/main.swift"
+    SWIFT_TEST_ENTRY="${REPO_ROOT}/build/swift_tests/main.swift"
+  fi
+  xcrun swiftc \
+    -target arm64-apple-macos15.0 \
+    -framework SwiftUI \
+    -framework AppKit \
+    -framework CoreGraphics \
+    -framework Metal \
+    -framework MetalFX \
+    -framework GameController \
+    -framework CryptoKit \
+    -framework Security \
+    -framework DeviceCheck \
+    -framework UniformTypeIdentifiers \
+    "${SWIFT_LIB_SOURCES[@]}" \
+    ${SWIFT_EXTRA_TESTS[@]+"${SWIFT_EXTRA_TESTS[@]}"} \
+    "${SWIFT_TEST_ENTRY}" \
+    -o "${REPO_ROOT}/build/swift_tests/DirectMetalTests"
+  "${REPO_ROOT}/build/swift_tests/DirectMetalTests"
+  echo "  [OK] DirectMetalTests Swift unit test suite passed."
+else
+  echo "  [SKIP] tests/swift/DirectMetalTests.swift not present; skipping Swift unit test stage."
+fi
+
+echo "=== [7/7] DirectMetal-Lite.app Packaging & Smoke Verification ==="
 "${REPO_ROOT}/scripts/package_app.sh" --lite
 APP_BUNDLE="${REPO_ROOT}/dist/DirectMetal-Lite.app"
 DM_BIN="${APP_BUNDLE}/Contents/MacOS/DirectMetal"

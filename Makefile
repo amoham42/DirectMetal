@@ -14,20 +14,26 @@ SUBSYSTEMS := \
 COMMON_ROOT := $(shell c="$$(git rev-parse --git-common-dir 2>/dev/null)"; if [ -n "$$c" ]; then cd "$$c/.." 2>/dev/null && pwd; fi)
 PYTHON := $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; elif [ -n "$(COMMON_ROOT)" ] && [ -x "$(COMMON_ROOT)/.venv/bin/python" ]; then echo "$(COMMON_ROOT)/.venv/bin/python"; else echo python3; fi)
 
-.PHONY: help lint test ci build-subsystems app app-lite dmg dmg-lite dmg-ultra conformance phase4 clean
+.PHONY: help lint validate-profiles test test-swift ci build-subsystems app app-lite dmg dmg-lite dmg-ultra conformance phase4 clean
 
 help: ## Show available DirectMetal build, test, and packaging targets
 	@printf "DirectMetal — Apple Silicon DirectX Runtime Build System\n\n"
 	@printf "Usage:\n  make <target>\n\nTargets:\n"
-	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
+	@awk 'BEGIN {FS = ":.*##"} /^[a-zA-Z0-9_-]+:.*##/ {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-lint: ## Validate shell scripts, Python tools, JSON configs, and workflow YAMLs
+lint: ## Validate shell scripts, Python tools, JSON configs, profiles, and workflow YAMLs
 	@echo "[lint] Checking shell script syntax (bash -n)..."
 	@bash -n scripts/*.sh
 	@echo "[lint] Checking Python syntax (py_compile)..."
 	@python3 -m py_compile scripts/*.py tools/*.py
 	@echo "[lint] Checking JSON files in runtime/, graphics/, and tests/reference/..."
 	@python3 -c 'import json, pathlib, sys; roots = [pathlib.Path(p) for p in ("runtime", "graphics", "tests/reference") if pathlib.Path(p).exists()]; files = sorted(f for r in roots for f in r.rglob("*.json")); [json.loads(f.read_text(encoding="utf-8")) for f in files]; print(f"  Validated {len(files)} JSON file(s).")'
+	@if [ -f scripts/validate_profiles.py ]; then \
+		echo "[lint] Validating game profiles schema (scripts/validate_profiles.py)..."; \
+		python3 scripts/validate_profiles.py; \
+	fi
+	@echo "[lint] Checking Vulkan compat layer strict C warnings (-Wall -Wextra -Werror)..."
+	@xcrun clang -fsyntax-only -O3 -Wall -Wextra -Werror -arch arm64 -arch x86_64 -fvisibility=hidden graphics/dm_vk_compat/dm_vk_compat_layer.c
 	@if [ -d .github/workflows ]; then \
 		echo "[lint] Checking GitHub Actions workflow YAML files..."; \
 		if python3 -c "import yaml" >/dev/null 2>&1; then \
@@ -37,6 +43,15 @@ lint: ## Validate shell scripts, Python tools, JSON configs, and workflow YAMLs
 		fi; \
 	fi
 	@echo "[lint] All static checks passed."
+
+validate-profiles: ## Validate runtime/profiles/game_profiles.json schema
+	@if [ -f scripts/validate_profiles.py ]; then \
+		echo "[profiles] Running scripts/validate_profiles.py..."; \
+		python3 scripts/validate_profiles.py; \
+	else \
+		echo "[profiles] scripts/validate_profiles.py not present; verifying game_profiles.json syntax..."; \
+		python3 -c 'import json, pathlib; p = pathlib.Path("runtime/profiles/game_profiles.json"); data = json.loads(p.read_text(encoding="utf-8")); assert isinstance(data, (dict, list)); print(f"  [OK] {p} is valid JSON.")'; \
+	fi
 
 build-subsystems: ## Build all native C/Obj-C++ CMake subsystems under build/
 	@set -e; \
@@ -48,7 +63,62 @@ build-subsystems: ## Build all native C/Obj-C++ CMake subsystems under build/
 	done
 	@echo "[cmake] Built all $$(printf '%s\n' $(SUBSYSTEMS) | wc -w | tr -d ' ') CMake subsystems."
 
-test: build-subsystems ## Run Python diff-harness unit tests and C/Obj-C++ subsystem tests
+test-swift: ## Compile and run Swift unit tests (tests/swift/DirectMetalTests.swift)
+	@set -euo pipefail; \
+	if [ -f tests/swift/DirectMetalTests.swift ]; then \
+		echo "[test-swift] Compiling & running tests/swift/DirectMetalTests.swift..."; \
+		mkdir -p build/swift_tests; \
+		lib_srcs=(); \
+		for sf in app/DirectMetalApp/*.swift; do \
+			[ "$$(basename "$$sf")" = "main.swift" ] && continue; \
+			lib_srcs+=("$$sf"); \
+		done; \
+		extra_tests=(); \
+		for tf in tests/swift/*.swift; do \
+			[ "$$(basename "$$tf")" = "DirectMetalTests.swift" ] && continue; \
+			extra_tests+=("$$tf"); \
+		done; \
+		entry="tests/swift/DirectMetalTests.swift"; \
+		if ! grep -Eq '^[[:space:]]*@main\b' "$$entry"; then \
+			cp "$$entry" build/swift_tests/main.swift; \
+			entry="build/swift_tests/main.swift"; \
+		fi; \
+		xcrun swiftc \
+			-target arm64-apple-macos15.0 \
+			-framework SwiftUI \
+			-framework AppKit \
+			-framework CoreGraphics \
+			-framework Metal \
+			-framework MetalFX \
+			-framework GameController \
+			-framework CryptoKit \
+			-framework Security \
+			-framework DeviceCheck \
+			-framework UniformTypeIdentifiers \
+			"$${lib_srcs[@]}" \
+			$${extra_tests[@]+"$${extra_tests[@]}"} \
+			"$$entry" \
+			-o build/swift_tests/DirectMetalTests; \
+		./build/swift_tests/DirectMetalTests; \
+	else \
+		echo "[test-swift] tests/swift/DirectMetalTests.swift not present; typechecking DirectMetalApp Swift sources..."; \
+		xcrun swiftc -typecheck \
+			-target arm64-apple-macos15.0 \
+			-framework SwiftUI \
+			-framework AppKit \
+			-framework CoreGraphics \
+			-framework Metal \
+			-framework MetalFX \
+			-framework GameController \
+			-framework CryptoKit \
+			-framework Security \
+			-framework DeviceCheck \
+			-framework UniformTypeIdentifiers \
+			app/DirectMetalApp/*.swift; \
+		echo "[test-swift] DirectMetalApp Swift typecheck passed."; \
+	fi
+
+test: build-subsystems ## Run Python diff-harness, C/Obj-C++ subsystem, and Swift unit tests
 	@echo "[test] Running Python diff harness unit tests..."
 	@if $(PYTHON) -c "import PIL, numpy" >/dev/null 2>&1; then \
 		PYTHONPATH=tools $(PYTHON) tools/test_diff_harness.py; \
@@ -71,6 +141,9 @@ test: build-subsystems ## Run Python diff-harness unit tests and C/Obj-C++ subsy
 		./build/dm_attestation/dm_attestation_test; \
 	else \
 		echo "[test] Skipping dm_attestation_test live SIP/SSV assertion (host VM has SIP/SSV disabled)."; \
+	fi
+	@if [ -f tests/swift/DirectMetalTests.swift ]; then \
+		$(MAKE) --no-print-directory test-swift; \
 	fi
 
 ci: ## Run the full local CI verification suite (scripts/run_ci_local.sh)
