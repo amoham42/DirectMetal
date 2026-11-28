@@ -1,6 +1,6 @@
 # Community Game Profiles Guide
 
-DirectMetal ships with **36 built-in game profiles** in [`runtime/profiles/game_profiles.json`](../runtime/profiles/game_profiles.json). When a game is discovered by `DirectMetal library scan` or added for the first time, the first matching profile automatically seeds optimal per-game settings (`perfProfile`, `dx9Backend`, `upscaleMode`, `retinaMode`, `enableHUD`, `enableSandbox`) without ever overwriting existing user customizations.
+DirectMetal ships with **50 built-in game profiles** in [`runtime/profiles/game_profiles.json`](../runtime/profiles/game_profiles.json). When a game is discovered by `DirectMetal library scan` or added for the first time, the first matching profile automatically seeds optimal per-game settings (`perfProfile`, `dx9Backend`, `upscaleMode`, `retinaMode`, `enableHUD`, `enableSandbox`) without ever overwriting existing user customizations.
 
 ---
 
