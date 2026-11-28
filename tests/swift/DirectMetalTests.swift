@@ -359,6 +359,9 @@ struct DirectMetalTests {
             ("SaveBackupManager: save discovery, parallel SHA-256 export/restore & path-traversal rejection", {
                 try testSaveBackupExportImportAndSecurity(tempRoot: tempRoot)
             }),
+            ("LaunchLogAnalyzer: multi-category triage, deduplication, home redaction & tail file read", {
+                try testLaunchLogAnalyzerTriage(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2204,5 +2207,35 @@ struct DirectMetalTests {
         let restoredFile = dstPrefix.appendingPathComponent("drive_c/users/steamuser/Documents/Saved Games/Hades/Profile1.sav")
         let restoredBytes = try Data(contentsOf: restoredFile)
         try expectEqual(restoredBytes, savePayload, "restored save bytes must match original exactly")
+    }
+
+    private static func testLaunchLogAnalyzerTriage(tempRoot: URL) throws {
+        let sampleLog = """
+        0024:err:module:import_dll Library vcruntime140.dll (which is needed by L"Z:\\\\Users\\\\alice\\\\Games\\\\Test\\\\Game.exe") not found
+        0024:err:module:import_dll Library vcruntime140.dll not found
+        Sandbox: wine(1234) deny(1) file-read-data /Users/alice/.ssh/id_ed25519
+        DXGI_ERROR_DEVICE_REMOVED: GPU hung during frame submission
+        Easy Anti-Cheat failed to initialize kernel driver
+        """
+        let res = LaunchLogAnalyzer.analyze(sampleLog, home: "/Users/alice")
+        try expectEqual(res.highestSeverity, .error)
+        let categories = Set(res.findings.map(\.category))
+        try expect(categories.contains(.missingDLL), "should classify missing DLL")
+        try expect(categories.contains(.sandboxDenied), "should classify Seatbelt denial")
+        try expect(categories.contains(.gpuMemory), "should classify DXGI device removed")
+        try expect(categories.contains(.antiCheat), "should classify Easy Anti-Cheat")
+        for f in res.findings {
+            try expect(!f.sampleLine.contains("/Users/alice"), "finding sampleLine must redact home directory")
+            try expect(!f.remediation.isEmpty, "every finding must provide actionable remediation")
+        }
+        let dllFinding = try expectNotNil(res.findings.first(where: { $0.category == .missingDLL }))
+        try expectEqual(dllFinding.occurrences, 2, "duplicate missing DLL lines must deduplicate with occurrences=2")
+
+        // Verify file tail-read works cleanly on disk
+        let logFile = tempRoot.appendingPathComponent("sample_launch.log")
+        try Data(sampleLog.utf8).write(to: logFile)
+        let fromDisk = try LaunchLogAnalyzer.analyzeFile(at: logFile.path)
+        try expectEqual(fromDisk.highestSeverity, .error)
+        try expect(!LaunchLogAnalyzer.formatMarkdown(fromDisk).isEmpty, "markdown formatter must emit output")
     }
 }

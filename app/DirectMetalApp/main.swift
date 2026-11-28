@@ -793,6 +793,31 @@ private func runCLI(args: [String]) -> Int32 {
         }
         return 0
 
+    case "diagnose-log", "triage":
+        let rest = Array(args.dropFirst())
+        let asJSON = rest.contains("--json")
+        let asMarkdown = rest.contains("--markdown")
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard let logPath = positional.first, !logPath.isEmpty else {
+            fputs("error: diagnose-log requires <logfile_path> [--json|--markdown]\n", stderr)
+            return 1
+        }
+        let expanded = (logPath as NSString).expandingTildeInPath
+        do {
+            let analysis = try LaunchLogAnalyzer.analyzeFile(at: expanded)
+            if asJSON {
+                printLibraryJSON(analysis)
+            } else if asMarkdown {
+                print(LaunchLogAnalyzer.formatMarkdown(analysis))
+            } else {
+                print(LaunchLogAnalyzer.formatText(analysis))
+            }
+            return analysis.highestSeverity == .error ? 2 : 0
+        } catch {
+            fputs("diagnose-log failed: \(error)\n", stderr)
+            return 1
+        }
+
     default:
         fputs("unknown command: \(cmd)\n", stderr)
         printUsage()
