@@ -68,6 +68,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showCommandPalette: Bool = false
     // Structured Launch History sheet (⇧⌘H)
     @Published var showLaunchHistorySheet: Bool = false
+    // Community Game Profiles browser sheet (⇧⌘B)
+    @Published var showProfileBrowserSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -149,7 +151,8 @@ final class DirectMetalViewModel: ObservableObject {
 
     var isPresentingModal: Bool {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
-            || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet || showRemoveConfirm
+            || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
+            || showProfileBrowserSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -198,6 +201,12 @@ final class DirectMetalViewModel: ObservableObject {
     func openLaunchHistory() {
         guard !isPresentingModal || showLaunchHistorySheet else { return }
         showLaunchHistorySheet = true
+    }
+
+    /// ⇧⌘B: open the Community Game Profiles Browser sheet.
+    func openProfileBrowser() {
+        guard !isPresentingModal || showProfileBrowserSheet else { return }
+        showProfileBrowserSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -639,6 +648,9 @@ struct DirectMetalContentView: View {
         .sheet(isPresented: $vm.showLaunchHistorySheet) {
             LaunchHistorySheet(vm: vm)
         }
+        .sheet(isPresented: $vm.showProfileBrowserSheet) {
+            ProfileBrowserSheet(vm: vm)
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -694,6 +706,9 @@ struct DirectMetalCommands: Commands {
             Button("Launch History…") { vm?.openLaunchHistory() }
                 .keyboardShortcut("h", modifiers: [.command, .shift])
                 .disabled(vm == nil || (modal && vm?.showLaunchHistorySheet != true))
+            Button("Community Game Profiles…") { vm?.openProfileBrowser() }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+                .disabled(vm == nil || (modal && vm?.showProfileBrowserSheet != true))
         }
         CommandGroup(replacing: .appSettings) {
             Button("Controllers…") { vm?.openControllers() }

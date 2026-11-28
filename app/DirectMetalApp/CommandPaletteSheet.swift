@@ -215,6 +215,7 @@ private struct PaletteQuickAction: Identifiable {
         case systemHealth
         case prefixManager
         case launchHistory
+        case profileBrowser
         case controllers
         case checkUpdates
         case posterGallery
@@ -299,6 +300,17 @@ private struct PaletteQuickAction: Identifiable {
             tint: .indigo,
             shortcutHint: "⇧⌘H",
             keywords: ["history", "launches", "log", "sessions", "recent", "exit", "crash"],
+            presentsModal: true
+        ),
+        PaletteQuickAction(
+            id: "action.profile-browser",
+            kind: .profileBrowser,
+            title: "Community Game Profiles…",
+            subtitle: "Browse 75+ verified & community presets and apply to the selected game",
+            systemImage: "sparkles.rectangle.stack",
+            tint: .purple,
+            shortcutHint: "⇧⌘B",
+            keywords: ["profiles", "presets", "community", "games", "settings", "database", "apply"],
             presentsModal: true
         ),
         PaletteQuickAction(
@@ -906,6 +918,8 @@ struct CommandPaletteSheet: View {
                 vm.openPrefixManager()
             case .launchHistory:
                 vm.openLaunchHistory()
+            case .profileBrowser:
+                vm.openProfileBrowser()
             case .controllers:
                 vm.openControllers()
             case .checkUpdates:
