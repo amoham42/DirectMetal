@@ -65,20 +65,38 @@ int dm_futex_wait(atomic_uint *addr, uint32_t expected, uint64_t timeout_ns) {
         errno = ETIMEDOUT;
         return -1;
     }
-    int rc;
-    do {
+
+    const uint64_t start_ns = (timeout_ns != DM_SYNC_INFINITE) ? monotonic_now_ns() : 0;
+    uint64_t rem_ns = timeout_ns;
+
+    for (;;) {
+        int rc;
         if (timeout_ns == DM_SYNC_INFINITE) {
             rc = os_sync_wait_on_address(addr, expected, sizeof(uint32_t),
                                          OS_SYNC_WAIT_ON_ADDRESS_NONE);
         } else {
             rc = os_sync_wait_on_address_with_timeout(
                 addr, expected, sizeof(uint32_t), OS_SYNC_WAIT_ON_ADDRESS_NONE,
-                OS_CLOCK_MACH_ABSOLUTE_TIME, timeout_ns);
+                OS_CLOCK_MACH_ABSOLUTE_TIME, rem_ns);
         }
-    } while (rc < 0 && (errno == EINTR || errno == EFAULT) &&
-             atomic_load_explicit(addr, memory_order_acquire) == expected);
-
-    return (rc < 0) ? -1 : 0;
+        if (rc >= 0) {
+            return 0;
+        }
+        if (errno != EINTR) {
+            return -1;
+        }
+        if (atomic_load_explicit(addr, memory_order_acquire) != expected) {
+            return 0;
+        }
+        if (timeout_ns != DM_SYNC_INFINITE) {
+            const uint64_t elapsed = monotonic_now_ns() - start_ns;
+            if (elapsed >= timeout_ns) {
+                errno = ETIMEDOUT;
+                return -1;
+            }
+            rem_ns = timeout_ns - elapsed;
+        }
+    }
 }
 
 int dm_futex_wake_one(atomic_uint *addr) {
@@ -98,6 +116,7 @@ int dm_futex_wake_all(atomic_uint *addr) {
 }
 
 void dm_nt_event_init(dm_nt_event_t *ev, bool manual_reset, bool initial_state) {
+    if (!ev) return;
     ev->header.kind = DM_WAITABLE_EVENT;
     ev->header.observer_lock = OS_UNFAIR_LOCK_INIT;
     ev->header.observer_count = 0;
@@ -107,6 +126,7 @@ void dm_nt_event_init(dm_nt_event_t *ev, bool manual_reset, bool initial_state) 
 }
 
 void dm_nt_event_set(dm_nt_event_t *ev) {
+    if (!ev) return;
     atomic_store_explicit(&ev->state, 1u, memory_order_release);
     if (ev->manual_reset) {
         dm_futex_wake_all(&ev->state);
@@ -117,6 +137,7 @@ void dm_nt_event_set(dm_nt_event_t *ev) {
 }
 
 void dm_nt_event_reset(dm_nt_event_t *ev) {
+    if (!ev) return;
     atomic_store_explicit(&ev->state, 0u, memory_order_release);
 }
 
@@ -153,6 +174,7 @@ dm_wait_status_t dm_nt_event_wait(dm_nt_event_t *ev, uint64_t timeout_ns) {
 }
 
 void dm_nt_semaphore_init(dm_nt_semaphore_t *sem, uint32_t initial_count, uint32_t max_count) {
+    if (!sem) return;
     sem->header.kind = DM_WAITABLE_SEMAPHORE;
     sem->header.observer_lock = OS_UNFAIR_LOCK_INIT;
     sem->header.observer_count = 0;
@@ -244,6 +266,39 @@ static void rollback_obj(dm_waitable_header_t *hdr) {
     }
 }
 
+static bool try_acquire_wait_set(dm_waitable_header_t *const *objs,
+                                 size_t count,
+                                 bool wait_all,
+                                 size_t *out_index) {
+    if (!wait_all) {
+        for (size_t i = 0; i < count; ++i) {
+            if (try_acquire_obj(objs[i])) {
+                if (out_index) *out_index = i;
+                return true;
+            }
+        }
+        return false;
+    }
+
+    for (size_t i = 0; i < count; ++i) {
+        if (!is_signaled_peek(objs[i])) {
+            return false;
+        }
+    }
+    size_t acquired = 0;
+    for (; acquired < count; ++acquired) {
+        if (!try_acquire_obj(objs[acquired])) break;
+    }
+    if (acquired == count) {
+        if (out_index) *out_index = 0;
+        return true;
+    }
+    for (size_t j = 0; j < acquired; ++j) {
+        rollback_obj(objs[j]);
+    }
+    return false;
+}
+
 dm_wait_status_t dm_nt_wait_multiple(dm_waitable_header_t *const *objs,
                                      size_t count,
                                      bool wait_all,
@@ -251,9 +306,19 @@ dm_wait_status_t dm_nt_wait_multiple(dm_waitable_header_t *const *objs,
                                      size_t *out_index) {
     if (!objs || count == 0 || count > 64) return DM_WAIT_ERROR;
 
+    for (size_t i = 0; i < count; ++i) {
+        if (!objs[i]) return DM_WAIT_ERROR;
+        if (objs[i]->kind != DM_WAITABLE_EVENT && objs[i]->kind != DM_WAITABLE_SEMAPHORE) {
+            return DM_WAIT_ERROR;
+        }
+        for (size_t j = 0; j < i; ++j) {
+            if (objs[j] == objs[i]) return DM_WAIT_ERROR;
+        }
+    }
+
     atomic_uint local_seq = 0;
     for (size_t i = 0; i < count; ++i) {
-        if (!objs[i] || !register_observer(objs[i], &local_seq)) {
+        if (!register_observer(objs[i], &local_seq)) {
             for (size_t j = 0; j < i; ++j) unregister_observer(objs[j], &local_seq);
             return DM_WAIT_ERROR;
         }
@@ -265,36 +330,9 @@ dm_wait_status_t dm_nt_wait_multiple(dm_waitable_header_t *const *objs,
     for (;;) {
         const uint32_t observed_seq = atomic_load_explicit(&local_seq, memory_order_acquire);
 
-        if (!wait_all) {
-            for (size_t i = 0; i < count; ++i) {
-                if (try_acquire_obj(objs[i])) {
-                    if (out_index) *out_index = i;
-                    result = DM_WAIT_OBJECT_0;
-                    goto done;
-                }
-            }
-        } else {
-            bool all_peek = true;
-            for (size_t i = 0; i < count; ++i) {
-                if (!is_signaled_peek(objs[i])) {
-                    all_peek = false;
-                    break;
-                }
-            }
-            if (all_peek) {
-                size_t acquired = 0;
-                for (; acquired < count; ++acquired) {
-                    if (!try_acquire_obj(objs[acquired])) break;
-                }
-                if (acquired == count) {
-                    if (out_index) *out_index = 0;
-                    result = DM_WAIT_OBJECT_0;
-                    goto done;
-                }
-                for (size_t j = 0; j < acquired; ++j) {
-                    rollback_obj(objs[j]);
-                }
-            }
+        if (try_acquire_wait_set(objs, count, wait_all, out_index)) {
+            result = DM_WAIT_OBJECT_0;
+            goto done;
         }
 
         if (timeout_ns == 0) {
@@ -314,14 +352,9 @@ dm_wait_status_t dm_nt_wait_multiple(dm_waitable_header_t *const *objs,
 
         if (dm_futex_wait(&local_seq, observed_seq, rem_ns) < 0 && errno == ETIMEDOUT) {
             // Re-check once after timeout in case signal raced before sleep
-            if (!wait_all) {
-                for (size_t i = 0; i < count; ++i) {
-                    if (try_acquire_obj(objs[i])) {
-                        if (out_index) *out_index = i;
-                        result = DM_WAIT_OBJECT_0;
-                        goto done;
-                    }
-                }
+            if (try_acquire_wait_set(objs, count, wait_all, out_index)) {
+                result = DM_WAIT_OBJECT_0;
+                goto done;
             }
             result = DM_WAIT_TIMEOUT;
             goto done;

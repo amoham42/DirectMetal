@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <libgen.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,9 +19,16 @@ static double now_ms(void) {
 }
 
 static bool mkdir_p(const char *path) {
-    char tmp[1024];
+    if (!path) {
+        errno = EINVAL;
+        return false;
+    }
+    char tmp[PATH_MAX];
     size_t len = strlen(path);
-    if (len == 0 || len >= sizeof(tmp)) return false;
+    if (len == 0 || len >= sizeof(tmp)) {
+        errno = (len == 0) ? EINVAL : ENAMETOOLONG;
+        return false;
+    }
     memcpy(tmp, path, len + 1);
     while (len > 1 && tmp[len - 1] == '/') {
         tmp[--len] = '\0';
@@ -48,18 +56,51 @@ static bool remove_recursive(const char *path) {
     if (!dir) return false;
     struct dirent *ent;
     bool ok = true;
+    int saved_err = 0;
     while ((ent = readdir(dir)) != NULL) {
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        char child[2048];
-        snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        char child[PATH_MAX];
+        int n = snprintf(child, sizeof(child), "%s/%s", path, ent->d_name);
+        if (n < 0 || (size_t)n >= sizeof(child)) {
+            saved_err = ENAMETOOLONG;
+            ok = false;
+            break;
+        }
         if (!remove_recursive(child)) {
+            saved_err = errno;
             ok = false;
             break;
         }
     }
     closedir(dir);
-    if (ok && rmdir(path) != 0) ok = false;
-    return ok;
+    if (!ok) {
+        errno = saved_err ? saved_err : EIO;
+        return false;
+    }
+    if (rmdir(path) != 0) return false;
+    return true;
+}
+
+static void fputs_json_escaped(FILE *f, const char *s) {
+    if (!s) return;
+    for (const unsigned char *p = (const unsigned char *)s; *p != '\0'; ++p) {
+        switch (*p) {
+            case '"':  fputs("\\\"", f); break;
+            case '\\': fputs("\\\\", f); break;
+            case '\b': fputs("\\b", f); break;
+            case '\f': fputs("\\f", f); break;
+            case '\n': fputs("\\n", f); break;
+            case '\r': fputs("\\r", f); break;
+            case '\t': fputs("\\t", f); break;
+            default:
+                if (*p < 0x20) {
+                    fprintf(f, "\\u%04x", (unsigned int)*p);
+                } else {
+                    fputc((int)*p, f);
+                }
+                break;
+        }
+    }
 }
 
 static void write_metadata_json(const char *dest_prefix,
@@ -68,8 +109,9 @@ static void write_metadata_json(const char *dest_prefix,
                                 const char *dx_api,
                                 const char *shader_key,
                                 double clone_ms) {
-    char meta_path[1024];
-    snprintf(meta_path, sizeof(meta_path), "%s/directmetal_prefix.json", dest_prefix);
+    char meta_path[PATH_MAX];
+    int mlen = snprintf(meta_path, sizeof(meta_path), "%s/directmetal_prefix.json", dest_prefix);
+    if (mlen < 0 || (size_t)mlen >= sizeof(meta_path)) return;
     FILE *f = fopen(meta_path, "w");
     if (!f) return;
 
@@ -79,21 +121,15 @@ static void write_metadata_json(const char *dest_prefix,
     char iso[64];
     strftime(iso, sizeof(iso), "%Y-%m-%dT%H:%M:%SZ", &tm_utc);
 
-    fprintf(f,
-            "{\n"
-            "  \"created_utc\": \"%s\",\n"
-            "  \"base_prefix\": \"%s\",\n"
-            "  \"game_exe\": \"%s\",\n"
-            "  \"dx_api\": \"%s\",\n"
-            "  \"shader_cache_key\": \"%s\",\n"
-            "  \"cow_clone_ms\": %.3f\n"
-            "}\n",
-            iso,
-            base_prefix ? base_prefix : "",
-            game_exe ? game_exe : "",
-            dx_api ? dx_api : "auto",
-            shader_key ? shader_key : "",
-            clone_ms);
+    fprintf(f, "{\n  \"created_utc\": \"%s\",\n  \"base_prefix\": \"", iso);
+    fputs_json_escaped(f, base_prefix ? base_prefix : "");
+    fputs("\",\n  \"game_exe\": \"", f);
+    fputs_json_escaped(f, game_exe ? game_exe : "");
+    fputs("\",\n  \"dx_api\": \"", f);
+    fputs_json_escaped(f, (dx_api && dx_api[0]) ? dx_api : "auto");
+    fputs("\",\n  \"shader_cache_key\": \"", f);
+    fputs_json_escaped(f, shader_key ? shader_key : "");
+    fprintf(f, "\",\n  \"cow_clone_ms\": %.3f\n}\n", clone_ms);
     fclose(f);
 }
 
@@ -123,8 +159,13 @@ dm_prefix_result_t dm_prefix_create(const char *base_prefix,
         return res;
     }
 
-    char parent_buf[1024];
-    snprintf(parent_buf, sizeof(parent_buf), "%s", dest_prefix);
+    char parent_buf[PATH_MAX];
+    int plen = snprintf(parent_buf, sizeof(parent_buf), "%s", dest_prefix);
+    if (plen < 0 || (size_t)plen >= sizeof(parent_buf)) {
+        res.err_no = ENAMETOOLONG;
+        snprintf(res.error_msg, sizeof(res.error_msg), "Destination prefix path too long");
+        return res;
+    }
     char *parent = dirname(parent_buf);
     if (!mkdir_p(parent)) {
         res.err_no = errno;
@@ -147,7 +188,7 @@ dm_prefix_result_t dm_prefix_create(const char *base_prefix,
 dm_prefix_result_t dm_prefix_delete(const char *prefix_path) {
     dm_prefix_result_t res;
     memset(&res, 0, sizeof(res));
-    if (!prefix_path || !prefix_path[0]) {
+    if (!prefix_path || !prefix_path[0] || strcmp(prefix_path, "/") == 0) {
         res.err_no = EINVAL;
         snprintf(res.error_msg, sizeof(res.error_msg), "Invalid prefix path");
         return res;
@@ -178,7 +219,7 @@ int dm_prefix_list(const char *prefix_root,
                    size_t max_names,
                    size_t *out_count) {
     if (out_count) *out_count = 0;
-    if (!prefix_root) return EINVAL;
+    if (!prefix_root || !prefix_root[0] || (max_names > 0 && !names_out)) return EINVAL;
     DIR *dir = opendir(prefix_root);
     if (!dir) return errno;
 
@@ -186,8 +227,9 @@ int dm_prefix_list(const char *prefix_root,
     struct dirent *ent;
     while ((ent = readdir(dir)) != NULL && n < max_names) {
         if (ent->d_name[0] == '.') continue;
-        char full[1024];
-        snprintf(full, sizeof(full), "%s/%s", prefix_root, ent->d_name);
+        char full[PATH_MAX];
+        int flen = snprintf(full, sizeof(full), "%s/%s", prefix_root, ent->d_name);
+        if (flen < 0 || (size_t)flen >= sizeof(full)) continue;
         struct stat st;
         if (stat(full, &st) == 0 && S_ISDIR(st.st_mode)) {
             snprintf(names_out[n], 256, "%s", ent->d_name);

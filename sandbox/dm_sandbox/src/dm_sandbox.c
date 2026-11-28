@@ -17,16 +17,17 @@ static void set_err(char* err_buf, size_t cap, const char* msg) {
 
 /* Resolve symlinks (e.g. /var -> /private/var, /tmp -> /private/tmp) even if leaf dirs don't exist yet. */
 static bool canonicalize_path(const char* in_path, char out_path[PATH_MAX]) {
-    if (!in_path || !in_path[0]) return false;
+    if (!in_path || !in_path[0] || !out_path) return false;
     if (realpath(in_path, out_path) != NULL) {
         return true;
     }
     char work[PATH_MAX];
     char tail[PATH_MAX];
     tail[0] = '\0';
-    snprintf(work, sizeof(work), "%s", in_path);
+    int wlen = snprintf(work, sizeof(work), "%s", in_path);
+    if (wlen < 0 || (size_t)wlen >= sizeof(work)) return false;
 
-    size_t len = strlen(work);
+    size_t len = (size_t)wlen;
     while (len > 1 && work[len - 1] == '/') {
         work[--len] = '\0';
     }
@@ -34,24 +35,25 @@ static bool canonicalize_path(const char* in_path, char out_path[PATH_MAX]) {
     while (len > 1) {
         char resolved[PATH_MAX];
         if (realpath(work, resolved) != NULL) {
-            snprintf(out_path, PATH_MAX, "%s%s", resolved, tail);
-            return true;
+            int rlen = snprintf(out_path, PATH_MAX, "%s%s", resolved, tail);
+            return (rlen >= 0 && (size_t)rlen < PATH_MAX);
         }
         char* slash = strrchr(work, '/');
         if (!slash) break;
         char new_tail[PATH_MAX];
-        snprintf(new_tail, sizeof(new_tail), "%s%s", slash, tail);
-        snprintf(tail, sizeof(tail), "%s", new_tail);
+        int tlen = snprintf(new_tail, sizeof(new_tail), "%s%s", slash, tail);
+        if (tlen < 0 || (size_t)tlen >= sizeof(new_tail)) return false;
+        memcpy(tail, new_tail, (size_t)tlen + 1);
         if (slash == work) {
             work[1] = '\0';
             len = 1;
         } else {
             *slash = '\0';
-            len = strlen(work);
+            len = (size_t)(slash - work);
         }
     }
-    snprintf(out_path, PATH_MAX, "%s", in_path);
-    return true;
+    int flen = snprintf(out_path, PATH_MAX, "%s", in_path);
+    return (flen >= 0 && (size_t)flen < PATH_MAX);
 }
 
 static bool escape_sbpl_str(const char* src, char* dst, size_t dst_cap) {
@@ -129,13 +131,37 @@ bool dm_sandbox_render_profile(const dm_sandbox_config_t* cfg,
 
     FILE* fp = fopen(cfg->template_path, "rb");
     if (!fp) {
-        snprintf(err_buf, err_buf_cap, "failed to open template: %s (%s)",
-                 cfg->template_path, strerror(errno));
+        if (err_buf && err_buf_cap > 0) {
+            snprintf(err_buf, err_buf_cap, "failed to open template: %s (%s)",
+                     cfg->template_path, strerror(errno));
+        }
         return false;
     }
     char tmpl[16384];
-    const size_t nread = fread(tmpl, 1, sizeof(tmpl) - 1, fp);
+    size_t nread = 0;
+    while (nread < sizeof(tmpl) - 1) {
+        size_t chunk = fread(tmpl + nread, 1, (sizeof(tmpl) - 1) - nread, fp);
+        if (chunk == 0) {
+            if (ferror(fp)) {
+                if (errno == EINTR) {
+                    clearerr(fp);
+                    continue;
+                }
+                fclose(fp);
+                set_err(err_buf, err_buf_cap, "failed to read sandbox template");
+                return false;
+            }
+            break;
+        }
+        nread += chunk;
+    }
+    const int extra = fgetc(fp);
+    const bool hit_eof = (extra == EOF) && feof(fp) && !ferror(fp);
     fclose(fp);
+    if (!hit_eof) {
+        set_err(err_buf, err_buf_cap, "sandbox template exceeds maximum size or read failed");
+        return false;
+    }
     tmpl[nread] = '\0';
 
     const char* net_rules = cfg->allow_network
@@ -185,6 +211,10 @@ bool dm_sandbox_write_profile(const dm_sandbox_config_t* cfg,
                               const char* profile_path,
                               char* err_buf,
                               size_t err_buf_cap) {
+    if (!profile_path || !profile_path[0]) {
+        set_err(err_buf, err_buf_cap, "invalid profile path");
+        return false;
+    }
     char buf[32768];
     if (!dm_sandbox_render_profile(cfg, buf, sizeof(buf), err_buf, err_buf_cap)) {
         return false;
@@ -198,8 +228,8 @@ bool dm_sandbox_write_profile(const dm_sandbox_config_t* cfg,
     }
     const size_t len = strlen(buf);
     const size_t written = fwrite(buf, 1, len, fp);
-    fclose(fp);
-    if (written != len) {
+    const int close_rc = fclose(fp);
+    if (written != len || close_rc != 0) {
         set_err(err_buf, err_buf_cap, "short write on sandbox profile");
         return false;
     }
@@ -208,33 +238,47 @@ bool dm_sandbox_write_profile(const dm_sandbox_config_t* cfg,
 
 int dm_sandbox_exec_profiled(const char* profile_path,
                              char* const argv[]) {
-    if (!profile_path || !argv || !argv[0]) return -1;
+    if (!profile_path || !profile_path[0] || !argv || !argv[0]) return -1;
 
     size_t argc = 0;
     while (argv[argc] != NULL) ++argc;
     char** child_argv = calloc(argc + 4, sizeof(char*));
     if (!child_argv) return -1;
 
-    child_argv[0] = "/usr/bin/sandbox-exec";
-    child_argv[1] = "-f";
-    child_argv[2] = (char*)profile_path;
+    char sandbox_bin[] = "/usr/bin/sandbox-exec";
+    char flag_f[] = "-f";
+    char* profile_arg = strdup(profile_path);
+    if (!profile_arg) {
+        free(child_argv);
+        return -1;
+    }
+
+    child_argv[0] = sandbox_bin;
+    child_argv[1] = flag_f;
+    child_argv[2] = profile_arg;
     for (size_t i = 0; i <= argc; ++i) {
         child_argv[3 + i] = argv[i];
     }
 
     pid_t pid = fork();
     if (pid < 0) {
+        free(profile_arg);
         free(child_argv);
         return -1;
     }
     if (pid == 0) {
-        execv("/usr/bin/sandbox-exec", child_argv);
+        execv(sandbox_bin, child_argv);
         _exit(127);
     }
+    free(profile_arg);
     free(child_argv);
 
     int status = 0;
-    if (waitpid(pid, &status, 0) < 0) return -1;
+    pid_t wpid;
+    do {
+        wpid = waitpid(pid, &status, 0);
+    } while (wpid < 0 && errno == EINTR);
+    if (wpid < 0) return -1;
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return -1;
