@@ -79,7 +79,7 @@ private final class PEInspectCache: @unchecked Sendable {
     }
 
     static let shared = PEInspectCache()
-    static let schemaVersion = 1
+    static let schemaVersion = 2
 
     private struct DiskFormat: Codable {
         let version: Int
@@ -260,15 +260,19 @@ enum PEInspector {
         }
 
         func rvaToOffset(_ rva: UInt32) -> Int? {
+            let rva64 = UInt64(rva)
+            let total64 = UInt64(data.count)
             for s in sections {
-                let span = Swift.max(s.virtualSize, s.sizeOfRawData)
-                if rva >= s.virtualAddress && rva < s.virtualAddress + span {
-                    let delta = rva - s.virtualAddress
-                    let raw = s.pointerToRawData + delta
-                    return raw < UInt32(data.count) ? Int(raw) : nil
+                let va64 = UInt64(s.virtualAddress)
+                let span64 = UInt64(Swift.max(s.virtualSize, s.sizeOfRawData))
+                if rva64 >= va64 && rva64 < va64 &+ span64 && va64 <= UInt64.max - span64 {
+                    let delta = rva64 - va64
+                    guard delta < UInt64(s.sizeOfRawData) else { return nil }
+                    let raw = UInt64(s.pointerToRawData) + delta
+                    return raw < total64 ? Int(raw) : nil
                 }
             }
-            return rva < UInt32(data.count) ? Int(rva) : nil
+            return rva64 < total64 ? Int(rva64) : nil
         }
 
         var dllSet: [String] = []
@@ -338,6 +342,8 @@ enum PEInspector {
             apis.append("D3D9")
         }
         if lowerDLLs.contains(where: { $0 == "dxgi.dll" }) { apis.append("DXGI") }
+        if lowerDLLs.contains(where: { $0 == "vulkan-1.dll" }) { apis.append("Vulkan") }
+        if lowerDLLs.contains(where: { $0 == "opengl32.dll" }) { apis.append("OpenGL") }
 
         let exeDir = url.deletingLastPathComponent()
         let fm = FileManager.default

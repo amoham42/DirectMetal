@@ -28,6 +28,8 @@ enum LauncherStyle {
         if apis.contains("D3D11") { out.append(LauncherBadge(text: "DX11", color: .blue)) }
         if apis.contains("D3D10") { out.append(LauncherBadge(text: "DX10", color: .teal)) }
         if apis.contains("D3D9") { out.append(LauncherBadge(text: "DX9", color: .orange)) }
+        if apis.contains("Vulkan") { out.append(LauncherBadge(text: "Vulkan", color: .red)) }
+        if apis.contains("OpenGL") { out.append(LauncherBadge(text: "OpenGL", color: .cyan)) }
         if !entry.detectedUpscalers.isEmpty || entry.launchUpscaleMode != nil {
             out.append(LauncherBadge(text: "MetalFX", color: .green))
         }
