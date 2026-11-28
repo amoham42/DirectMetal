@@ -33,6 +33,7 @@ struct LibrarySidebar: View {
                                 vm.toggleFavorite(entry)
                             }
                             Divider()
+                            Button("Create Spotlight / Dock Shortcut") { vm.createGameShortcut(entry) }
                             Button("Show in Finder") { vm.revealInFinder(entry) }
                             Button("Re-inspect Executable") { vm.reinspect(entry) }
                             Divider()

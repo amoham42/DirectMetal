@@ -350,6 +350,9 @@ struct DirectMetalTests {
             ("RuntimeManager: retryable HTTP 5xx/429 & transient URLError classification", {
                 try testRuntimeDownloadRetryClassification()
             }),
+            ("ShortcutExporter: sanitization, shell/XML escaping & Spotlight .app/.command export", {
+                try testShortcutExporterAppAndCommand(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2058,5 +2061,55 @@ struct DirectMetalTests {
         // Non-retryable URL errors
         try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: .badURL, truncated: false), false)
         try expectEqual(RuntimeManager.isRetryableDownloadFailure(httpStatus: nil, urlErrorCode: .serverCertificateUntrusted, truncated: false), false)
+    }
+
+    private static func testShortcutExporterAppAndCommand(tempRoot: URL) throws {
+        // 1. Filename sanitization & injection resistance
+        let safe = ShortcutExporter.sanitizeFileName("../Evil:Game/Name\n$(rm -rf /)")
+        try expect(!safe.contains("/"), "sanitized name must not contain /")
+        try expect(!safe.contains(":"), "sanitized name must not contain :")
+        try expect(!safe.hasPrefix("."), "sanitized name must not start with dot")
+        try expectEqual(ShortcutExporter.sanitizeFileName("   ///...   "), "DirectMetal Game")
+
+        // 2. POSIX single-quote escaping & XML escaping
+        let quoted = ShortcutExporter.shellQuote("O'Brien $(id) `uname`")
+        try expect(quoted.hasPrefix("'") && quoted.hasSuffix("'"), "shellQuote must wrap in single quotes")
+        try expect(quoted.contains("'\\''"), "embedded single quotes must be escaped")
+        let escapedXML = ShortcutExporter.xmlEscape("A & B <\"C\"> 'D'")
+        try expectEqual(escapedXML, "A &amp; B &lt;&quot;C&quot;&gt; &apos;D&apos;")
+
+        // 3. Export .app bundle and .command script into isolated temp dir
+        let outDir = tempRoot.appendingPathComponent("shortcuts_out", isDirectory: true)
+        let entry = GameLibraryEntry(
+            title: "Hades: Blood & Darkness",
+            exePath: "/Games/Hades/Hades.exe",
+            prefixName: "Hades"
+        )
+        let appRes = try ShortcutExporter.exportAppBundle(
+            for: entry,
+            into: outDir,
+            directMetalBinary: "/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal",
+            overwrite: true
+        )
+        try expectEqual(appRes.format, .app)
+        let appURL = URL(fileURLWithPath: appRes.outputPath)
+        let plistURL = appURL.appendingPathComponent("Contents/Info.plist")
+        let launchURL = appURL.appendingPathComponent("Contents/MacOS/launch")
+        try expect(FileManager.default.fileExists(atPath: plistURL.path), "Info.plist must exist")
+        try expect(FileManager.default.isExecutableFile(atPath: launchURL.path), "launch script must be executable")
+        let plistText = try String(contentsOf: plistURL, encoding: .utf8)
+        try expect(plistText.contains("Hades Blood &amp; Darkness") || plistText.contains("Hades: Blood &amp; Darkness"),
+                   "Info.plist must XML-escape game title")
+
+        let cmdRes = try ShortcutExporter.exportCommandScript(
+            for: entry,
+            into: outDir,
+            directMetalBinary: "/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal",
+            overwrite: true
+        )
+        try expectEqual(cmdRes.format, .command)
+        try expect(FileManager.default.isExecutableFile(atPath: cmdRes.outputPath), ".command script must be executable")
+        let cmdBody = try String(contentsOfFile: cmdRes.outputPath, encoding: .utf8)
+        try expect(cmdBody.contains("library") && cmdBody.contains(entry.id), ".command script must invoke library play <id>")
     }
 }

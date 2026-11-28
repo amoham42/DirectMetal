@@ -60,7 +60,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|play|export|import)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|play|shortcut|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -304,6 +304,60 @@ func runLibraryCLI(args: [String]) -> Int32 {
                 failure: "\(error)"
             ))
             fputs("library play failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "shortcut":
+        var format: ShortcutFormat = .app
+        var outDir = ShortcutExporter.defaultShortcutsDirectory()
+        var overwrite = true
+        let asJSON = rest.contains("--json")
+        var keyParts: [String] = []
+        var idx = 0
+        while idx < rest.count {
+            let a = rest[idx]
+            if a == "--format", idx + 1 < rest.count {
+                guard let parsed = ShortcutFormat(rawValue: rest[idx + 1].lowercased()) else {
+                    fputs("error: --format must be 'app' or 'command'\n", stderr)
+                    return 1
+                }
+                format = parsed
+                idx += 2
+            } else if a == "--dir", idx + 1 < rest.count {
+                let expanded = (rest[idx + 1] as NSString).expandingTildeInPath
+                outDir = URL(fileURLWithPath: expanded, isDirectory: true)
+                idx += 2
+            } else if a == "--no-overwrite" {
+                overwrite = false
+                idx += 1
+            } else if a == "--json" {
+                idx += 1
+            } else {
+                keyParts.append(a)
+                idx += 1
+            }
+        }
+        let key = keyParts.joined(separator: " ")
+        guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library shortcut failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        do {
+            let res = try ShortcutExporter.export(
+                for: entry,
+                format: format,
+                into: outDir,
+                overwrite: overwrite
+            )
+            if asJSON {
+                printLibraryJSON(res)
+            } else {
+                let iconNote = res.hasCustomIcon ? " (with game icon)" : ""
+                print("Created \(res.format.rawValue) shortcut\(iconNote): \(res.outputPath)")
+            }
+            return 0
+        } catch {
+            fputs("library shortcut failed: \(error)\n", stderr)
             return 1
         }
 

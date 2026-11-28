@@ -304,6 +304,12 @@ struct GamePosterCard: View {
             Divider()
 
             Button {
+                vm.createGameShortcut(entry)
+            } label: {
+                Label("Create Shortcut", systemImage: "arrow.up.forward.app")
+            }
+
+            Button {
                 vm.revealInFinder(entry)
             } label: {
                 Label("Reveal in Finder", systemImage: "folder")

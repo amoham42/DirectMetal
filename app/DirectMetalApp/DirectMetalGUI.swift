@@ -364,6 +364,17 @@ final class DirectMetalViewModel: ObservableObject {
         NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: entry.exePath)])
     }
 
+    func createGameShortcut(_ entry: GameLibraryEntry) {
+        let targetDir = ShortcutExporter.defaultShortcutsDirectory()
+        do {
+            let res = try ShortcutExporter.exportAppBundle(for: entry, into: targetDir, overwrite: true)
+            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: res.outputPath)])
+            statusMessage = "Created Spotlight/Dock shortcut for \(entry.title) in ~/Applications/DirectMetal Games."
+        } catch {
+            statusMessage = "Could not create shortcut for \(entry.title): \(error)"
+        }
+    }
+
     func exportLibraryBackup() {
         let panel = NSSavePanel()
         panel.title = "Export Library Backup"
@@ -734,6 +745,10 @@ struct DirectMetalCommands: Commands {
             Divider()
             Button("Show in Finder") {
                 if let vm, let e = vm.selectedEntry { vm.revealInFinder(e) }
+            }
+            .disabled(vm?.selectedEntry == nil)
+            Button("Create Spotlight / Dock Shortcut") {
+                if let vm, let e = vm.selectedEntry { vm.createGameShortcut(e) }
             }
             .disabled(vm?.selectedEntry == nil)
             Button("Re-inspect Executable") {
