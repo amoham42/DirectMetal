@@ -62,6 +62,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showControllerSheet: Bool = false
     // System health & shader cache maintenance sheet
     @Published var showSystemHealthSheet: Bool = false
+    // APFS prefix manager & storage inspector sheet
+    @Published var showPrefixManagerSheet: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
     @Published var libraryFilter: LibraryFilter = .all
     @Published var librarySort: LibrarySort =
@@ -140,7 +142,7 @@ final class DirectMetalViewModel: ObservableObject {
     var isRunning: Bool { runningGameID != nil }
 
     var isPresentingModal: Bool {
-        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet || showRemoveConfirm
+        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet || showPrefixManagerSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -167,6 +169,12 @@ final class DirectMetalViewModel: ObservableObject {
     func openSystemHealth() {
         guard !isPresentingModal || showSystemHealthSheet else { return }
         showSystemHealthSheet = true
+    }
+
+    /// ⇧⌘P: open the APFS Prefix Manager & Storage Inspector sheet.
+    func openPrefixManager() {
+        guard !isPresentingModal || showPrefixManagerSheet else { return }
+        showPrefixManagerSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -452,6 +460,15 @@ struct DirectMetalContentView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Button {
+                        vm.showPrefixManagerSheet = true
+                    } label: {
+                        Label("Prefixes", systemImage: "externaldrive.badge.timemachine")
+                    }
+                    .labelStyle(.titleAndIcon)
+                    .help("Inspect, reset, or delete APFS Copy-on-Write prefixes (⇧⌘P)")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
                         vm.showSystemHealthSheet = true
                     } label: {
                         Label("Health", systemImage: "stethoscope")
@@ -506,6 +523,9 @@ struct DirectMetalContentView: View {
         }
         .sheet(isPresented: $vm.showSystemHealthSheet) {
             SystemHealthSheet(vm: vm)
+        }
+        .sheet(isPresented: $vm.showPrefixManagerSheet) {
+            PrefixManagerSheet(vm: vm)
         }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
@@ -1099,6 +1119,9 @@ struct DirectMetalCommands: Commands {
             Button("System Health & Cache…") { vm?.openSystemHealth() }
                 .keyboardShortcut("d", modifiers: .command)
                 .disabled(vm == nil || (modal && vm?.showSystemHealthSheet != true))
+            Button("APFS Prefixes & Storage…") { vm?.openPrefixManager() }
+                .keyboardShortcut("p", modifiers: [.command, .shift])
+                .disabled(vm == nil || (modal && vm?.showPrefixManagerSheet != true))
         }
         CommandGroup(replacing: .appSettings) {
             Button("Controllers…") { vm?.openControllers() }
