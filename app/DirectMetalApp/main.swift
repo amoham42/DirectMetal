@@ -76,6 +76,10 @@ private func printUsage() {
                                          Apply newly matched community profiles across the library safely
       DirectMetal library explain <id_or_title> [--json|--markdown]
                                          Preview full dry-run launch plan without spawning Wine
+      DirectMetal library lint <id_or_title> [--json|--markdown]
+                                         Lint customEnv & extraArgs for blocked keys, Proton vars & syntax issues
+      DirectMetal library preflight <id_or_title> [--json|--markdown]
+                                         Run 7-point launch readiness & kernel anti-cheat pre-flight check
       DirectMetal library shortcut <id_or_title> [--format app|command] [--dir <path>]
                                          Export a native macOS Spotlight/Dock .app or .command launcher
       DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]

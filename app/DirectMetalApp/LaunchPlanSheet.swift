@@ -13,6 +13,7 @@ struct LaunchPlanSheet: View {
     @Environment(\.dismiss) private var dismiss
 
     @State private var plan: GameLaunchPlan?
+    @State private var preflight: PreflightReport?
     @State private var copiedMarkdown = false
 
     private var liveEntry: GameLibraryEntry {
@@ -31,6 +32,9 @@ struct LaunchPlanSheet: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
+                    if let checkReport = preflight {
+                        preflightCard(checkReport)
+                    }
                     executionCard(currentPlan)
                     framePacingCard(currentPlan)
                     prefixAndCacheCard(currentPlan)
@@ -378,10 +382,74 @@ struct LaunchPlanSheet: View {
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 
+    private func preflightCard(_ report: PreflightReport) -> some View {
+        let headerColor: Color = {
+            switch report.overallStatus {
+            case .pass: return .green
+            case .warn: return .orange
+            case .fail: return .red
+            }
+        }()
+        return GroupBox {
+            VStack(alignment: .leading, spacing: 7) {
+                ForEach(report.checks) { item in
+                    let tint: Color = {
+                        switch item.status {
+                        case .pass: return .green
+                        case .warn: return .orange
+                        case .fail: return .red
+                        }
+                    }()
+                    let icon: String = {
+                        switch item.status {
+                        case .pass: return "checkmark.circle.fill"
+                        case .warn: return "exclamationmark.triangle.fill"
+                        case .fail: return "xmark.octagon.fill"
+                        }
+                    }()
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: icon)
+                            .foregroundStyle(tint)
+                            .font(.callout)
+                            .padding(.top, 1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(item.title)
+                                    .font(.callout.weight(.semibold))
+                                statusPill(item.status.displayLabel, color: tint)
+                            }
+                            Text(LaunchDiagnostics.redactHome(item.summary))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            if let fix = item.remediation, !fix.isEmpty {
+                                Text("Fix: \(LaunchDiagnostics.redactHome(fix))")
+                                    .font(.caption2)
+                                    .foregroundStyle(tint)
+                            }
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        } label: {
+            HStack(spacing: 8) {
+                Label("Pre-Flight Readiness", systemImage: "checklist")
+                statusPill(
+                    report.canLaunch
+                        ? (report.warnCount > 0 ? "READY (\(report.warnCount) WARN)" : "READY (\(report.passCount)/\(report.checks.count))")
+                        : "BLOCKED (\(report.failCount) FAIL)",
+                    color: headerColor
+                )
+            }
+        }
+    }
+
     // MARK: Actions
 
     private func refreshPlan() {
         plan = LaunchPlanInspector.inspect(entry: liveEntry, hardware: vm.gpuInfo)
+        preflight = PreflightChecker.check(entry: liveEntry, hardware: vm.gpuInfo)
     }
 
     private func copyMarkdown(_ currentPlan: GameLaunchPlan) {

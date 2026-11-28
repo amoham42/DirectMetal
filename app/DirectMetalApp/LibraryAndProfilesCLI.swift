@@ -60,7 +60,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|sync-profiles|lint|play|explain|shortcut|export|import)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|sync-profiles|lint|preflight|play|explain|shortcut|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -410,6 +410,24 @@ func runLibraryCLI(args: [String]) -> Int32 {
             print(LaunchEnvValidator.formatText(report))
         }
         return report.hasErrors ? 2 : 0
+
+    case "preflight", "ready":
+        let asJSON = rest.contains("--json")
+        let asMarkdown = rest.contains("--markdown") || rest.contains("--md")
+        let key = rest.filter { $0 != "--json" && $0 != "--markdown" && $0 != "--md" }.joined(separator: " ")
+        guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library preflight failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        let report = PreflightChecker.check(entry: entry)
+        if asJSON {
+            printLibraryJSON(report)
+        } else if asMarkdown {
+            print(PreflightChecker.formatMarkdown(report))
+        } else {
+            print(PreflightChecker.formatText(report))
+        }
+        return report.canLaunch ? 0 : 2
 
     case "shortcut":
         var format: ShortcutFormat = .app

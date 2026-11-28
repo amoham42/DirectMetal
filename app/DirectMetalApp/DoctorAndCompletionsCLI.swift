@@ -280,7 +280,7 @@ _directmetal() {
 
   case "$words[2]" in
     library)
-      local -a sub=(list scan add remove show artwork set diff reset-settings sync-profiles lint play explain shortcut export import)
+      local -a sub=(list scan add remove show artwork set diff reset-settings sync-profiles lint preflight play explain shortcut export import)
       _values 'library subcommand' $sub
       ;;
     runtime)
@@ -359,7 +359,7 @@ _directmetal_completions() {
 
   case "${cmd}" in
     library)
-      COMPREPLY=( $(compgen -W "list scan add remove show artwork set diff reset-settings sync-profiles lint play explain shortcut export import" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "list scan add remove show artwork set diff reset-settings sync-profiles lint preflight play explain shortcut export import" -- "${cur}") )
       ;;
     runtime)
       COMPREPLY=( $(compgen -W "status install update remove warm stop-servers" -- "${cur}") )

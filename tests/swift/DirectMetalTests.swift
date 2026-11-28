@@ -386,6 +386,12 @@ struct DirectMetalTests {
             ("LaunchEnvValidator: blocked keys, Linux/Proton hints, conflicts & secret redaction", {
                 try testLaunchEnvValidator()
             }),
+            ("PreflightChecker: 7-point readiness, anti-cheat detection, disk thresholds & redaction", {
+                try testPreflightChecker(tempRoot: tempRoot)
+            }),
+            ("GameProfileRegistry: 200+ profiles, zero duplicate IDs/exes & multi-store lookup", {
+                try testGameProfileRegistry200Milestone()
+            }),
         ]
 
         var passed = 0
@@ -2714,5 +2720,97 @@ struct DirectMetalTests {
             try expect(!issue.message.contains("super_secret_98765"), "issue.message must never echo secret values")
             try expect(!issue.suggestion.contains("super_secret_98765"), "issue.suggestion must never echo secret values")
         }
+    }
+
+    private static func testPreflightChecker(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let gameDir = tempRoot.appendingPathComponent("EACGame", isDirectory: true)
+        let eacDir = gameDir.appendingPathComponent("EasyAntiCheat", isDirectory: true)
+        try fm.createDirectory(at: eacDir, withIntermediateDirectories: true)
+        let exeURL = gameDir.appendingPathComponent("EACGame.exe")
+        try Data("MZ".utf8).write(to: exeURL)
+        try Data("eac".utf8).write(to: eacDir.appendingPathComponent("EasyAntiCheat_EOS.exe"))
+
+        let hw = MetalHardwareInfo(
+            gpuName: "Apple M4",
+            gpuFamily: "Apple9",
+            macosVersion: "26.7.1",
+            macosBuild: "25G241",
+            cacheKey: "apple9_25G241",
+            workingSetGiB: 16.0,
+            hasUnifiedMemory: true,
+            supportsMetal3: true,
+            supportsMetal4: true,
+            supportsRaytracing: true,
+            supportsMetalFXSpatial: true,
+            supportsMetalFXTemporal: true,
+            supportsMetal4FX: true
+        )
+        let prefixMgr = PrefixManager(prefixRoot: tempRoot.appendingPathComponent("preflight_prefixes", isDirectory: true))
+
+        // 1. Existing exe with EAC sibling & low disk (< 1 GiB) -> fails disk_space, warns anti_cheat
+        let entry = GameLibraryEntry(
+            title: "EAC Test Game",
+            exePath: exeURL.path,
+            prefixName: "EACGame",
+            customEnv: "WINEPREFIX=/tmp/blocked"
+        )
+        let lowDiskReport = PreflightChecker.check(
+            entry: entry,
+            hardware: hw,
+            prefixManager: prefixMgr,
+            freeDiskBytesOverride: 512 * 1024 * 1024
+        )
+        try expectEqual(lowDiskReport.checks.count, 7, "preflight must emit all 7 checks")
+        try expectEqual(lowDiskReport.canLaunch, false, "< 1 GiB free disk must block launch")
+        let diskCheck = try expectNotNil(lowDiskReport.checks.first(where: { $0.id == "disk_space" }))
+        try expectEqual(diskCheck.status, .fail)
+        let acCheck = try expectNotNil(lowDiskReport.checks.first(where: { $0.id == "anti_cheat" }))
+        try expectEqual(acCheck.status, .warn, "EasyAntiCheat sibling should trigger anti_cheat warning")
+        let envCheck = try expectNotNil(lowDiskReport.checks.first(where: { $0.id == "custom_env" }))
+        try expectEqual(envCheck.status, .warn, "blocked WINEPREFIX should trigger custom_env warning")
+
+        // 2. Missing exe -> executable check fails
+        let missingEntry = GameLibraryEntry(
+            title: "Missing Game",
+            exePath: tempRoot.appendingPathComponent("DoesNotExist/Game.exe").path,
+            prefixName: "Missing"
+        )
+        let missingReport = PreflightChecker.check(
+            entry: missingEntry,
+            hardware: hw,
+            prefixManager: prefixMgr,
+            freeDiskBytesOverride: 40 * 1024 * 1024 * 1024
+        )
+        let exeCheck = try expectNotNil(missingReport.checks.first(where: { $0.id == "executable" }))
+        try expectEqual(exeCheck.status, .fail)
+        try expectEqual(missingReport.canLaunch, false)
+
+        // 3. Home path redaction in text & Markdown formatters
+        let text = PreflightChecker.formatText(lowDiskReport, home: tempRoot.path)
+        let md = PreflightChecker.formatMarkdown(lowDiskReport, home: tempRoot.path)
+        try expect(!text.contains(tempRoot.path), "formatText must redact home paths")
+        try expect(!md.contains(tempRoot.path), "formatMarkdown must redact home paths")
+        try expect(md.contains("Pre-Flight Readiness"), "formatMarkdown should emit heading")
+    }
+
+    private static func testGameProfileRegistry200Milestone() throws {
+        let registry = GameProfileRegistry.load()
+        try expect(registry.profiles.count >= 200, "bundled profile registry should contain 200+ profiles, got \(registry.profiles.count)")
+
+        var seenIDs: Set<String> = []
+        var seenSteamIDs: Set<String> = []
+        for profile in registry.profiles {
+            try expect(seenIDs.insert(profile.id).inserted, "duplicate profile id: \(profile.id)")
+            for sid in profile.steamAppIds {
+                try expect(seenSteamIDs.insert(sid).inserted, "duplicate steamAppId \(sid) in \(profile.id)")
+            }
+        }
+
+        // Verify newly added milestone titles match deterministically by Steam App ID and exe name
+        let aoe2 = registry.match(title: "Age of Empires II: DE", exePath: "/Games/AoE2DE/AoE2DE_s.exe", steamAppID: "813780")
+        try expectEqual(aoe2?.id, "age-of-empires-2-definitive-edition")
+        let dave = registry.match(title: "Dave the Diver", exePath: "/Games/Dave/DaveTheDiver.exe", steamAppID: nil)
+        try expectEqual(dave?.id, "dave-the-diver")
     }
 }
