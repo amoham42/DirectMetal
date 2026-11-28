@@ -140,6 +140,10 @@ if [[ -z "${PY_RUNNER}" ]]; then
   PY_RUNNER="${TEMP_VENV}/bin/python"
 fi
 PYTHONPATH="${REPO_ROOT}/tools" "${PY_RUNNER}" "${REPO_ROOT}/tools/test_diff_harness.py"
+if [[ -d "${REPO_ROOT}/tests/python" ]]; then
+  echo "  [INFO] Running Python packaging & profile unit tests (tests/python)..."
+  python3 -m unittest discover -s "${REPO_ROOT}/tests/python" -v
+fi
 
 echo "=== [4/7] CMake Native C/Obj-C++ Subsystem Build & Strict Layer Warning Gate ==="
 SUBSYSTEMS=(

@@ -64,12 +64,15 @@ jobs:
             echo "[SKIP] scripts/validate_profiles.py not present; skipping profile schema validation."
           fi
 
-      - name: Run Python visual-diff harness unit tests
+      - name: Run Python visual-diff & packaging unit tests
         run: |
           VENV_DIR="${RUNNER_TEMP}/directmetal-ci-venv"
           python3 -m venv "${VENV_DIR}"
           "${VENV_DIR}/bin/pip" install --quiet --disable-pip-version-check pillow numpy
           PYTHONPATH=tools "${VENV_DIR}/bin/python" tools/test_diff_harness.py
+          if [[ -d tests/python ]]; then
+            python3 -m unittest discover -s tests/python -v
+          fi
 
       - name: Build & test C/Obj-C++ native subsystems (CMake)
         run: |
@@ -174,6 +177,9 @@ jobs:
           INFO_JSON="$("${DM_BIN}" info)"
           printf '%s\n' "${INFO_JSON}"
           printf '%s\n' "${INFO_JSON}" | python3 -m json.tool >/dev/null
+          "${DM_BIN}" completions zsh | zsh -n
+          "${DM_BIN}" completions bash | bash -n
+          "${DM_BIN}" profiles list --json | python3 -m json.tool >/dev/null
 
           # Verify synthetic attestation bundle sign + verify round-trip via CLI
           ATTEST_FILE="${RUNNER_TEMP}/ci_attest.json"

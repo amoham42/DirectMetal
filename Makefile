@@ -14,7 +14,7 @@ SUBSYSTEMS := \
 COMMON_ROOT := $(shell c="$$(git rev-parse --git-common-dir 2>/dev/null)"; if [ -n "$$c" ]; then cd "$$c/.." 2>/dev/null && pwd; fi)
 PYTHON := $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; elif [ -n "$(COMMON_ROOT)" ] && [ -x "$(COMMON_ROOT)/.venv/bin/python" ]; then echo "$(COMMON_ROOT)/.venv/bin/python"; else echo python3; fi)
 
-.PHONY: help lint validate-profiles test test-swift ci build-subsystems app app-lite dmg dmg-lite dmg-ultra conformance phase4 clean
+.PHONY: help lint validate-profiles test test-python test-swift ci build-subsystems app app-lite dmg dmg-lite dmg-ultra conformance phase4 clean
 
 help: ## Show available DirectMetal build, test, and packaging targets
 	@printf "DirectMetal — Apple Silicon DirectX Runtime Build System\n\n"
@@ -118,7 +118,13 @@ test-swift: ## Compile and run Swift unit tests (tests/swift/DirectMetalTests.sw
 		echo "[test-swift] DirectMetalApp Swift typecheck passed."; \
 	fi
 
-test: build-subsystems ## Run Python diff-harness, C/Obj-C++ subsystem, and Swift unit tests
+test-python: ## Run Python packaging, deduplication, dehydration & profile unit tests
+	@if [ -d tests/python ]; then \
+		echo "[test-python] Running tests/python unittest suite..."; \
+		python3 -m unittest discover -s tests/python -v; \
+	fi
+
+test: build-subsystems test-python ## Run Python, C/Obj-C++ subsystem, and Swift unit tests
 	@echo "[test] Running Python diff harness unit tests..."
 	@if $(PYTHON) -c "import PIL, numpy" >/dev/null 2>&1; then \
 		PYTHONPATH=tools $(PYTHON) tools/test_diff_harness.py; \
