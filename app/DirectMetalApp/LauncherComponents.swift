@@ -21,6 +21,16 @@ enum LauncherStyle {
         ("ultra_performance", "Ultra Perf 2.5x"),
     ]
 
+    static let fpsCapOptions: [(cap: Int, label: String)] = [
+        (0, "Uncapped"),
+        (30, "30 FPS"),
+        (40, "40 FPS (120 Hz 3:1)"),
+        (60, "60 FPS"),
+        (90, "90 FPS"),
+        (120, "120 FPS (ProMotion)"),
+        (144, "144 FPS"),
+    ]
+
     static func apiBadges(for entry: GameLibraryEntry) -> [LauncherBadge] {
         var out: [LauncherBadge] = []
         let apis = Set(entry.detectedAPIs)
@@ -653,6 +663,7 @@ extension LaunchDiagnostics {
             shaderCacheDir: result?.shaderCacheDir ?? RuntimeLauncher.shaderCacheRoot().path,
             controllerProfile: "\(resolved.profile.preset.displayName) (\(scope))",
             settings: "perf=\(e.perfProfile.rawValue) dx9=\(e.dx9Backend.rawValue) metalfx=\(e.launchUpscaleMode ?? "off") "
+                + "fpsCap=\(e.fpsCap > 0 ? "\(e.fpsCap)" : "uncapped") "
                 + "retina=\(onOff(e.retinaMode)) hud=\(onOff(e.enableHUD))",
             extraArgs: e.extraArgs.trimmingCharacters(in: .whitespacesAndNewlines),
             gpuSummary: gpuSummary,

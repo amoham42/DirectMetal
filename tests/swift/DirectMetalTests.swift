@@ -323,6 +323,9 @@ struct DirectMetalTests {
             ("GameLibraryManager: portable library + controller backup export/import round-trip", {
                 try testLibraryBackupExportAndImport(tempRoot: tempRoot)
             }),
+            ("RuntimeLauncher & GameLibraryEntry: FPS cap clamping, env/config & user override precedence", {
+                try testFPSCapEnvironmentAndClamping()
+            }),
         ]
 
         var passed = 0
@@ -1675,5 +1678,30 @@ struct DirectMetalTests {
         // Import with --overwrite must update existing entry
         let summary3 = try dstMgr.importBackup(from: backupFile, overwriteExisting: true)
         try expectEqual(summary3.updated, 1)
+    }
+
+    private static func testFPSCapEnvironmentAndClamping() throws {
+        // Entry clamping & tolerant decoding
+        let eHigh = GameLibraryEntry(title: "Cap", exePath: "/Games/Cap.exe", prefixName: "cap", fpsCap: 999)
+        let eNeg = GameLibraryEntry(title: "Neg", exePath: "/Games/Neg.exe", prefixName: "neg", fpsCap: -20)
+        try expectEqual(eHigh.fpsCap, 360)
+        try expectEqual(eNeg.fpsCap, 0)
+
+        let uncapped = RuntimeLauncher.fpsCapEnvironmentAndConfig(fpsCap: 0, existingEnv: [:])
+        try expect(uncapped.env.isEmpty && uncapped.mullionConfig.isEmpty, "0 FPS cap should emit no overrides")
+
+        let capped = RuntimeLauncher.fpsCapEnvironmentAndConfig(fpsCap: 40, existingEnv: [:])
+        try expectEqual(capped.env["DXMT_FRAME_RATE_CAP"], "40")
+        try expectEqual(capped.env["DXVK_FRAME_RATE"], "40")
+        try expectEqual(capped.mullionConfig, ["dxgi.maxFrameRate=40"])
+
+        // User-exported env vars must win
+        let withUser = RuntimeLauncher.fpsCapEnvironmentAndConfig(
+            fpsCap: 60,
+            existingEnv: ["DXVK_FRAME_RATE": "120"]
+        )
+        try expectNil(withUser.env["DXVK_FRAME_RATE"], "explicit user DXVK_FRAME_RATE should not be overwritten")
+        try expectEqual(withUser.env["DXMT_FRAME_RATE_CAP"], "60")
+        try expectEqual(withUser.mullionConfig, ["dxgi.maxFrameRate=60"])
     }
 }

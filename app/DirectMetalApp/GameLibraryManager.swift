@@ -12,6 +12,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     var perfProfile: PerfProfile
     var dx9Backend: DX9Backend
     var upscaleMode: String
+    var fpsCap: Int
     var retinaMode: Bool
     var enableHUD: Bool
     var enableSandbox: Bool
@@ -42,6 +43,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         perfProfile: PerfProfile = .balanced,
         dx9Backend: DX9Backend = .auto,
         upscaleMode: String = "off",
+        fpsCap: Int = 0,
         retinaMode: Bool = true,
         enableHUD: Bool = true,
         enableSandbox: Bool = false,
@@ -68,6 +70,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         self.perfProfile = perfProfile
         self.dx9Backend = dx9Backend
         self.upscaleMode = upscaleMode
+        self.fpsCap = max(0, min(fpsCap, 360))
         self.retinaMode = retinaMode
         self.enableHUD = enableHUD
         self.enableSandbox = enableSandbox
@@ -87,7 +90,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case id, title, exePath, prefixName, engine, perfProfile, dx9Backend, upscaleMode
+        case id, title, exePath, prefixName, engine, perfProfile, dx9Backend, upscaleMode, fpsCap
         case retinaMode, enableHUD, enableSandbox, extraArgs, architecture, detectedAPIs
         case detectedUpscalers, buildHash, playCount, totalPlaySeconds, lastPlayedUtc
         case steamAppID, profileID, profileNote
@@ -110,6 +113,7 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         perfProfile = opt(PerfProfile.self, .perfProfile) ?? .balanced
         dx9Backend = opt(DX9Backend.self, .dx9Backend) ?? .auto
         upscaleMode = opt(String.self, .upscaleMode) ?? "off"
+        fpsCap = max(0, min(opt(Int.self, .fpsCap) ?? 0, 360))
         retinaMode = opt(Bool.self, .retinaMode) ?? true
         enableHUD = opt(Bool.self, .enableHUD) ?? true
         enableSandbox = opt(Bool.self, .enableSandbox) ?? false

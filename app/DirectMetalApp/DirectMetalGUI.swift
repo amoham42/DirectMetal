@@ -367,7 +367,8 @@ final class DirectMetalViewModel: ObservableObject {
                     retinaMode: current.retinaMode,
                     sandboxed: current.enableSandbox,
                     warmServerSeconds: 180,
-                    controllerProfileKey: current.id
+                    controllerProfileKey: current.id,
+                    fpsCap: current.fpsCap
                 )
                 let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: result,
                                                             failure: nil, gpuSummary: gpu)
@@ -961,6 +962,18 @@ struct GameDetailView: View {
                         .labelsHidden()
                         .pickerStyle(.menu)
                         .frame(maxWidth: 200)
+                    }
+                    GridRow {
+                        Text("FPS Cap").foregroundStyle(.secondary)
+                        Picker("FPS Cap", selection: vm.binding(e, \.fpsCap)) {
+                            ForEach(LauncherStyle.fpsCapOptions, id: \.cap) { opt in
+                                Text(opt.label).tag(opt.cap)
+                            }
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.menu)
+                        .frame(maxWidth: 200)
+                        .help("Frame-rate limiter for Mullion (dxgi.maxFrameRate), DXMT & DXVK; 40 FPS paces cleanly 3:1 on 120 Hz ProMotion")
                     }
                     GridRow {
                         Text("Extra Args").foregroundStyle(.secondary)

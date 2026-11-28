@@ -179,6 +179,13 @@ func runLibraryCLI(args: [String]) -> Int32 {
                 if ["off", "quality", "balanced", "performance", "ultra_performance"].contains(v) {
                     entries[idx].upscaleMode = v
                 } else { ok = false }
+            case "fps-cap", "fpscap", "fps":
+                let v = value.lowercased()
+                if v == "off" || v == "uncapped" || v == "none" {
+                    entries[idx].fpsCap = 0
+                } else if let n = Int(v), (0...360).contains(n) {
+                    entries[idx].fpsCap = n
+                } else { ok = false }
             case "retina":
                 if let v = parseBool(value) { entries[idx].retinaMode = v } else { ok = false }
             case "hud":
@@ -253,7 +260,8 @@ func runLibraryCLI(args: [String]) -> Int32 {
                 retinaMode: entry.retinaMode,
                 sandboxed: entry.enableSandbox,
                 warmServerSeconds: warmServerSeconds,
-                controllerProfileKey: entry.id
+                controllerProfileKey: entry.id,
+                fpsCap: entry.fpsCap
             )
             mgr.recordSessionDuration(id: entry.id, seconds: res.elapsedSeconds)
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)

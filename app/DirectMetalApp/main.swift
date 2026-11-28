@@ -544,6 +544,7 @@ private func runCLI(args: [String]) -> Int32 {
         var retinaMode: Bool? = nil
         var virtualDesktop: String? = nil
         var warmServerSeconds: Int? = nil
+        var fpsCap = 0
         var childArgs: [String] = []
 
         var i = 2
@@ -564,6 +565,9 @@ private func runCLI(args: [String]) -> Int32 {
                 i += 2
             } else if a == "--upscale", i + 1 < args.count {
                 upscaleMode = args[i + 1]
+                i += 2
+            } else if a == "--fps-cap", i + 1 < args.count {
+                fpsCap = max(0, min(Int(args[i + 1]) ?? 0, 360))
                 i += 2
             } else if a == "--engine", i + 1 < args.count {
                 engine = ExecutionEngine(rawValue: args[i + 1].lowercased()) ?? .auto
@@ -628,7 +632,8 @@ private func runCLI(args: [String]) -> Int32 {
                 sandboxOffline: sandboxOffline,
                 sandboxOutputDir: sandboxOutDir,
                 fexTSOOverride: fexTSOOverride,
-                warmServerSeconds: warmServerSeconds
+                warmServerSeconds: warmServerSeconds,
+                fpsCap: fpsCap
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)

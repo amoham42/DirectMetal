@@ -262,7 +262,8 @@ enum RuntimeLauncher {
         sandboxOutputDir: String? = nil,
         fexTSOOverride: Bool? = nil,
         warmServerSeconds: Int? = nil,
-        controllerProfileKey: String? = nil
+        controllerProfileKey: String? = nil,
+        fpsCap: Int = 0
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -476,6 +477,11 @@ enum RuntimeLauncher {
                 extraMullionCfg.append("d3d12.samplerLodBias=\(lodBias)")
             }
         }
+        let fpsApply = Self.fpsCapEnvironmentAndConfig(fpsCap: fpsCap, existingEnv: env)
+        for (k, v) in fpsApply.env {
+            env[k] = v
+        }
+        extraMullionCfg.append(contentsOf: fpsApply.mullionConfig)
         if !extraMullionCfg.isEmpty {
             let joined = extraMullionCfg.joined(separator: ";")
             if let existing = env["MULLION_CONFIG"], !existing.isEmpty {
@@ -629,5 +635,24 @@ enum RuntimeLauncher {
             activeEngine: activeEngine,
             sandboxed: sandboxed
         )
+    }
+
+    /// Computes DXMT / DXVK / Mullion frame-rate cap overrides for `fpsCap` (`0` = uncapped).
+    /// Respects any explicit user-exported environment variables.
+    static func fpsCapEnvironmentAndConfig(
+        fpsCap: Int,
+        existingEnv: [String: String]
+    ) -> (env: [String: String], mullionConfig: [String]) {
+        let clamped = max(0, min(fpsCap, 360))
+        guard clamped > 0 else { return ([:], []) }
+        let str = String(clamped)
+        var outEnv: [String: String] = [:]
+        if existingEnv["DXMT_FRAME_RATE_CAP"] == nil {
+            outEnv["DXMT_FRAME_RATE_CAP"] = str
+        }
+        if existingEnv["DXVK_FRAME_RATE"] == nil {
+            outEnv["DXVK_FRAME_RATE"] = str
+        }
+        return (outEnv, ["dxgi.maxFrameRate=\(str)"])
     }
 }
