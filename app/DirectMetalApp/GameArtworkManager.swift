@@ -100,6 +100,20 @@ enum ArtworkStyle: String {
     case icon
 }
 
+/// Resolved artwork plus where it came from (`gog-webcache`, `gog-folder`, `gog-ico`, `epic-heroic`,
+/// `epic-folder`, `steam`, `exe-icon`).
+struct ArtworkResolution {
+    let image: NSImage
+    let source: String
+    let path: String
+
+    /// Every decoder in this file builds its `NSImage` with `size` == source pixel dimensions (CG snapshot
+    /// representations would report backing-scaled pixels instead).
+    var pixelWidth: Int { Int(image.size.width.rounded()) }
+
+    var pixelHeight: Int { Int(image.size.height.rounded()) }
+}
+
 /// Resolves real game artwork (local Steam library cache art or the icon embedded in the Windows `.exe`)
 /// with a thread-safe in-memory cache. Safe to call from any thread; misses are cached too so list rows
 /// never re-scan the disk while scrolling.
@@ -117,7 +131,12 @@ final class GameArtworkManager: @unchecked Sendable {
     }
 
     private func cacheKey(_ entry: GameLibraryEntry, _ style: ArtworkStyle) -> String {
-        "\(style.rawValue)|\(entry.steamAppID ?? "")|\(entry.exePath)"
+        GameArtworkManager.artworkKey(entry, style)
+    }
+
+    /// Identity of an entry's artwork (also used by the GUI to reload when store metadata changes).
+    static func artworkKey(_ entry: GameLibraryEntry, _ style: ArtworkStyle) -> String {
+        "\(style.rawValue)|\(entry.steamAppID ?? "")|\(entry.storeSource ?? "")|\(entry.storeGameID ?? "")|\(entry.exePath)"
     }
 
     /// Detail-banner artwork for `entry` (Steam header/poster, else `.exe` icon), or `nil` => `GameMonogram`.
@@ -158,20 +177,156 @@ final class GameArtworkManager: @unchecked Sendable {
     }
 
     private func resolve(_ entry: GameLibraryEntry, _ style: ArtworkStyle) -> NSImage? {
+        resolveArtwork(for: entry, style: style)?.image
+    }
+
+    /// Uncached resolution with provenance (`library artwork` CLI / diagnostics). Order: GOG / Epic store art
+    /// -> Steam library cache -> the Windows `.exe`'s embedded icon -> `nil` (`GameMonogram`).
+    func resolveArtwork(for entry: GameLibraryEntry, style: ArtworkStyle) -> ArtworkResolution? {
+        switch entry.storeSource {
+        case "gog":
+            if let r = gogArtwork(entry, style) { return r }
+        case "epic":
+            if let r = epicArtwork(entry, style) { return r }
+        default:
+            break
+        }
         let appID = entry.steamAppID ?? SteamLibraryLocator.steamAppID(forExePath: entry.exePath)
-        let steam: (ArtworkStyle) -> NSImage? = { s in
+        let steam: (ArtworkStyle) -> ArtworkResolution? = { s in
             guard let appID else { return nil }
             return self.steamArtwork(appID: appID, exePath: entry.exePath, style: s)
         }
+        let exeIcon: () -> ArtworkResolution? = {
+            PEIconExtractor.extractIcon(exePath: entry.exePath).map {
+                ArtworkResolution(image: $0, source: "exe-icon", path: entry.exePath)
+            }
+        }
         switch style {
         case .banner:
-            return steam(.banner) ?? PEIconExtractor.extractIcon(exePath: entry.exePath)
+            return steam(.banner) ?? exeIcon()
         case .icon:
-            return steam(.icon) ?? PEIconExtractor.extractIcon(exePath: entry.exePath) ?? steam(.banner)
+            return steam(.icon) ?? exeIcon() ?? steam(.banner)
         }
     }
 
-    private func steamArtwork(appID: String, exePath: String, style: ArtworkStyle) -> NSImage? {
+    // MARK: GOG Galaxy / Epic artwork
+
+    private static let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "webp", "ico", "bmp", "gif", "tif", "tiff"]
+
+    /// First decodable image among `names` in `dir` (case-insensitive file names).
+    private func firstImage(in dir: URL, names: [String], source: String) -> ArtworkResolution? {
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
+        let byLower = Dictionary(items.map { ($0.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
+        for name in names {
+            guard let real = byLower[name.lowercased()] else { continue }
+            let url = dir.appendingPathComponent(real)
+            if let img = Self.decodeImageFile(at: url) { return ArtworkResolution(image: img, source: source, path: url.path) }
+        }
+        return nil
+    }
+
+    /// Images under `dir` (max depth 2) whose lowercased file name starts with one of `prefixes`, in prefix order.
+    private func prefixedImage(under dir: URL, prefixes: [String], source: String) -> ArtworkResolution? {
+        let fm = FileManager.default
+        guard let en = fm.enumerator(at: dir, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles])
+        else { return nil }
+        var files: [URL] = []
+        while let obj = en.nextObject() {
+            guard let url = obj as? URL else { continue }
+            if en.level > 2 { en.skipDescendants(); continue }
+            if Self.imageExtensions.contains(url.pathExtension.lowercased()) { files.append(url) }
+            if files.count > 512 { break }
+        }
+        files.sort { $0.path < $1.path }
+        for prefix in prefixes {
+            for url in files where url.lastPathComponent.lowercased().hasPrefix(prefix) {
+                if let img = Self.decodeImageFile(at: url) { return ArtworkResolution(image: img, source: source, path: url.path) }
+            }
+        }
+        return nil
+    }
+
+    /// GOG: `webcache/<id>/` art (game folder or the prefix's `ProgramData/GOG.com/Galaxy/webcache`), folder
+    /// cover art, then `goggame-<id>.ico` / `support.ico` / `gfw_high.ico`.
+    private func gogArtwork(_ entry: GameLibraryEntry, _ style: ArtworkStyle) -> ArtworkResolution? {
+        guard let root = StoreMetadataLocator.gogGameRoot(forExePath: entry.exePath, gameID: entry.storeGameID) else { return nil }
+        let id = entry.storeGameID ?? root.gameID
+        var webcaches = [root.dir.appendingPathComponent("webcache/\(id)", isDirectory: true)]
+        let comps = root.dir.pathComponents
+        if let ci = comps.lastIndex(where: { $0.lowercased() == "drive_c" }) {
+            let driveC = URL(fileURLWithPath: NSString.path(withComponents: Array(comps[0...ci])), isDirectory: true)
+            webcaches.append(driveC.appendingPathComponent("ProgramData/GOG.com/Galaxy/webcache/\(id)", isDirectory: true))
+        }
+        let cover: () -> ArtworkResolution? = {
+            for dir in webcaches {
+                if let r = self.prefixedImage(under: dir, prefixes: ["cover", "background", "logo"], source: "gog-webcache") { return r }
+            }
+            return self.firstImage(in: root.dir, names: ["cover.jpg", "cover.png", "folder.jpg", "folder.png", "logo.png"],
+                                   source: "gog-folder")
+        }
+        let icon: () -> ArtworkResolution? = {
+            if let r = self.firstImage(in: root.dir, names: ["goggame-\(id).ico", "support.ico", "gfw_high.ico", "icon.ico", "icon.png"],
+                                       source: "gog-ico") { return r }
+            for dir in webcaches {
+                if let r = self.prefixedImage(under: dir, prefixes: ["icon", "square"], source: "gog-webcache") { return r }
+            }
+            return nil
+        }
+        switch style {
+        case .banner: return cover() ?? icon()
+        case .icon: return icon() ?? cover()
+        }
+    }
+
+    /// Epic: Heroic `images-cache/` + `icons/` (matched by `AppName`), then cover / icon files in the game folder.
+    private func epicArtwork(_ entry: GameLibraryEntry, _ style: ArtworkStyle) -> ArtworkResolution? {
+        let fm = FileManager.default
+        let heroic = StoreMetadataLocator.heroicRoot()
+        let id = entry.storeGameID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let heroicCache: () -> ArtworkResolution? = {
+            guard id.count >= 3 else { return nil }
+            let dir = heroic.appendingPathComponent("images-cache", isDirectory: true)
+            guard let items = try? fm.contentsOfDirectory(atPath: dir.path) else { return nil }
+            let low = id.lowercased()
+            for name in items.sorted() where name.lowercased().contains(low) {
+                let url = dir.appendingPathComponent(name)
+                if let img = Self.decodeImageFile(at: url) { return ArtworkResolution(image: img, source: "epic-heroic", path: url.path) }
+            }
+            return nil
+        }
+        let heroicIcon: () -> ArtworkResolution? = {
+            guard !id.isEmpty else { return nil }
+            return self.firstImage(in: heroic.appendingPathComponent("icons", isDirectory: true),
+                                   names: ["\(id).png", "\(id).jpg", "\(id).jpeg", "\(id).webp", "\(id).ico"], source: "epic-heroic")
+        }
+        let root = StoreMetadataLocator.epicGameRoot(forExePath: entry.exePath)
+        let stem = URL(fileURLWithPath: entry.exePath).deletingPathExtension().lastPathComponent
+        let folderCover: () -> ArtworkResolution? = {
+            guard let root else { return nil }
+            return self.firstImage(in: root, names: ["cover.jpg", "cover.png", "keyart.jpg", "keyart.png", "folder.jpg", "folder.png",
+                                                     "logo.png"], source: "epic-folder")
+        }
+        let folderIcon: () -> ArtworkResolution? = {
+            guard let root else { return nil }
+            return self.firstImage(in: root, names: ["icon.png", "icon.ico", "\(stem).ico", "\(stem).png"], source: "epic-folder")
+        }
+        switch style {
+        case .banner: return heroicCache() ?? folderCover() ?? heroicIcon() ?? folderIcon()
+        case .icon: return heroicIcon() ?? folderIcon() ?? heroicCache() ?? folderCover()
+        }
+    }
+
+    /// Raster images via ImageIO; `.ico` files via the bundled ICO directory parser (largest, deepest entry).
+    static func decodeImageFile(at url: URL) -> NSImage? {
+        if url.pathExtension.lowercased() == "ico" {
+            guard let data = try? Data(contentsOf: url, options: .mappedIfSafe), data.count > 22, data.count < 32 << 20
+            else { return nil }
+            return PEIconExtractor.decodeICOFile(data)
+        }
+        return decodeImage(at: url)
+    }
+
+    private func steamArtwork(appID: String, exePath: String, style: ArtworkStyle) -> ArtworkResolution? {
         guard SteamLibraryLocator.isAppID(appID) else { return nil }
         let names: [String]
         switch style {
@@ -185,7 +340,9 @@ final class GameArtworkManager: @unchecked Sendable {
         for dir in SteamLibraryLocator.librarycacheDirectories(forExePath: exePath, prefixRoot: prefixRoot) {
             for name in names {
                 let url = dir.appendingPathComponent(name)
-                if fm.fileExists(atPath: url.path), let img = Self.decodeImage(at: url) { return img }
+                if fm.fileExists(atPath: url.path), let img = Self.decodeImage(at: url) {
+                    return ArtworkResolution(image: img, source: "steam", path: url.path)
+                }
             }
             // Newer Steam clients nest art one level deeper: librarycache/<appid>/<hash>/header.jpg
             if style == .banner,
@@ -194,7 +351,9 @@ final class GameArtworkManager: @unchecked Sendable {
                 for sub in subs.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
                     for name in ["header.jpg", "library_600x900.jpg"] {
                         let url = sub.appendingPathComponent(name)
-                        if fm.fileExists(atPath: url.path), let img = Self.decodeImage(at: url) { return img }
+                        if fm.fileExists(atPath: url.path), let img = Self.decodeImage(at: url) {
+                            return ArtworkResolution(image: img, source: "steam", path: url.path)
+                        }
                     }
                 }
             }
@@ -423,6 +582,37 @@ enum PEIconExtractor {
                   w > 0, w <= 1024, h2 != 0, abs(Int(h2)) / 2 <= 1024 else { return nil }
             return (Int(w), max(1, abs(Int(h2)) / 2), Int(bpp))
         }
+    }
+
+    /// Decodes a standalone Windows `.ico` file (GOG `goggame-<id>.ico`): parses the ICONDIR, decodes the
+    /// largest / deepest PNG or DIB entry with `decodeIconImage`, and falls back to ImageIO.
+    static func decodeICOFile(_ data: Data) -> NSImage? {
+        let candidates: [IconCandidate] = data.withUnsafeBytes { raw -> [IconCandidate] in
+            let r = ByteReader(buf: raw)
+            guard r.u16(0) == 0, r.u16(2) == 1, let count = r.u16(4).map(Int.init), count > 0 else { return [] }
+            var out: [IconCandidate] = []
+            for i in 0..<min(count, 256) {
+                let e = 6 + i * 16
+                guard let w = r.u8(e), let h = r.u8(e + 1), let bpp = r.u16(e + 6),
+                      let size = r.u32(e + 8).map(Int.init), let off = r.u32(e + 12).map(Int.init),
+                      size > 0, size <= 16 << 20, let slice = r.slice(off, size) else { continue }
+                let dims = probeDimensions(slice)
+                out.append(IconCandidate(width: dims?.w ?? (w == 0 ? 256 : Int(w)), height: dims?.h ?? (h == 0 ? 256 : Int(h)),
+                                         bitCount: dims?.bpp ?? Int(bpp), data: slice))
+            }
+            return out
+        }
+        let ordered = candidates.sorted {
+            let a0 = $0.width * $0.height, a1 = $1.width * $1.height
+            return a0 != a1 ? a0 > a1 : $0.bitCount > $1.bitCount
+        }
+        for cand in ordered.prefix(6) {
+            if let img = decodeIconImage(cand.data) { return img }
+        }
+        let reps = NSBitmapImageRep.imageReps(with: data).compactMap { $0 as? NSBitmapImageRep }
+        guard let best = reps.max(by: { $0.pixelsWide * $0.pixelsHigh < $1.pixelsWide * $1.pixelsHigh }),
+              best.pixelsWide > 0, let cg = best.cgImage else { return nil }
+        return NSImage(cgImage: cg, size: NSSize(width: best.pixelsWide, height: best.pixelsHigh))
     }
 
     /// Decodes one `RT_ICON` image (PNG or DIB+mask) into an `NSImage`.

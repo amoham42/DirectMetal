@@ -29,13 +29,17 @@ private func printUsage() {
                                          Show ARM64EC runtime source (bundled|user-installed|dev-build|missing)
       DirectMetal runtime install [--url <url>] [--sha256 <hex>] [--force]
                                          Download/copy, SHA-256 + codesign verify, and install the notarized runtime
+      DirectMetal runtime update [--url <url>] [--sha256 <hex>]
+                                         Install the latest upstream MetalSharp-Wine release (SHA256SUMS verified)
+                                         (DIRECTMETAL_RUNTIME_UPDATE_URL overrides the release endpoint)
       DirectMetal runtime remove         Remove the user-installed runtime
       DirectMetal runtime warm <prefix> [--seconds <N>]
                                          Start a persistent warm wineserver (default 120 s, ~220 ms launches)
       DirectMetal runtime stop-servers [<prefix>]
                                          Stop warm wineservers (all DirectMetal prefixes when omitted)
       DirectMetal library list [--json]  List saved games and their per-game settings
-      DirectMetal library scan [dir...]  Auto-scan prefixes, Steam libraries, DIRECTMETAL_SCAN_DIR,
+      DirectMetal library scan [dir...]  Auto-scan prefixes, Steam libraries, GOG Galaxy + Epic Games installs
+                                         (prefixes, ~/Games, Heroic), DIRECTMETAL_SCAN_DIR,
                                          ./.directmetal_cache/games and the given folders
       DirectMetal library add <exe> [--title <name>]
                                          Add (or refresh) a game in the library
@@ -43,15 +47,70 @@ private func printUsage() {
                                          Remove a game (scans will not re-add it)
       DirectMetal library show <id_or_title>
                                          Print a saved game entry as JSON
+      DirectMetal library artwork <id_or_title>
+                                         Show which artwork (GOG / Epic / Steam / .exe icon) resolves for a game
       DirectMetal library set <id_or_title> <key>=<value>...
                                          Update per-game settings (title, prefix, engine, perf, dx9,
-                                         upscale, retina, hud, sandbox, args)
+                                         upscale, retina, hud, sandbox, args, store, store-id)
       DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]
-                                         Launch a saved game with its per-game settings
+                                         Launch a saved game with its per-game settings + controller profile
       DirectMetal profiles list [--json] List community game profiles (auto-applied to newly added games)
-      DirectMetal update check [--json]  Check GitHub Releases for a newer DirectMetal
+      DirectMetal controller list [--json]
+                                         List saved controller profiles, presets and connected controllers
+      DirectMetal controller show [<default|id_or_title>] [--json]
+                                         Show the effective profile and its SDL_GAMECONTROLLERCONFIG launch env
+      DirectMetal controller set <default|id_or_title> <key>=<value>...
+                                         preset=xboxStandard|nintendoSwap|playstationDualSense|invertedLookY|custom,
+                                         left-deadzone=<0-35%>, right-deadzone=<0-35%>, invert-y=<bool>,
+                                         haptics=<bool>, <button>=<button> (a b x y leftshoulder rightshoulder
+                                         lefttrigger righttrigger leftstick rightstick start back dpup dpdown
+                                         dpleft dpright)  (DIRECTMETAL_CONTROLLER_PROFILES overrides the file)
+      DirectMetal controller reset [<default|id_or_title>|--all]
+                                         Remove a controller profile (stock behavior)
+      DirectMetal update check [--json]  Check GitHub Releases for a newer DirectMetal app and MetalSharp-Wine runtime
                                          (DIRECTMETAL_UPDATE_URL overrides, DIRECTMETAL_DISABLE_UPDATE_CHECK=1 disables)
+      DirectMetal update apply [--url <dmg_url>] [--sha256 <hex>|--sha256-url <url>] [--target-app <path.app>] [--force]
+                                         Download, SHA-256 verify, mount, codesign verify and atomically install
+                                         the DirectMetal .dmg (latest release when --url is omitted)
     """)
+}
+
+/// Single-line (TTY) or per-phase/decile (pipe) progress reporting on stderr for long CLI operations.
+private final class CLIProgressPrinter {
+    let tag: String
+    private let tty = isatty(STDERR_FILENO) != 0
+    private var lastPhase = ""
+    private var lastDecile = -1
+    private var inlineActive = false
+
+    init(tag: String) {
+        self.tag = tag
+    }
+
+    func emit(phase: String, message: String, bytes: Int64, total: Int64, fraction: Double) {
+        var line = "[\(tag)] \(phase): \(message)"
+        if bytes > 0 {
+            line += " \(formatMB(bytes))"
+            if total > 0 { line += " / \(formatMB(total))" }
+            if fraction >= 0 { line += String(format: " (%.0f%%)", fraction * 100) }
+        }
+        let decile = fraction >= 0 ? Int(fraction * 10) : -1
+        if tty {
+            if inlineActive && phase != lastPhase { fputs("\n", stderr) }
+            fputs("\r\u{1B}[2K" + line, stderr)
+            inlineActive = fraction >= 0 && fraction < 1
+            if !inlineActive { fputs("\n", stderr) }
+        } else if phase != lastPhase || decile != lastDecile {
+            fputs(line + "\n", stderr)
+        }
+        lastPhase = phase
+        lastDecile = decile
+    }
+
+    func finish() {
+        if tty && inlineActive { fputs("\n", stderr) }
+        inlineActive = false
+    }
 }
 
 /// Parses `--warm-server [N]`, `--warm-server=N` and `--no-warm-server` at `args[i]`.
@@ -76,7 +135,7 @@ private func formatMB(_ bytes: Int64) -> String {
 
 private func runRuntimeCLI(args: [String]) -> Int32 {
     guard let sub = args.first else {
-        fputs("error: runtime requires subcommand (status|install|remove|warm|stop-servers)\n", stderr)
+        fputs("error: runtime requires subcommand (status|install|update|remove|warm|stop-servers)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -169,6 +228,45 @@ private func runRuntimeCLI(args: [String]) -> Int32 {
         } catch {
             if tty { fputs("\n", stderr) }
             fputs("runtime install failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "update", "upgrade":
+        var sourceURL: URL? = nil
+        var sha: String? = nil
+        var i = 0
+        while i < rest.count {
+            let a = rest[i]
+            if a == "--url", i + 1 < rest.count {
+                guard let u = RuntimeManager.parseSourceURL(rest[i + 1]) else {
+                    fputs("error: invalid --url \(rest[i + 1])\n", stderr)
+                    return 1
+                }
+                sourceURL = u
+                i += 2
+            } else if a == "--sha256", i + 1 < rest.count {
+                sha = rest[i + 1]
+                i += 2
+            } else {
+                fputs("error: unknown runtime update option \(a)\n", stderr)
+                return 1
+            }
+        }
+        let printer = CLIProgressPrinter(tag: "runtime")
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        do {
+            let root = try AppUpdater.updateRuntime(zipURL: sourceURL, expectedSHA256: sha) { p in
+                printer.emit(phase: p.phase.rawValue, message: p.message, bytes: p.bytesReceived,
+                             total: p.totalBytes, fraction: p.fraction)
+            }
+            printer.finish()
+            let secs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9
+            fputs(String(format: "[runtime] MetalSharp-Wine %@ ready in %.1f s\n", AppUpdater.installedRuntimeVersion(), secs), stderr)
+            print(root.path)
+            return 0
+        } catch {
+            printer.finish()
+            fputs("runtime update failed: \(error)\n", stderr)
             return 1
         }
 
@@ -306,7 +404,8 @@ private func runLibraryCLI(args: [String]) -> Int32 {
         } else {
             let added = entries.filter { !before.contains($0.id) }
             for e in added {
-                print("+ \(e.title)  [\(e.architecture) \(e.detectedAPIs.joined(separator: "+"))]  \(e.exePath)")
+                let store = e.storeSource.map { s in " {\(s)\(e.storeGameID.map { ":\($0)" } ?? "")}" } ?? ""
+                print("+ \(e.title)  [\(e.architecture) \(e.detectedAPIs.joined(separator: "+"))]\(store)  \(e.exePath)")
             }
             print("scan complete: \(added.count) new, \(entries.count) total\n")
             printLibraryTable(entries)
@@ -353,6 +452,22 @@ private func runLibraryCLI(args: [String]) -> Int32 {
         printLibraryJSON(entry)
         return 0
 
+    case "artwork", "art":
+        let key = rest.filter { $0 != "--json" }.joined(separator: " ")
+        guard let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library artwork failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        func describe(_ style: ArtworkStyle) -> ArtworkInfo? {
+            GameArtworkManager.shared.resolveArtwork(for: entry, style: style).map {
+                ArtworkInfo(source: $0.source, path: $0.path, width: $0.pixelWidth, height: $0.pixelHeight)
+            }
+        }
+        printLibraryJSON(ArtworkReport(id: entry.id, title: entry.title, exePath: entry.exePath,
+                                       storeSource: entry.storeSource, storeGameID: entry.storeGameID,
+                                       steamAppID: entry.steamAppID, banner: describe(.banner), icon: describe(.icon)))
+        return 0
+
     case "set":
         guard rest.count >= 2 else {
             fputs("error: library set requires <id_or_title> <key>=<value>...\n", stderr)
@@ -393,6 +508,11 @@ private func runLibraryCLI(args: [String]) -> Int32 {
             case "sandbox":
                 if let v = parseBool(value) { entries[idx].enableSandbox = v } else { ok = false }
             case "args", "extra-args", "extraargs": entries[idx].extraArgs = value
+            case "store", "storesource":
+                let v = value.lowercased()
+                if ["steam", "gog", "epic", "standalone"].contains(v) { entries[idx].storeSource = v } else { ok = false }
+            case "store-id", "storeid", "storegameid":
+                entries[idx].storeGameID = value.isEmpty ? nil : value
             default:
                 fputs("error: unknown setting \"\(key)\"\n", stderr)
                 return 1
@@ -454,7 +574,8 @@ private func runLibraryCLI(args: [String]) -> Int32 {
                 perfProfile: entry.perfProfile,
                 retinaMode: entry.retinaMode,
                 sandboxed: entry.enableSandbox,
-                warmServerSeconds: warmServerSeconds
+                warmServerSeconds: warmServerSeconds,
+                controllerProfileKey: entry.id
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath)\n", stderr)
@@ -507,28 +628,381 @@ private func runProfilesCLI(args: [String]) -> Int32 {
     }
 }
 
+private struct ArtworkInfo: Encodable {
+    let source: String
+    let path: String
+    let width: Int
+    let height: Int
+}
+
+private struct ArtworkReport: Encodable {
+    let id: String
+    let title: String
+    let exePath: String
+    let storeSource: String?
+    let storeGameID: String?
+    let steamAppID: String?
+    let banner: ArtworkInfo?
+    let icon: ArtworkInfo?
+}
+
+/// `update check --json`: every pre-existing top-level `UpdateCheckResult` key, plus `appDmgURL`,
+/// `appSha256URL` and the nested MetalSharp-Wine `runtime` status.
+private func updateCheckJSON(_ status: DualUpdateStatus) -> String? {
+    let enc = JSONEncoder()
+    guard let appData = try? enc.encode(status.app),
+          var obj = try? JSONSerialization.jsonObject(with: appData) as? [String: Any],
+          let rtData = try? enc.encode(status.runtime),
+          let runtime = try? JSONSerialization.jsonObject(with: rtData) else { return nil }
+    obj["runtime"] = runtime
+    obj["appDmgURL"] = status.app.dmgURL ?? NSNull()
+    obj["appSha256URL"] = status.app.sha256URL ?? NSNull()
+    guard let out = try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+    else { return nil }
+    return String(data: out, encoding: .utf8)
+}
+
 private func runUpdateCLI(args: [String]) -> Int32 {
     let sub = args.first ?? "check"
     let rest = Array(args.dropFirst())
-    guard sub == "check" || sub == "--json" else {
-        fputs("unknown update subcommand: \(sub) (expected: check [--json])\n", stderr)
+    switch sub {
+    case "check", "--json":
+        let status = AppUpdater.checkAll()
+        let result = status.app
+        let rt = status.runtime
+        if sub == "--json" || rest.contains("--json") {
+            if let json = updateCheckJSON(status) { print(json) }
+            return (result.error == nil || result.disabled) ? 0 : 1
+        }
+        if result.disabled {
+            print("Update check disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1). Current version: \(result.currentVersion)")
+            return 0
+        }
+        if let err = result.error {
+            fputs("update check failed: \(err)\n", stderr)
+        } else if result.updateAvailable {
+            print("Update available: DirectMetal \(result.currentVersion) -> \(result.latestVersion ?? "?")"
+                + (result.publishedAt.map { " (published \($0))" } ?? ""))
+            if let url = result.releaseURL { print(url) }
+            if let dmg = result.dmgURL {
+                print("  \(result.assetName ?? "dmg"): \(dmg)" + (result.sha256URL == nil ? " (no .sha256 sidecar published)" : ""))
+                print("  Install with: DirectMetal update apply")
+            }
+        } else {
+            print("DirectMetal \(result.currentVersion) is up to date (latest release: \(result.latestVersion ?? "?")).")
+        }
+        let installedNote = rt.installed ? "" : " (not installed)"
+        if let err = rt.error {
+            print("MetalSharp-Wine runtime \(rt.currentVersion)\(installedNote): update check failed: \(err)")
+        } else if rt.updateAvailable {
+            print("Runtime update available: MetalSharp-Wine \(rt.currentVersion) -> \(rt.latestVersion ?? "?")\(installedNote)"
+                + (rt.publishedAt.map { " (published \($0))" } ?? ""))
+            if let zip = rt.zipURL { print("  \(rt.assetName ?? "zip"): \(zip)") }
+            print("  Install with: DirectMetal runtime update")
+        } else {
+            print("MetalSharp-Wine runtime \(rt.currentVersion)\(installedNote) is up to date (latest release: \(rt.latestVersion ?? "?")).")
+        }
+        return (result.error == nil || result.disabled) ? 0 : 1
+
+    case "apply", "install":
+        var dmgURL: URL? = nil
+        var sha: String? = nil
+        var shaURL: URL? = nil
+        var target: URL? = nil
+        var force = false
+        var i = 0
+        while i < rest.count {
+            let a = rest[i]
+            if a == "--url", i + 1 < rest.count {
+                guard let u = RuntimeManager.parseSourceURL(rest[i + 1]) else {
+                    fputs("error: invalid --url \(rest[i + 1])\n", stderr)
+                    return 1
+                }
+                dmgURL = u
+                i += 2
+            } else if a == "--sha256", i + 1 < rest.count {
+                sha = rest[i + 1]
+                i += 2
+            } else if a == "--sha256-url", i + 1 < rest.count {
+                guard let u = RuntimeManager.parseSourceURL(rest[i + 1]) else {
+                    fputs("error: invalid --sha256-url \(rest[i + 1])\n", stderr)
+                    return 1
+                }
+                shaURL = u
+                i += 2
+            } else if a == "--target-app", i + 1 < rest.count {
+                target = URL(fileURLWithPath: (rest[i + 1] as NSString).expandingTildeInPath, isDirectory: true)
+                i += 2
+            } else if a == "--force" {
+                force = true
+                i += 1
+            } else {
+                fputs("error: unknown update apply option \(a)\n", stderr)
+                return 1
+            }
+        }
+        if dmgURL == nil {
+            let r = UpdateChecker.check()
+            if r.disabled {
+                fputs("update apply failed: update checks are disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1); pass --url\n", stderr)
+                return 1
+            }
+            if let err = r.error {
+                fputs("update apply failed: \(err)\n", stderr)
+                return 1
+            }
+            guard r.updateAvailable || force else {
+                print("DirectMetal \(r.currentVersion) is up to date (latest release: \(r.latestVersion ?? "?")).")
+                return 0
+            }
+            guard let d = r.dmgURL, let u = URL(string: d) else {
+                fputs("update apply failed: release \(r.latestVersion ?? "?") has no \(AppUpdater.runningEdition().assetName) asset\n", stderr)
+                return 1
+            }
+            dmgURL = u
+            if sha == nil && shaURL == nil { shaURL = r.sha256URL.flatMap { URL(string: $0) } }
+            fputs("[update] DirectMetal \(r.currentVersion) -> \(r.latestVersion ?? "?") (\(r.assetName ?? u.lastPathComponent))\n", stderr)
+        }
+        guard let source = dmgURL else { return 1 }
+        let printer = CLIProgressPrinter(tag: "update")
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        do {
+            let installed = try AppUpdater.applyAppUpdate(dmgURL: source, expectedSHA256: sha, sha256URL: shaURL,
+                                                          targetAppURL: target) { p in
+                printer.emit(phase: p.phase.rawValue, message: p.message, bytes: p.bytesReceived,
+                             total: p.totalBytes, fraction: p.fraction)
+            }
+            printer.finish()
+            fputs(String(format: "[update] done in %.1f s\n", Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9), stderr)
+            print(installed.path)
+            return 0
+        } catch {
+            printer.finish()
+            fputs("update apply failed: \(error)\n", stderr)
+            return 1
+        }
+
+    default:
+        fputs("unknown update subcommand: \(sub) (expected: check [--json] | apply [--url <url>] [--sha256 <hex>] [--target-app <path>])\n", stderr)
         return 1
     }
-    let result = UpdateChecker.check()
-    if sub == "--json" || rest.contains("--json") {
-        printLibraryJSON(result)
-    } else if result.disabled {
-        print("Update check disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1). Current version: \(result.currentVersion)")
-    } else if let err = result.error {
-        fputs("update check failed: \(err)\n", stderr)
-    } else if result.updateAvailable {
-        print("Update available: DirectMetal \(result.currentVersion) -> \(result.latestVersion ?? "?")"
-            + (result.publishedAt.map { " (published \($0))" } ?? ""))
-        if let url = result.releaseURL { print(url) }
-    } else {
-        print("DirectMetal \(result.currentVersion) is up to date (latest release: \(result.latestVersion ?? "?")).")
+}
+
+// MARK: - Controller CLI
+
+private struct ControllerShowOutput: Encodable {
+    let requestedKey: String
+    let resolvedKey: String
+    let source: String
+    let profilesFile: String
+    let isStock: Bool
+    let profile: ControllerMappingProfile
+    let environment: [String: String]
+}
+
+private struct ControllerListOutput: Encodable {
+    struct Connected: Encodable {
+        let vendorName: String
+        let productCategory: String
+        let supportsHaptics: Bool
+        let batteryLevel: Int?
     }
-    return (result.error == nil || result.disabled) ? 0 : 1
+
+    let profilesFile: String
+    let profiles: [String: ControllerMappingProfile]
+    let presets: [String]
+    let connectedControllers: [Connected]
+}
+
+/// `default` / `global` -> the global profile; otherwise a library id / title resolves to the entry id, else the raw key.
+private func resolveControllerKey(_ raw: String) -> String {
+    let k = ControllerMappingManager.normalizedKey(raw)
+    if k == ControllerMappingManager.defaultKey || k.lowercased() == "global" { return ControllerMappingManager.defaultKey }
+    return GameLibraryManager().entry(idOrTitle: k)?.id ?? k
+}
+
+private func parseDeadzone(_ raw: String) -> Double? {
+    let t = raw.trimmingCharacters(in: .whitespaces)
+    let isPercent = t.hasSuffix("%")
+    guard let v = Double(t.trimmingCharacters(in: CharacterSet(charactersIn: "%"))), v.isFinite, v >= 0 else { return nil }
+    return (isPercent || v >= 1) ? v / 100 : v
+}
+
+private func printControllerProfile(requested: String, resolvedKey: String, source: String,
+                                    profile: ControllerMappingProfile, json: Bool) {
+    let env = ControllerMappingManager.environmentOverrides(profile: profile, key: resolvedKey)
+    if json {
+        printLibraryJSON(ControllerShowOutput(requestedKey: requested, resolvedKey: resolvedKey, source: source,
+                                              profilesFile: ControllerMappingManager.profilesURL.path,
+                                              isStock: profile.isStock, profile: profile, environment: env))
+        return
+    }
+    print("profile:        \(resolvedKey) (\(source))\(requested != resolvedKey ? " for \(requested)" : "")")
+    print("preset:         \(profile.preset.rawValue) — \(profile.preset.displayName)")
+    print(String(format: "dead zones:     left %.0f%%, right %.0f%%", profile.leftDeadzone * 100, profile.rightDeadzone * 100))
+    print("invert right Y: \(profile.invertRightY)")
+    print("haptics:        \(profile.enableHaptics)")
+    let remaps = ControllerMappingProfile.canonicalButtons.compactMap { b -> String? in
+        let to = profile.buttonMap[b] ?? b
+        return to == b ? nil : "\(b)->\(to)"
+    }
+    print("remaps:         \(remaps.isEmpty ? "none" : remaps.joined(separator: ", "))")
+    print("file:           \(ControllerMappingManager.profilesURL.path)")
+    if env.isEmpty {
+        print("launch env:     none (stock controller behavior)")
+    } else {
+        print("launch env:")
+        for k in env.keys.sorted() where k != "SDL_GAMECONTROLLERCONFIG" { print("  \(k)=\(env[k]!)") }
+        let lines = env["SDL_GAMECONTROLLERCONFIG"]?.split(separator: "\n") ?? []
+        print("  SDL_GAMECONTROLLERCONFIG: \(lines.count) mapping(s), e.g.")
+        if let first = lines.first { print("    \(first)") }
+    }
+}
+
+private func runControllerCLI(args: [String]) -> Int32 {
+    let sub = args.first ?? "list"
+    let rest = Array(args.dropFirst())
+    let json = rest.contains("--json")
+    let positional = rest.filter { !$0.hasPrefix("--") }
+
+    switch sub {
+    case "list", "ls":
+        let profiles = ControllerMappingManager.loadAll()
+        let connected = ConnectedControllerInfo.snapshot(discoveryWait: json ? 0 : 0.25)
+        if json {
+            printLibraryJSON(ControllerListOutput(
+                profilesFile: ControllerMappingManager.profilesURL.path, profiles: profiles,
+                presets: ControllerPreset.allCases.map(\.rawValue),
+                connectedControllers: connected.map {
+                    .init(vendorName: $0.vendorName, productCategory: $0.productCategory,
+                          supportsHaptics: $0.supportsHaptics, batteryLevel: $0.batteryLevel)
+                }))
+            return 0
+        }
+        func col(_ s: String, _ width: Int) -> String {
+            let t = s.count > width - 1 ? String(s.prefix(width - 2)) + "…" : s
+            return t.padding(toLength: width, withPad: " ", startingAt: 0)
+        }
+        if profiles.isEmpty {
+            print("No controller profiles saved (stock behavior everywhere).")
+        } else {
+            let titles = Dictionary(GameLibraryManager().load().map { ($0.id, $0.title) }, uniquingKeysWith: { a, _ in a })
+            print(col("KEY", 16) + col("GAME", 28) + col("PRESET", 22) + col("DZ-L", 6) + col("DZ-R", 6) + col("INV-Y", 7) + col("HAPTICS", 9) + "REMAPS")
+            for key in profiles.keys.sorted(by: { ($0 == "default" ? "" : $0) < ($1 == "default" ? "" : $1) }) {
+                let p = profiles[key]!
+                let remaps = ControllerMappingProfile.canonicalButtons.filter { (p.buttonMap[$0] ?? $0) != $0 }.count
+                print(col(key, 16) + col(key == "default" ? "(global)" : (titles[key] ?? "-"), 28) + col(p.preset.rawValue, 22)
+                    + col(String(format: "%.0f%%", p.leftDeadzone * 100), 6) + col(String(format: "%.0f%%", p.rightDeadzone * 100), 6)
+                    + col(String(p.invertRightY), 7) + col(String(p.enableHaptics), 9) + String(remaps))
+            }
+        }
+        print("\nPresets: " + ControllerPreset.allCases.map(\.rawValue).joined(separator: ", "))
+        print("Connected: " + (connected.isEmpty ? "none" : connected.map(\.summary).joined(separator: "; ")))
+        print("File: \(ControllerMappingManager.profilesURL.path)")
+        return 0
+
+    case "show", "get":
+        let requested = positional.isEmpty ? ControllerMappingManager.defaultKey : resolveControllerKey(positional.joined(separator: " "))
+        let r = ControllerMappingManager.resolvedProfile(for: requested)
+        printControllerProfile(requested: requested, resolvedKey: r.key, source: r.source, profile: r.profile, json: json)
+        return 0
+
+    case "set":
+        guard let rawKey = positional.first else {
+            fputs("error: controller set requires <default|id_or_title> <key>=<value>...\n", stderr)
+            return 1
+        }
+        let key = resolveControllerKey(rawKey)
+        let pairs = Array(positional.dropFirst())
+        guard !pairs.isEmpty else {
+            fputs("error: controller set requires at least one <key>=<value>\n", stderr)
+            return 1
+        }
+        // Start from the stored profile; a new per-game profile inherits the current global profile.
+        var profile = ControllerMappingManager.storedProfile(for: key)
+            ?? ControllerMappingManager.resolvedProfile(for: nil).profile
+        var parsed: [(key: String, value: String)] = []
+        for pair in pairs {
+            guard let eq = pair.firstIndex(of: "=") else {
+                fputs("error: expected <key>=<value>, got \"\(pair)\"\n", stderr)
+                return 1
+            }
+            parsed.append((pair[..<eq].lowercased(), String(pair[pair.index(after: eq)...])))
+        }
+        // Presets first so explicit options in the same command refine them, whatever the argument order.
+        for (k, v) in parsed where k == "preset" {
+            guard let p = ControllerPreset.allCases.first(where: { $0.rawValue.lowercased() == v.lowercased() }) else {
+                fputs("error: unknown preset \"\(v)\" (expected: \(ControllerPreset.allCases.map(\.rawValue).joined(separator: ", ")))\n", stderr)
+                return 1
+            }
+            profile.applyPreset(p)
+        }
+        let buttons = Set(ControllerMappingProfile.canonicalButtons)
+        for (k, v) in parsed where k != "preset" {
+            var ok = true
+            switch k {
+            case "left-deadzone", "deadzone-left", "leftdeadzone", "ldz", "deadzone-l":
+                if let d = parseDeadzone(v) { profile.leftDeadzone = d } else { ok = false }
+            case "right-deadzone", "deadzone-right", "rightdeadzone", "rdz", "deadzone-r":
+                if let d = parseDeadzone(v) { profile.rightDeadzone = d } else { ok = false }
+            case "deadzone":
+                if let d = parseDeadzone(v) { profile.leftDeadzone = d; profile.rightDeadzone = d } else { ok = false }
+            case "invert-y", "invert-right-y", "inverty", "invertrighty", "invert":
+                if let b = parseBool(v) { profile.invertRightY = b } else { ok = false }
+            case "haptics", "rumble", "enablehaptics":
+                if let b = parseBool(v) { profile.enableHaptics = b } else { ok = false }
+            default:
+                let button = k.hasPrefix("map.") ? String(k.dropFirst(4)) : k
+                guard buttons.contains(button) else {
+                    fputs("error: unknown setting \"\(k)\"\n", stderr)
+                    return 1
+                }
+                let target = v.lowercased()
+                if buttons.contains(target) {
+                    profile.buttonMap[button] = target
+                    profile.preset = .custom
+                } else { ok = false }
+            }
+            if !ok {
+                fputs("error: invalid value \"\(v)\" for \(k)\n", stderr)
+                return 1
+            }
+        }
+        for (name, d) in [("left", profile.leftDeadzone), ("right", profile.rightDeadzone)]
+        where !ControllerMappingProfile.deadzoneRange.contains(d) {
+            fputs(String(format: "warning: %@ dead zone %.0f%% clamped to 0-35%%\n", name, d * 100), stderr)
+        }
+        profile = profile.normalized()
+        do {
+            try ControllerMappingManager.setProfile(profile, for: key)
+        } catch {
+            fputs("controller set failed: \(error)\n", stderr)
+            return 1
+        }
+        let r = ControllerMappingManager.resolvedProfile(for: key)
+        printControllerProfile(requested: key, resolvedKey: r.key, source: r.source, profile: r.profile, json: json)
+        return 0
+
+    case "reset", "rm", "remove":
+        do {
+            if rest.contains("--all") {
+                try ControllerMappingManager.resetAll()
+                print("reset all controller profiles (\(ControllerMappingManager.profilesURL.path))")
+                return 0
+            }
+            let key = positional.isEmpty ? ControllerMappingManager.defaultKey : resolveControllerKey(positional.joined(separator: " "))
+            let existed = try ControllerMappingManager.resetProfile(for: key)
+            print(existed ? "reset controller profile \(key) (stock behavior)" : "no controller profile stored for \(key) (already stock)")
+            return 0
+        } catch {
+            fputs("controller reset failed: \(error)\n", stderr)
+            return 1
+        }
+
+    default:
+        fputs("unknown controller subcommand: \(sub) (expected: list|show|set|reset)\n", stderr)
+        return 1
+    }
 }
 
 private func runCLI(args: [String]) -> Int32 {
@@ -809,6 +1283,9 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "update", "updates":
         return runUpdateCLI(args: Array(args.dropFirst()))
+
+    case "controller", "controllers", "gamepad":
+        return runControllerCLI(args: Array(args.dropFirst()))
 
     case "verify-attest":
         guard args.count >= 2 else {

@@ -224,10 +224,18 @@ struct UpdateCheckResult: Codable, Equatable {
     var error: String?
     var checkedURL: String
     var disabled: Bool
+    /// Edition of the running bundle (`lite` / `offline`) used to pick the release asset.
+    var edition: String? = nil
+    /// Release `.dmg` matching `edition` (e.g. `DirectMetal-Lite-macOS-arm64.dmg`) and its `.sha256` sidecar.
+    var assetName: String? = nil
+    var dmgURL: String? = nil
+    var sha256URL: String? = nil
+    var assetSize: Int64? = nil
 }
 
 /// Non-blocking GitHub Releases update check (`DIRECTMETAL_UPDATE_URL` overrides the endpoint;
 /// `DIRECTMETAL_DISABLE_UPDATE_CHECK=1` turns it off). Accepts `https://` and `file://` endpoints only.
+/// Installing a found update is `AppUpdater.applyAppUpdate` (DMG) / `AppUpdater.updateRuntime` (runtime).
 enum UpdateChecker {
     static let defaultURL = "https://api.github.com/repos/amoham42/DirectMetal/releases/latest"
     static let timeout: TimeInterval = 5
@@ -263,17 +271,38 @@ enum UpdateChecker {
             result.error = "update check disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1)"
             return result
         }
-        guard let url = URL(string: urlString), let scheme = url.scheme?.lowercased(), ["https", "file"].contains(scheme) else {
-            result.error = "refusing update URL \(urlString) (only https:// and file:// are allowed)"
+        let lookup = latestRelease(endpoint: urlString, productName: "DirectMetal")
+        guard let rel = lookup.release, let tag = rel["tag_name"] as? String else {
+            result.error = lookup.error ?? "no release tag found at \(urlString)"
             return result
+        }
+        result.latestVersion = normalizedVersion(tag)
+        result.releaseURL = rel["html_url"] as? String
+        result.publishedAt = rel["published_at"] as? String
+        result.updateAvailable = compareVersions(tag, currentVersion) == .orderedDescending
+
+        let edition = AppUpdater.runningEdition()
+        result.edition = edition.rawValue
+        if let asset = AppUpdater.resolveAppAsset(in: rel, edition: edition) {
+            result.assetName = asset.name
+            result.dmgURL = asset.dmgURL
+            result.sha256URL = asset.sha256URL
+            result.assetSize = asset.size
+        }
+        return result
+    }
+
+    /// Highest semantic-version, non-draft, non-prerelease release at a GitHub Releases endpoint (`/releases/latest`
+    /// or a release list). Shared by the DirectMetal app and the MetalSharp-Wine runtime checks.
+    static func latestRelease(endpoint urlString: String, productName: String) -> (release: [String: Any]?, error: String?) {
+        guard let url = URL(string: urlString), let scheme = url.scheme?.lowercased(), ["https", "file"].contains(scheme) else {
+            return (nil, "refusing update URL \(urlString) (only https:// and file:// are allowed)")
         }
 
         var json: Any
         switch fetchJSON(url) {
         case .success(let obj): json = obj
-        case .failure(let err):
-            result.error = err.description
-            return result
+        case .failure(let err): return (nil, err.description)
         }
 
         // `/releases/latest` may point at a non-app tag (e.g. `conformance-bins-v0.2`): fall back to the
@@ -289,29 +318,22 @@ enum UpdateChecker {
         if let obj = json as? [String: Any] {
             guard obj["tag_name"] != nil else {
                 let message = obj["message"] as? String
-                result.error = message.map { "GitHub: \($0)" } ?? "no release tag found at \(urlString)"
-                return result
+                return (nil, message.map { "GitHub: \($0)" } ?? "no release tag found at \(urlString)")
             }
             candidates = [obj]
         } else if let list = json as? [[String: Any]] {
             candidates = list.filter { ($0["draft"] as? Bool) != true && ($0["prerelease"] as? Bool) != true }
         } else {
-            result.error = "unexpected JSON from \(urlString)"
-            return result
+            return (nil, "unexpected JSON from \(urlString)")
         }
         let versioned = candidates.filter { isVersionTag(($0["tag_name"] as? String) ?? "") }
         guard let rel = versioned.max(by: {
             compareVersions(($0["tag_name"] as? String) ?? "", ($1["tag_name"] as? String) ?? "") == .orderedAscending
-        }), let tag = rel["tag_name"] as? String else {
+        }) else {
             let seen = candidates.compactMap { $0["tag_name"] as? String }.prefix(3).joined(separator: ", ")
-            result.error = "no versioned DirectMetal release published yet" + (seen.isEmpty ? "" : " (found tags: \(seen))")
-            return result
+            return (nil, "no versioned \(productName) release published yet" + (seen.isEmpty ? "" : " (found tags: \(seen))"))
         }
-        result.latestVersion = normalizedVersion(tag)
-        result.releaseURL = rel["html_url"] as? String
-        result.publishedAt = rel["published_at"] as? String
-        result.updateAvailable = compareVersions(tag, currentVersion) == .orderedDescending
-        return result
+        return (rel, nil)
     }
 
     /// `v1.2.0`, `1.2`, `v1.0.0-beta.1` => true; `conformance-bins-v0.2` => false.
@@ -335,7 +357,7 @@ enum UpdateChecker {
         init(_ d: String) { description = d }
     }
 
-    private enum FetchResult {
+    enum FetchResult {
         case success(Data)
         case failure(String)
     }
@@ -344,15 +366,17 @@ enum UpdateChecker {
         var result: FetchResult = .failure("update check timed out after 5 s")
     }
 
-    private static func fetch(_ url: URL) -> FetchResult {
+    /// Small bounded fetch (`file://` or `http(s)://`, `timeout` seconds, at most `maxBytes`). Callers apply
+    /// their own URL scheme policy first.
+    static func fetch(_ url: URL, accept: String = "application/vnd.github+json", maxBytes: Int = 4 << 20) -> FetchResult {
         if url.isFileURL {
-            guard let d = try? Data(contentsOf: url), d.count <= 4 << 20 else {
+            guard let d = try? Data(contentsOf: url), d.count <= maxBytes else {
                 return .failure("could not read \(url.path)")
             }
             return .success(d)
         }
         var req = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: timeout)
-        req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        req.setValue(accept, forHTTPHeaderField: "Accept")
         req.setValue("DirectMetal/\(RuntimeLauncher.appVersion())", forHTTPHeaderField: "User-Agent")
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = timeout
@@ -366,7 +390,7 @@ enum UpdateChecker {
                 box.result = .failure("network error: \(error.localizedDescription)")
             } else if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
                 box.result = .failure("HTTP \(http.statusCode) from \(url.absoluteString)")
-            } else if let data, data.count <= 4 << 20 {
+            } else if let data, !data.isEmpty, data.count <= maxBytes {
                 box.result = .success(data)
             } else {
                 box.result = .failure("empty response from \(url.absoluteString)")

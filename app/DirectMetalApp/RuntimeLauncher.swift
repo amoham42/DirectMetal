@@ -486,7 +486,8 @@ enum RuntimeLauncher {
         sandboxOffline: Bool = false,
         sandboxOutputDir: String? = nil,
         fexTSOOverride: Bool? = nil,
-        warmServerSeconds: Int? = nil
+        warmServerSeconds: Int? = nil,
+        controllerProfileKey: String? = nil
     ) throws -> LaunchResult {
         let fm = FileManager.default
         let exeURL = URL(fileURLWithPath: exePath)
@@ -563,6 +564,12 @@ enum RuntimeLauncher {
         var env = ProcessInfo.processInfo.environment
         env["WINEPREFIX"] = prefixURL.path
         env["WINEMSYNC"] = "1"
+        // Controller remapping / dead zones / haptics (per-game -> global profile). Stock profiles add nothing,
+        // and variables the user exported explicitly (e.g. their own SDL_GAMECONTROLLERCONFIG) always win.
+        let userEnv = ProcessInfo.processInfo.environment
+        for (key, value) in ControllerMappingManager.environmentOverrides(for: controllerProfileKey) where userEnv[key] == nil {
+            env[key] = value
+        }
         if useARM64EC {
             // TSO emulation: `fexTSOOverride` always wins.
             // `ultra` defaults TSO off unless FEX_TSOENABLED is set explicitly in the environment
