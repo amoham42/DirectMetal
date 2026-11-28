@@ -1,6 +1,11 @@
 # DirectMetal
 
-A unified, Apple Silicon–first (M1 and newer) DirectX compatibility runtime for macOS — designed as **one self-contained package** that runs Windows DirectX 10/11/12 games at near-native performance with zero manual tinkering.
+[![Apple Silicon CI](https://github.com/amoham42/DirectMetal/actions/workflows/ci.yml/badge.svg)](https://github.com/amoham42/DirectMetal/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/amoham42/DirectMetal)](https://github.com/amoham42/DirectMetal/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Platform: Apple Silicon macOS 15+](https://img.shields.io/badge/Platform-Apple%20Silicon%20macOS%2015%2B-black.svg)](#status)
+
+A unified, Apple Silicon–first (M1 through M4/M5) DirectX 9/10/11/12 compatibility runtime for macOS — shipping as a **`2.9 MB` `DirectMetal-Lite.app`** (with SHA-256 & Apple Developer ID verified on-demand runtime install) or a **`3.7 GB` self-contained offline `DirectMetal.app`** that runs 64-bit and 32-bit Windows games with zero manual tinkering.
 
 ## Vision
 
@@ -21,9 +26,14 @@ Development uses a two-machine ground-truth testing pipeline:
 
 ## Status
 
-**Phases 0–4 verified on Apple Silicon (`M1 Pro`, macOS `27.2.1` `26B131`) against Windows 11 + NVIDIA RTX 3070 ground truth:**
+**Phases 0–4 verified across two Apple Silicon generations (`Apple M1 Pro` on macOS `27.2.1` + `Apple M4` on macOS `26.7.1`) against Windows 11 + NVIDIA RTX 3070 ground truth:**
 
-- **Visual & Compute Conformance:** **25 / 25 (100.0%)** passing (`10/10` D3D11, `9/9` D3D12 **`FL 12_2`**, `6/6` D3D12 SM 6.0 DXIL Engine Patterns **`FL 12_2`**) — Mean SSIM `0.999841`, Min PSNR `54.32 dB` (see [COMPATIBILITY.md](COMPATIBILITY.md) and [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md)).
+| Machine | GPU Family | macOS | Conformance vs RTX 3070 | D3D12 Ultra+Warm | Deferred PBR Ultra+Warm | Warm Launch (`hostname.exe`) |
+| :--- | :--- | :--- | :--- | ---: | ---: | ---: |
+| **Apple M1 Pro** (`MacBookPro18,3`) | `Apple7` (14-core) | `27.2.1` (`26B131`) | **`25 / 25`** (`Mean SSIM 0.999841`) | **`2,694 FPS`** (`0.738 s`) | **`1,569 FPS`** (`0.665 s`) | **`0.07 s`** (`10×`) |
+| **Apple M4** (`Mac16,1`, `DirectMetal-Lite`) | `Apple9` (10-core) | `26.7.1` (`25G241`) | **`25 / 25`** (`Mean SSIM 0.999844`) | **`4,490 FPS`** (`0.490 s`) | **`2,092 FPS`** (`0.433 s`) | **`0.10 s`** (`10.7×`) |
+
+- **Visual & Compute Conformance:** **25 / 25 (100.0%)** passing (`10/10` D3D11, `9/9` D3D12 **`FL 12_2`**, `6/6` D3D12 SM 6.0 DXIL Engine Patterns **`FL 12_2`**) — Mean SSIM `0.999841–0.999844`, Min PSNR `54.32 dB` (see [COMPATIBILITY.md](COMPATIBILITY.md) and [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md)).
 - **Apple Silicon Optimizations:** UMA `MTLStorageModeShared` (`1.51x`, `-66.2%` mem), TBDR `MTLStorageModeMemoryless` (`2.71x`, `-64.75 MiB` DRAM), local + cloud SHA-256 verified `MTLBinaryArchive` (`66.7x` unit PSO / `17.07x` end-to-end warm cache / `DirectMetal cache export|import`), live sub-native **Metal 4 MetalFX Temporal** (`1248×812 → 1512×984` on UE5 `REANIMAL` via `METALSHARP_DLSS_SCALE` + `nvngx.dll`) & D3D11/D3D12 MetalFX Spatial (`1.72x`–`2.55x`), and APFS CoW per-game prefixes (`0.41 ms`).
 - **100% Post-Rosetta ARM64EC + FEX Execution (`Wine 11.22` + `USync 6` + `Mullion 2702d6e1` + `MetalVulkan 7.0`):** Preserves Apple's signed `com.apple.developer.cross-architecture-support` entitlement for **both 64-bit and 32-bit Windows games** with zero Rosetta 2! With `--perf-mode ultra` on macOS `27.2.1`: **`4,114.4 FPS`** D3D11 (**`3,279.8` 1%-low = `96.5%` of native RTX 3070 1%-low!!**), **`3,112.1 FPS`** D3D12 **`FL 12_2`** (**`2,489.4` 1%-low = `68.4%` of RTX 3070 1%-low**), and **`1,658.4 FPS`** (**`1,400.9` 1%-low = `5.25×` Rosetta 2 1%-low**) sandboxed `1024×1024` SM 6.0 Deferred PBR! **4 / 4 live retail games run zero-config on 100% native ARM64EC+FEX:** **Hades** (`120.00 FPS` locked, `26%` GPU, `--sandbox`), **REANIMAL** (UE5 DX12 **`FL 12_2`** + bundled `d3d12_guard.dll` + Metal 4 MetalFX Temporal at **`47%` GPU**), **Team Fortress 2** (x64 D3D9, `DXVK 3.1.1` + `KosmicKrisp 26.99.99`, `19%` GPU), and **Need for Speed: Hot Pursuit** (32-bit x86 D3D9, **zero flags**, `DXVK 3.1.1` + `KosmicKrisp 26.99.99`, **`22%` GPU**, zero Rosetta 2!).
 - **Per-Game Isolation & Hardware-Backed Attestation v2 (Swift + C/Obj-C++ SDK):** Hardened Runtime (`--options runtime`, `hardened_runtime: true`) `.app` bundle + upgraded SwiftUI GUI, macOS Seatbelt sandbox (`DirectMetal run --sandbox`, `5/5` kernel `EPERM` tests), and **Attestation v2** (`DirectMetal attest [--pid <pid>]` / `verify-attest` + `libdm_attestation.a`) backed by a persistent non-exportable **Apple Silicon Secure Enclave** P-256 hardware key, **`DCAppAttestService.isSupported: true`** & `DCDevice.isSupported: true` on macOS 27.2.1, `kern.bootsessionuuid`, live child-PID `SecCodeCopyGuestWithAttributes` inspection, dynamic `SecCodeCopySelf` status, and `_dyld_image_count` image verification.
@@ -61,6 +71,23 @@ DM=./dist/DirectMetal.app/Contents/MacOS/DirectMetal
 # Hardware Secure Enclave + DCAppAttest attestation v2 & verification
 "$DM" attest --pid $$ --nonce aabbccdd00112233 --sandbox > /tmp/attest.json
 "$DM" verify-attest /tmp/attest.json --nonce aabbccdd00112233
+
+# Inspect community game presets, display HDR/ProMotion & controllers, or check updates
+"$DM" info
+"$DM" profiles list
+"$DM" update check
+
+# Developer ergonomics (lint, C/Obj-C++ subsystem tests, Python diff tests & Lite smoke)
+make help
+make ci
 ```
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) and [ROADMAP.md](ROADMAP.md) for the engineering plan.
+## Contributing & Documentation
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — System architecture & DirectX-to-Metal stack
+- [ROADMAP.md](ROADMAP.md) — Completed Phases 0–4 milestones
+- [COMPATIBILITY.md](COMPATIBILITY.md) & [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md) — Conformance & retail game matrix
+- [CONTRIBUTING.md](CONTRIBUTING.md) — Developer setup, `Makefile` workflow, adding presets to `runtime/profiles/game_profiles.json`
+- [SECURITY.md](SECURITY.md) — Seatbelt sandbox, Secure Enclave attestation & SHA-256 trust model
+- [CHANGELOG.md](CHANGELOG.md) — Release history
+- [LICENSE](LICENSE) — MIT License
