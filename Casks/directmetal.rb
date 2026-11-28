@@ -25,6 +25,14 @@ cask "directmetal" do
                    must_succeed: false
   end
 
+  caveats <<~EOS
+    Verify your Apple Silicon setup anytime with:
+      directmetal doctor
+
+    Enable native zsh or bash tab completions:
+      eval "$(directmetal completions zsh)"
+  EOS
+
   zap trash: [
     "~/Library/Application Support/DirectMetal",
     "~/Library/Caches/DirectMetal",
