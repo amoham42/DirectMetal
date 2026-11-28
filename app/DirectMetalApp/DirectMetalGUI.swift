@@ -113,6 +113,192 @@ struct StatusPill: View {
     }
 }
 
+/// Real game artwork (Steam library art or the `.exe`'s embedded icon) with a `GameMonogram` fallback.
+/// Artwork is decoded on a background queue and cached, so list scrolling never touches the disk.
+struct GameArtworkView: View {
+    let entry: GameLibraryEntry
+    var style: ArtworkStyle = .icon
+    var size: CGFloat = 34
+    /// Frame width for wide art (Steam header banners); `nil` keeps every artwork square.
+    var wideWidth: CGFloat? = nil
+    @State private var image: NSImage?
+
+    init(entry: GameLibraryEntry, style: ArtworkStyle = .icon, size: CGFloat = 34, wideWidth: CGFloat? = nil) {
+        self.entry = entry
+        self.style = style
+        self.size = size
+        self.wideWidth = wideWidth
+        _image = State(initialValue: GameArtworkManager.shared.cachedArtwork(for: entry, style: style))
+    }
+
+    private var loadKey: String { "\(style.rawValue)|\(entry.steamAppID ?? "")|\(entry.exePath)" }
+
+    var body: some View {
+        Group {
+            if let image {
+                let wide = image.size.width > image.size.height * 1.3
+                let width = wide ? (wideWidth ?? size) : size
+                Image(nsImage: image)
+                    .resizable()
+                    .interpolation(.high)
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: width, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * (wide ? 0.14 : 0.2), style: .continuous))
+                    .shadow(color: .black.opacity(wide ? 0.22 : 0.12), radius: size * 0.06, y: size * 0.03)
+            } else {
+                GameMonogram(title: entry.title, size: size)
+            }
+        }
+        .task(id: loadKey) { await load() }
+    }
+
+    private func load() async {
+        let e = entry
+        let s = style
+        if let cached = GameArtworkManager.shared.cachedArtwork(for: e, style: s) {
+            image = cached
+            return
+        }
+        let box = await withCheckedContinuation { (cont: CheckedContinuation<ArtworkBox, Never>) in
+            DispatchQueue.global(qos: .utility).async {
+                cont.resume(returning: ArtworkBox(image: GameArtworkManager.shared.loadArtwork(for: e, style: s)))
+            }
+        }
+        if !Task.isCancelled { image = box.image }
+    }
+}
+
+private struct ArtworkBox: @unchecked Sendable {
+    let image: NSImage?
+}
+
+/// "Community preset" pill + note for entries seeded from `game_profiles.json`.
+struct ProfilePresetPill: View {
+    let entry: GameLibraryEntry
+    let profile: GameProfile?
+
+    var body: some View {
+        let verified = profile?.isVerified ?? false
+        let tint: Color = verified ? .green : .orange
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Label("Community preset · \(profile?.title ?? entry.profileID ?? "Custom")",
+                      systemImage: verified ? "checkmark.seal.fill" : "sparkles")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 2)
+                    .foregroundStyle(tint)
+                    .background(tint.opacity(0.14), in: Capsule())
+                if let profile {
+                    Text(profile.verificationLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if let note = entry.profileNote, !note.isEmpty {
+                Text(note)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(note)
+            }
+        }
+    }
+}
+
+struct PeripheralChip: View {
+    let icon: String
+    let text: String
+    var tint: Color = .secondary
+
+    var body: some View {
+        Label(text, systemImage: icon)
+            .font(.caption.weight(.medium))
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .foregroundStyle(tint)
+            .background(tint.opacity(0.10), in: Capsule())
+    }
+}
+
+/// Display (Retina / ProMotion / HDR-EDR) and game controller strip, live-updated by `PeripheralMonitor`.
+struct PeripheralStrip: View {
+    @ObservedObject var monitor: PeripheralMonitor
+
+    var body: some View {
+        let d = monitor.display
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                PeripheralChip(icon: "display", text: d.resolutionLabel, tint: d.isRetina ? .blue : .secondary)
+                    .help("\(d.displayName): \(d.pixelWidth)×\(d.pixelHeight) px, \(d.dpi) DPI LogPixels with Retina mode")
+                PeripheralChip(icon: "gauge.with.dots.needle.67percent", text: d.refreshLabel,
+                               tint: d.isProMotion ? .purple : .secondary)
+                    .help(d.variableRefresh ? "Variable refresh (ProMotion / Adaptive-Sync)" : "Fixed refresh rate")
+                PeripheralChip(icon: d.supportsHDR ? "sun.max.fill" : "sun.min", text: d.hdrLabel,
+                               tint: d.supportsHDR ? .orange : .secondary)
+                    .help(String(format: "EDR headroom now %.2fx, maximum %.2fx", d.edrHeadroom, d.potentialEDRHeadroom))
+                Divider().frame(height: 14)
+                if monitor.controllers.isEmpty {
+                    PeripheralChip(icon: "gamecontroller", text: "No controller")
+                        .help("Connect a Bluetooth or USB game controller; it appears here automatically.")
+                } else {
+                    ForEach(monitor.controllers) { c in
+                        PeripheralChip(icon: "gamecontroller.fill", text: c.summary, tint: .green)
+                            .help("\(c.productCategory)\(c.batteryState.map { " · \($0)" } ?? "")")
+                    }
+                }
+            }
+            .padding(.vertical, 1)
+        }
+        .onAppear { monitor.refresh() }
+    }
+}
+
+/// Toolbar pill: user-triggered GitHub Releases check ("Up to date" or a link to the new release).
+struct UpdateToolbarButton: View {
+    @ObservedObject var vm: DirectMetalViewModel
+
+    var body: some View {
+        Group {
+            if vm.updateChecking {
+                HStack(spacing: 5) {
+                    ProgressView().controlSize(.small)
+                    Text("Checking…").font(.callout)
+                }
+            } else if let r = vm.updateResult, r.error == nil, !r.disabled {
+                if r.updateAvailable {
+                    Button {
+                        vm.openReleasePage()
+                    } label: {
+                        Label("Update \(r.latestVersion ?? "")", systemImage: "arrow.down.circle.fill")
+                    }
+                    .tint(.green)
+                    .help("DirectMetal \(r.latestVersion ?? "") is available (you have \(r.currentVersion)) — open the release page")
+                } else {
+                    Button {
+                        vm.checkForUpdates()
+                    } label: {
+                        Label("Up to date", systemImage: "checkmark.circle")
+                    }
+                    .help("DirectMetal \(r.currentVersion) is the latest release — click to check again")
+                }
+            } else {
+                Button {
+                    vm.checkForUpdates()
+                } label: {
+                    Label(vm.updateResult == nil ? "Check Updates" : "Retry Update Check",
+                          systemImage: "arrow.triangle.2.circlepath")
+                }
+                .help(vm.updateResult?.error ?? "Check GitHub Releases for a newer DirectMetal")
+            }
+        }
+        .labelStyle(.titleAndIcon)
+    }
+}
+
 // MARK: - View model
 
 @MainActor
@@ -147,8 +333,41 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var runtimeInstallBytes: Int64 = 0
     @Published var runtimeInstallTotal: Int64 = -1
     @Published var runtimeInstallError: String?
+    // GitHub Releases update check (user-triggered)
+    @Published var updateChecking: Bool = false
+    @Published var updateResult: UpdateCheckResult?
 
     private let manager = GameLibraryManager()
+
+    /// Community profile that seeded `entry` (for the preset pill), if any.
+    func profile(for entry: GameLibraryEntry) -> GameProfile? {
+        manager.profileRegistry.profile(id: entry.profileID)
+    }
+
+    func checkForUpdates() {
+        guard !updateChecking else { return }
+        updateChecking = true
+        UpdateChecker.checkAsync { [weak self] result in
+            guard let self else { return }
+            self.updateChecking = false
+            self.updateResult = result
+            if result.disabled {
+                self.statusMessage = "Update check disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1)."
+            } else if let err = result.error {
+                self.statusMessage = "Update check failed: \(err)"
+            } else if result.updateAvailable {
+                self.statusMessage = "DirectMetal \(result.latestVersion ?? "") is available (installed: \(result.currentVersion))."
+            } else {
+                self.statusMessage = "DirectMetal \(result.currentVersion) is up to date."
+            }
+        }
+    }
+
+    func openReleasePage() {
+        let fallback = "https://github.com/amoham42/DirectMetal/releases/latest"
+        guard let url = URL(string: updateResult?.releaseURL ?? fallback), url.scheme?.lowercased() == "https" else { return }
+        NSWorkspace.shared.open(url)
+    }
 
     init() {
         library = manager.load()
@@ -232,6 +451,7 @@ final class DirectMetalViewModel: ObservableObject {
             let result = GameLibraryManager().scanKnownLocations(extraDirs: extraDirs)
             DispatchQueue.main.async {
                 self.isScanning = false
+                GameArtworkManager.shared.invalidate()
                 self.library = result
                 let added = result.filter { !before.contains($0.id) }
                 if let first = added.first, !extraDirs.isEmpty || self.selectedID == nil {
@@ -558,6 +778,7 @@ final class DirectMetalViewModel: ObservableObject {
 
 struct DirectMetalContentView: View {
     @StateObject private var vm = DirectMetalViewModel()
+    @StateObject private var peripherals = PeripheralMonitor()
     @State private var isDropTargeted = false
 
     var body: some View {
@@ -567,10 +788,15 @@ struct DirectMetalContentView: View {
                     .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 400)
             } detail: {
                 if let entry = vm.selectedEntry {
-                    GameDetailView(vm: vm, entry: entry)
+                    GameDetailView(vm: vm, peripherals: peripherals, entry: entry)
                         .id(entry.id)
                 } else {
-                    WelcomeView(vm: vm)
+                    WelcomeView(vm: vm, peripherals: peripherals)
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .primaryAction) {
+                    UpdateToolbarButton(vm: vm)
                 }
             }
             Divider()
@@ -705,7 +931,7 @@ struct GameRow: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            GameMonogram(title: entry.title, size: 32)
+            GameArtworkView(entry: entry, style: .icon, size: 32)
             VStack(alignment: .leading, spacing: 3) {
                 Text(entry.title)
                     .font(.system(.body, weight: .semibold))
@@ -729,6 +955,7 @@ struct GameRow: View {
 
 struct GameDetailView: View {
     @ObservedObject var vm: DirectMetalViewModel
+    @ObservedObject var peripherals: PeripheralMonitor
     let entry: GameLibraryEntry
 
     private var live: GameLibraryEntry { vm.library.first(where: { $0.id == entry.id }) ?? entry }
@@ -740,6 +967,7 @@ struct GameDetailView: View {
                     RuntimeSetupCard(vm: vm)
                 }
                 header
+                PeripheralStrip(monitor: peripherals)
                 peProfileCard
                 settingsPanel
                 shaderCachePanel
@@ -759,7 +987,7 @@ struct GameDetailView: View {
         let e = live
         let running = vm.runningGameID == e.id
         return HStack(alignment: .center, spacing: 18) {
-            GameMonogram(title: e.title, size: 76)
+            GameArtworkView(entry: e, style: .banner, size: 76, wideWidth: 163)
             VStack(alignment: .leading, spacing: 6) {
                 Text(e.title)
                     .font(.system(size: 28, weight: .bold))
@@ -781,6 +1009,9 @@ struct GameDetailView: View {
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                if e.profileNote != nil || e.profileID != nil {
+                    ProfilePresetPill(entry: e, profile: vm.profile(for: e))
+                }
             }
             Spacer(minLength: 12)
             VStack(spacing: 6) {
@@ -1087,6 +1318,7 @@ struct GameDetailView: View {
 
 struct WelcomeView: View {
     @ObservedObject var vm: DirectMetalViewModel
+    @ObservedObject var peripherals: PeripheralMonitor
 
     var body: some View {
         VStack(spacing: 18) {
@@ -1133,6 +1365,8 @@ struct WelcomeView: View {
                 .padding(.vertical, 4)
                 .background(Color.accentColor.opacity(0.14), in: Capsule())
                 .foregroundStyle(Color.accentColor)
+            PeripheralStrip(monitor: peripherals)
+                .fixedSize()
         }
         .padding(40)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1162,6 +1396,8 @@ struct LauncherStatusBar: View {
                 .foregroundStyle(vm.runtimePaths == nil ? Color.red : Color.secondary)
             Divider().frame(height: 12)
             Text(vm.gpuSummary)
+            Divider().frame(height: 12)
+            Text("v\(RuntimeLauncher.appVersion())")
         }
         .font(.caption)
         .foregroundStyle(.secondary)

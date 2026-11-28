@@ -48,6 +48,9 @@ private func printUsage() {
                                          upscale, retina, hud, sandbox, args)
       DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]
                                          Launch a saved game with its per-game settings
+      DirectMetal profiles list [--json] List community game profiles (auto-applied to newly added games)
+      DirectMetal update check [--json]  Check GitHub Releases for a newer DirectMetal
+                                         (DIRECTMETAL_UPDATE_URL overrides, DIRECTMETAL_DISABLE_UPDATE_CHECK=1 disables)
     """)
 }
 
@@ -467,6 +470,67 @@ private func runLibraryCLI(args: [String]) -> Int32 {
     }
 }
 
+private struct ProfilesListing: Encodable {
+    let schema: String
+    let source: String
+    let userOverlay: String?
+    let profiles: [GameProfile]
+}
+
+private func runProfilesCLI(args: [String]) -> Int32 {
+    let sub = args.first ?? "list"
+    let rest = Array(args.dropFirst())
+    switch sub {
+    case "list", "ls", "--json":
+        let registry = GameProfileRegistry.load()
+        if sub == "--json" || rest.contains("--json") {
+            printLibraryJSON(ProfilesListing(schema: GameProfileRegistry.schemaID, source: registry.source,
+                                             userOverlay: registry.userOverlay, profiles: registry.profiles))
+            return 0
+        }
+        func col(_ s: String, _ width: Int) -> String {
+            let t = s.count > width - 1 ? String(s.prefix(width - 2)) + "…" : s
+            return t.padding(toLength: width, withPad: " ", startingAt: 0)
+        }
+        print(col("ID", 38) + col("TITLE", 40) + col("STATUS", 19) + col("PERF", 10) + col("DX9", 9) + col("METALFX", 12) + "VERIFIED")
+        for p in registry.profiles {
+            print(col(p.id, 38) + col(p.title, 40) + col(p.status ?? "-", 19) + col(p.perfProfile?.rawValue ?? "-", 10)
+                + col(p.dx9Backend?.rawValue ?? "-", 9) + col(p.upscaleMode ?? "-", 12) + p.verifiedOn.joined(separator: ", "))
+        }
+        let verified = registry.profiles.filter(\.isVerified).count
+        print("\n\(registry.profiles.count) profile(s), \(verified) tested on real hardware • source: \(registry.source)"
+            + (registry.userOverlay.map { " + overlay \($0)" } ?? ""))
+        return 0
+    default:
+        fputs("unknown profiles subcommand: \(sub) (expected: list [--json])\n", stderr)
+        return 1
+    }
+}
+
+private func runUpdateCLI(args: [String]) -> Int32 {
+    let sub = args.first ?? "check"
+    let rest = Array(args.dropFirst())
+    guard sub == "check" || sub == "--json" else {
+        fputs("unknown update subcommand: \(sub) (expected: check [--json])\n", stderr)
+        return 1
+    }
+    let result = UpdateChecker.check()
+    if sub == "--json" || rest.contains("--json") {
+        printLibraryJSON(result)
+    } else if result.disabled {
+        print("Update check disabled (DIRECTMETAL_DISABLE_UPDATE_CHECK=1). Current version: \(result.currentVersion)")
+    } else if let err = result.error {
+        fputs("update check failed: \(err)\n", stderr)
+    } else if result.updateAvailable {
+        print("Update available: DirectMetal \(result.currentVersion) -> \(result.latestVersion ?? "?")"
+            + (result.publishedAt.map { " (published \($0))" } ?? ""))
+        if let url = result.releaseURL { print(url) }
+    } else {
+        print("DirectMetal \(result.currentVersion) is up to date (latest release: \(result.latestVersion ?? "?")).")
+    }
+    return (result.error == nil || result.disabled) ? 0 : 1
+}
+
 private func runCLI(args: [String]) -> Int32 {
     guard let cmd = args.first else { return 1 }
 
@@ -480,7 +544,21 @@ private func runCLI(args: [String]) -> Int32 {
         let resolved = try? RuntimeLauncher.resolveRuntimePaths()
         let rosettaStatus = resolved?.wineBin != nil ? "ready (\(resolved!.runtimeRoot.path))" : "omitted (slim arm64ec-only)"
         let arm64ecStatus = resolved?.arm64ecRoot != nil ? "ready (\(resolved!.arm64ecRoot!.path))" : "uninitialized"
-        let infoPayload: [String: Any] = [
+        // DirectMetal-owned resources resolve even before a Wine runtime is installed.
+        let bundled = RuntimeLauncher.resolveBundledResources(runtimeRoot: resolved?.runtimeRoot)
+        let vkCompat = bundled.vkCompatLayerDir ?? resolved?.vkCompatLayerDir
+        let mullionConf = bundled.mullionConfig ?? resolved?.mullionConfig
+        let display = DisplayCapabilities.current()
+        let controllers: [[String: Any]] = ConnectedControllerInfo.snapshot(discoveryWait: 0.25).map { c in
+            [
+                "vendor_name": c.vendorName,
+                "product_category": c.productCategory,
+                "supports_haptics": c.supportsHaptics,
+                "battery_level": c.batteryLevel.map { $0 as Any } ?? NSNull(),
+                "is_attached_to_device": c.isAttachedToDevice,
+            ]
+        }
+        var infoPayload: [String: Any] = [
             "gpu_name": hw.gpuName,
             "gpu_family": hw.gpuFamily,
             "macos_version": hw.macosVersion,
@@ -497,9 +575,21 @@ private func runCLI(args: [String]) -> Int32 {
             "runtime": rosettaStatus,
             "arm64ec_fex_runtime": arm64ecStatus,
             "arm64ec_runtime_source": RuntimeManager.status(checkCodesign: false, measureDisk: false).source.rawValue,
-            "vk_compat_layer": resolved?.vkCompatLayerDir?.path ?? "unavailable",
+            "vk_compat_layer": vkCompat?.path ?? "unavailable",
             "kosmickrisp_icd": resolved?.arm64ecKosmicKrispICD?.path ?? "unavailable",
         ]
+        infoPayload["app_version"] = RuntimeLauncher.appVersion()
+        infoPayload["mullion_config"] = mullionConf?.path ?? "unavailable"
+        infoPayload["display_available"] = display.displayAvailable
+        infoPayload["display_resolution"] = display.displayAvailable
+            ? "\(display.logicalWidth)x\(display.logicalHeight) (\(display.pixelWidth)x\(display.pixelHeight) px)" : "unavailable"
+        infoPayload["display_scale"] = display.scaleFactor
+        infoPayload["display_dpi"] = display.dpi
+        infoPayload["display_refresh_hz"] = display.refreshRateHz
+        infoPayload["display_hdr_edr"] = display.supportsHDR
+        infoPayload["display_edr_headroom"] = display.edrHeadroom
+        infoPayload["display_potential_edr_headroom"] = display.potentialEDRHeadroom
+        infoPayload["connected_controllers"] = controllers
         if let data = try? JSONSerialization.data(withJSONObject: infoPayload, options: [.prettyPrinted, .sortedKeys]),
            let json = String(data: data, encoding: .utf8) {
             print(json)
@@ -713,6 +803,12 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "runtime":
         return runRuntimeCLI(args: Array(args.dropFirst()))
+
+    case "profiles", "profile":
+        return runProfilesCLI(args: Array(args.dropFirst()))
+
+    case "update", "updates":
+        return runUpdateCLI(args: Array(args.dropFirst()))
 
     case "verify-attest":
         guard args.count >= 2 else {

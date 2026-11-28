@@ -214,6 +214,40 @@ enum RuntimeLauncher {
         return nil
     }
 
+    /// Marketing version of the running app (`CFBundleShortVersionString`), `1.0.0` for bare CLI builds.
+    static func appVersion() -> String {
+        let v = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return (v?.isEmpty == false) ? v! : "1.0.0"
+    }
+
+    /// Resources that ship with DirectMetal itself rather than with a Wine runtime: `mullion.conf` and the
+    /// `vk_compat_layer`. Resolvable before any runtime is installed (`DirectMetal info` on a fresh Mac).
+    /// Order: app bundle `Resources/` -> `runtimeRoot` (mullion.conf only) -> `<cwd>` repo/build tree ->
+    /// repo/build tree next to the executable.
+    static func resolveBundledResources(runtimeRoot: URL? = nil) -> (mullionConfig: URL?, vkCompatLayerDir: URL?) {
+        let fm = FileManager.default
+        let vkDylib = "libdm_vk_compat_layer.dylib"
+        var roots: [URL] = [URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true)]
+        var probe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        for _ in 0..<5 {
+            roots.append(probe)
+            probe = probe.deletingLastPathComponent()
+        }
+
+        var confCandidates: [URL] = []
+        if let res = Bundle.main.resourceURL { confCandidates.append(res.appendingPathComponent("mullion.conf")) }
+        if let rr = runtimeRoot { confCandidates.append(rr.appendingPathComponent("mullion.conf")) }
+        confCandidates += roots.map { $0.appendingPathComponent("runtime/config/mullion.conf") }
+        let conf = confCandidates.first { fm.fileExists(atPath: $0.path) }
+
+        var vkCandidates: [URL] = []
+        if let res = Bundle.main.resourceURL { vkCandidates.append(res.appendingPathComponent("vulkan-layers", isDirectory: true)) }
+        vkCandidates += roots.map { $0.appendingPathComponent("build/dm_vk_compat", isDirectory: true) }
+        let vk = vkCandidates.first { fm.fileExists(atPath: $0.appendingPathComponent(vkDylib).path) }
+        return (conf, vk)
+    }
+
     static func resolveRuntimePaths() throws -> RuntimePaths {
         let fm = FileManager.default
         var candidates: [URL] = []
@@ -236,43 +270,20 @@ enum RuntimeLauncher {
 
         let arm64ec = resolveARM64ECRuntime()
 
-        func resolveSharedResources(runtimeRoot: URL?) -> (conf: URL?, vkCompatDir: URL?) {
-            var conf: URL? = nil
-            let bundleConf = Bundle.main.resourceURL?.appendingPathComponent("mullion.conf")
-            let runtimeConf = runtimeRoot?.appendingPathComponent("mullion.conf")
-            let repoConf = cwd.appendingPathComponent("runtime/config/mullion.conf")
-            if let bc = bundleConf, fm.fileExists(atPath: bc.path) {
-                conf = bc
-            } else if let rc = runtimeConf, fm.fileExists(atPath: rc.path) {
-                conf = rc
-            } else if fm.fileExists(atPath: repoConf.path) {
-                conf = repoConf
-            }
-            var vkCompatDir: URL? = nil
-            let bundleVK = Bundle.main.resourceURL?.appendingPathComponent("vulkan-layers", isDirectory: true)
-            let buildVK = cwd.appendingPathComponent("build/dm_vk_compat", isDirectory: true)
-            if let bvk = bundleVK, fm.fileExists(atPath: bvk.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
-                vkCompatDir = bvk
-            } else if fm.fileExists(atPath: buildVK.appendingPathComponent("libdm_vk_compat_layer.dylib").path) {
-                vkCompatDir = buildVK
-            }
-            return (conf, vkCompatDir)
-        }
-
         for root in candidates {
             let wine = root.appendingPathComponent("wine/bin/wine")
             let wineserver = root.appendingPathComponent("wine/bin/wineserver")
             let basePrefix = root.appendingPathComponent("base-prefix", isDirectory: true)
             if fm.isExecutableFile(atPath: wine.path) &&
                fm.fileExists(atPath: basePrefix.appendingPathComponent("system.reg").path) {
-                let res = resolveSharedResources(runtimeRoot: root)
+                let res = resolveBundledResources(runtimeRoot: root)
                 return RuntimePaths(
                     runtimeRoot: root,
                     wineBin: wine,
                     wineserverBin: wineserver,
                     basePrefix: basePrefix,
-                    mullionConfig: res.conf,
-                    vkCompatLayerDir: res.vkCompatDir,
+                    mullionConfig: res.mullionConfig,
+                    vkCompatLayerDir: res.vkCompatLayerDir,
                     arm64ecRoot: arm64ec?.root,
                     arm64ecWineBin: arm64ec?.wine,
                     arm64ecWineserverBin: arm64ec?.wineserver,
@@ -284,14 +295,14 @@ enum RuntimeLauncher {
 
         // Slim 100% post-Rosetta ARM64EC-only bundle support (Contents/Runtime omitted)
         if let arm = arm64ec {
-            let res = resolveSharedResources(runtimeRoot: arm.root)
+            let res = resolveBundledResources(runtimeRoot: arm.root)
             return RuntimePaths(
                 runtimeRoot: arm.root,
                 wineBin: nil,
                 wineserverBin: nil,
                 basePrefix: nil,
-                mullionConfig: res.conf,
-                vkCompatLayerDir: res.vkCompatDir,
+                mullionConfig: res.mullionConfig,
+                vkCompatLayerDir: res.vkCompatLayerDir,
                 arm64ecRoot: arm.root,
                 arm64ecWineBin: arm.wine,
                 arm64ecWineserverBin: arm.wineserver,
