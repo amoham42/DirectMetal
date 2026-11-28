@@ -4,6 +4,23 @@ All notable changes to **DirectMetal** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Interactive Launch Log Crash Triage (`⇧⌘L`, `LaunchLogAnalyzer.swift`, `LaunchLogTriageSheet.swift`, `DirectMetal diagnose-log`):** Single-pass Wine/DirectX/Metal log scanner and native macOS 15 SwiftUI triage viewer (drag-and-drop, file picker, clipboard paste, severity/category filters, redacted excerpts, DirectMetal-specific remediations, Markdown/text report export).
+- **Live Metal Performance HUD Customizer (`⇧⌘M`, `MetalHUDConfig.swift`, `MetalHUDCustomizerSheet.swift`, `DirectMetal hud`):** Interactive overlay preset, corner alignment, scale, opacity, and DXVK HUD customizer with live 16:9 canvas preview wired directly into `MTL_HUD_*` launch environments.
+- **Privacy-Redacted Support Bundle Exporter (`SupportBundleExporter.swift`, `DirectMetal support-bundle`):** One-click `.tar.gz` diagnostics bundle omitting secrets and raw home paths for GitHub bug reports.
+- **Per-Game Configuration Diff & Baseline Reset (`ConfigDiffEngine.swift`, `DirectMetal library diff|reset-settings`):** Shows `"N customized"` pills in the launcher and restores baseline settings without touching playtime, favorites, or prefix state.
+- **Shader Cache Integrity Verifier & Safe Quarantine (`ShaderCacheVerifier.swift`, `DirectMetal cache verify [--quarantine]`):** Symlink-safe verifier recognizing real macOS `MTLBinaryArchive` (`0xCBFEBABE`), `MTLB`, SQLite `.db`/WAL/lock sidecars, DXVK caches, and JSON manifests; safely quarantines corrupt artifacts without wiping healthy caches.
+- **Batch Community Profile Sync & 150 Validated Profiles (`ProfileBatchSync.swift`, `DirectMetal library sync-profiles`, `runtime/profiles/game_profiles.json`):** Expanded community game profiles from `100` to **150** (`5` hardware-verified + `145` presets) with safe library-wide batch sync preserving user customizations.
+- **Per-Game Launch Stability Analytics & Pre-Reset Save Backup (`GameSessionAnalytics.swift`, `DirectMetal history stats`, `PrefixManagerSheet.swift`):** Stability tier classification, ARM64EC/Rosetta ratio, median APFS CoW latency, and one-click **"Backup Saves & Reset"** protection in the APFS Prefix Manager.
+- **Expanded Verification Suite (`89` Automated Tests):** `46` Swift unit tests (`-warnings-as-errors`), `26` Python packaging/script/release-contract tests, `7` PSNR/SSIM visual-diff tests, and `10` C/Obj-C++ CTest suites (`make ctest`).
+
+### Changed
+
+- **Complete Swift Modularization:** Split `MetalHUDConfig`, `LaunchPlanInspector`, `LaunchLogAnalyzer`, `LaunchLogTriageSheet`, and `main.swift` (`MaintenanceAndDiagnosticsCLI.swift`) so every Swift source file in `app/DirectMetalApp/` stays cleanly under 1,000 lines.
+
 ## [1.1.0] - 2026-11-28
 
 ### Added

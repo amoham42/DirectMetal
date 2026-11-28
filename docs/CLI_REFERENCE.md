@@ -15,6 +15,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal doctor [--json]` | Run a 9-point Apple Silicon readiness check (GPU/Metal, macOS tier, ARM64EC runtime + `codesign`, graphics layers, base prefix, Display Retina/ProMotion/HDR, shader cache + profiles, controllers, SIP/SSV/Secure Enclave). Exits `0` if ok/warn, `1` on failure. |
 | `DirectMetal bench [--json\|--markdown]` | Run built-in Apple Silicon microbenchmarks (Metal UMA shared-memory compute bandwidth, APFS CoW `clonefile` latency, ARMv8 hardware SHA-256 throughput, and cached PE32+ inspection latency) and emit a shareable scorecard. |
 | `DirectMetal history [--limit N] [--json\|--markdown] [--clear]` | Inspect, export, or clear persistent structured game launch history (`launch_history.jsonl`, auto-capped at 200 entries). |
+| `DirectMetal history stats [--json\|--markdown]` | Aggregate per-game stability tiers (`Rock Solid`, `Mostly Stable`, `Needs Attention`), ARM64EC/Rosetta mix, and median APFS CoW clone speed from launch history. |
 | `DirectMetal diagnose-log <logfile> [--json\|--markdown]` | Single-pass crash & error triage on a Wine/Mullion/DXMT/DXVK/Seatbelt log (detects anti-cheat, missing DLLs, Seatbelt EPERM, GPU OOM, D3D12 alignment, shader compile errors & suggests fixes). |
 | `DirectMetal support-bundle [out.tar.gz] [--json]` | Export a privacy-redacted `.tar.gz` diagnostics bundle (`hardware.json`, redacted library summary, launch history, prefix/cache stats, `SUMMARY.md`) safe to attach to GitHub issues. |
 | `DirectMetal info` | Print structured JSON hardware telemetry (`gpu_name`, `gpu_family`, `cache_key`, `working_set_gib`, `supports_metal4`, display DPI/Hz/EDR, controllers). |
@@ -33,6 +34,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal library set <id\|title> <key=val ...>` | Configure per-game overrides: `perf=balanced\|ultra`, `engine=auto\|arm64ec\|rosetta`, `dx9=auto\|dxvk\|wined3d`, `upscale=off\|quality\|balanced\|performance`, `fps-cap=0\|30\|40\|60\|90\|120\|144`, `retina=true\|false`, `hud=true\|false`, `sandbox=true\|false`, `favorite=true\|false`, `prefix=<name>`, `args=<string>`, `env=<KEY=VAL ...>`. |
 | `DirectMetal library diff <id\|title> [--json]` | Compare a game's current settings against its matched community profile (or DirectMetal defaults). |
 | `DirectMetal library reset-settings <id\|title> [--json]` | Restore a game's launch settings back to its community preset or defaults while keeping playtime, favorites, and prefix intact. |
+| `DirectMetal library sync-profiles [--dry-run] [--overwrite] [--json\|--markdown]` | Batch-apply newly matched community profiles across your library while protecting customized games (unless `--overwrite` is passed). |
 | `DirectMetal library artwork <id\|title> [--style banner\|icon]` | Inspect resolved storefront artwork or embedded PE `.exe` icon provenance and dimensions. |
 | `DirectMetal library play <id\|title> [--warm-server]` | Launch a library title using its saved settings (`--warm-server` uses the persistent `wineserver` pool for `70–100 ms` repeat launches). |
 | `DirectMetal library explain <id\|title> [--json\|--markdown]` | Dry-run inspect a game's resolved engine, graphics translator, MetalFX upscaling, FPS cap env, prefix, shader cache, sandbox, and sanitized custom env without launching it. |
@@ -72,6 +74,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal update apply [--url <dmg>] [--sha256 <hex>] [--target-app <path>]` | Download, SHA-256 verify, `codesign --verify --deep --strict` check, and atomically swap the installed `.app` bundle. |
 | `DirectMetal cache status` | Report local shader cache directory, title count, file count, and disk usage. |
 | `DirectMetal cache list [--json]` | List each local shader cache entry with size, file count, and whether it matches the current Apple Silicon GPU / macOS build. |
+| `DirectMetal cache verify [--quarantine\|--repair] [--dry-run] [--json\|--markdown]` | Verify local `.metallib`/`MTLBinaryArchive`, SQLite, DXVK, and JSON shader cache integrity (symlink-safe) and optionally quarantine corrupt artifacts into `_quarantine` without deleting healthy caches. |
 | `DirectMetal cache prune [--dry-run] [--json]` | Reclaim disk space by removing stale shader caches built for older macOS builds or other GPU families (preserves current-host and unkeyed caches). |
 | `DirectMetal cache export <out.tar.gz> [--entry <filter>]` | Export local Metal binary shader archives with a parallel-hashed SHA-256 `manifest.json`. |
 | `DirectMetal cache import <path\|url> [--force]` | Import and SHA-256 verify a shader cache archive (`--force` overrides GPU/macOS build checks). |
