@@ -24,7 +24,16 @@ private func printUsage() {
                                          Collect hardware Secure Enclave attestation v2 JSON (opt-in)
       DirectMetal verify-attest <bundle.json> [--nonce <hex>]
                                          Verify a signed DirectMetal attestation bundle JSON (v1/v2)
-      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--perf-mode balanced|ultra] [--retina|--no-retina] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance|ultra_performance] [-- <args...>]
+      DirectMetal run <exe> [--prefix <name>] [--engine auto|arm64ec|rosetta] [--dx9-backend auto|wined3d|dxvk] [--perf-mode balanced|ultra] [--retina|--no-retina] [--desktop <WxH>|off] [--fex-tso on|off] [--sandbox] [--sandbox-offline] [--sandbox-out <dir>] [--hud] [--reset-prefix] [--upscale quality|balanced|performance|ultra_performance] [--warm-server [secs]|--no-warm-server] [-- <args...>]
+      DirectMetal runtime status [--json] [--fast]
+                                         Show ARM64EC runtime source (bundled|user-installed|dev-build|missing)
+      DirectMetal runtime install [--url <url>] [--sha256 <hex>] [--force]
+                                         Download/copy, SHA-256 + codesign verify, and install the notarized runtime
+      DirectMetal runtime remove         Remove the user-installed runtime
+      DirectMetal runtime warm <prefix> [--seconds <N>]
+                                         Start a persistent warm wineserver (default 120 s, ~220 ms launches)
+      DirectMetal runtime stop-servers [<prefix>]
+                                         Stop warm wineservers (all DirectMetal prefixes when omitted)
       DirectMetal library list [--json]  List saved games and their per-game settings
       DirectMetal library scan [dir...]  Auto-scan prefixes, Steam libraries, DIRECTMETAL_SCAN_DIR,
                                          ./.directmetal_cache/games and the given folders
@@ -37,9 +46,201 @@ private func printUsage() {
       DirectMetal library set <id_or_title> <key>=<value>...
                                          Update per-game settings (title, prefix, engine, perf, dx9,
                                          upscale, retina, hud, sandbox, args)
-      DirectMetal library play <id_or_title> [-- <args...>]
+      DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]
                                          Launch a saved game with its per-game settings
     """)
+}
+
+/// Parses `--warm-server [N]`, `--warm-server=N` and `--no-warm-server` at `args[i]`.
+/// Returns `nil` when `args[i]` is not a warm-server flag; `seconds == 0` disables; `seconds < 0` = invalid value.
+private func parseWarmServerFlag(_ args: [String], at i: Int) -> (seconds: Int, consumed: Int)? {
+    let a = args[i]
+    if a == "--no-warm-server" { return (0, 1) }
+    if a.hasPrefix("--warm-server=") {
+        guard let n = Int(a.dropFirst("--warm-server=".count)), n >= 0 else { return (-1, 1) }
+        return (n, 1)
+    }
+    if a == "--warm-server" {
+        if i + 1 < args.count, let n = Int(args[i + 1]), n >= 0 { return (n, 2) }
+        return (WineserverPool.defaultPersistSeconds, 1)
+    }
+    return nil
+}
+
+private func formatMB(_ bytes: Int64) -> String {
+    return String(format: "%.1f MB", Double(max(bytes, 0)) / 1_000_000.0)
+}
+
+private func runRuntimeCLI(args: [String]) -> Int32 {
+    guard let sub = args.first else {
+        fputs("error: runtime requires subcommand (status|install|remove|warm|stop-servers)\n", stderr)
+        return 1
+    }
+    let rest = Array(args.dropFirst())
+
+    func wineserverForPrefixes() -> URL? {
+        guard let paths = try? RuntimeLauncher.resolveRuntimePaths() else { return nil }
+        return paths.arm64ecWineserverBin ?? paths.wineserverBin
+    }
+
+    switch sub {
+    case "status":
+        let fast = rest.contains("--fast")
+        let st = RuntimeManager.status(checkCodesign: !fast, measureDisk: !fast)
+        if rest.contains("--json") {
+            printLibraryJSON(st)
+        } else {
+            print("installed:       \(st.installed)")
+            print("source:          \(st.source.rawValue)")
+            print("version:         \(st.version)")
+            print("runtime_root:    \(st.runtimeRoot ?? "-")")
+            print("codesign_valid:  \(st.codesignValid.map { String($0) } ?? "not checked")")
+            print("disk:            \(st.diskBytes.map { formatMB(Int64($0)) } ?? "not measured")")
+            print("user_runtime:    \(st.userRuntimeDir)")
+            print("archive_url:     \(st.archiveURL)")
+            print("expected_sha256: \(st.expectedSHA256)")
+            if !st.installed {
+                print("\nRun `DirectMetal runtime install` to download the notarized runtime (\(RuntimeManager.archiveSizeLabel)).")
+            }
+        }
+        return 0
+
+    case "install":
+        var sourceURL: URL? = nil
+        var sha: String? = nil
+        var force = false
+        var i = 0
+        while i < rest.count {
+            let a = rest[i]
+            if a == "--url", i + 1 < rest.count {
+                guard let u = RuntimeManager.parseSourceURL(rest[i + 1]) else {
+                    fputs("error: invalid --url \(rest[i + 1])\n", stderr)
+                    return 1
+                }
+                sourceURL = u
+                i += 2
+            } else if a == "--sha256", i + 1 < rest.count {
+                sha = rest[i + 1]
+                i += 2
+            } else if a == "--force" {
+                force = true
+                i += 1
+            } else {
+                fputs("error: unknown runtime install option \(a)\n", stderr)
+                return 1
+            }
+        }
+        let tty = isatty(STDERR_FILENO) != 0
+        var lastPhase = ""
+        var lastDecile = -1
+        var inlineActive = false
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        do {
+            let root = try RuntimeManager.installARM64ECRuntime(
+                sourceURL: sourceURL, expectedSHA256: sha, force: force
+            ) { p in
+                let phase = p.phase.rawValue
+                var line = "[runtime] \(phase): \(p.message)"
+                if p.bytesReceived > 0 {
+                    line += " \(formatMB(p.bytesReceived))"
+                    if p.totalBytes > 0 { line += " / \(formatMB(p.totalBytes))" }
+                    if p.fraction >= 0 { line += String(format: " (%.0f%%)", p.fraction * 100) }
+                }
+                let decile = p.fraction >= 0 ? Int(p.fraction * 10) : -1
+                if tty {
+                    // Live single-line updates for byte progress; finished/indeterminate steps keep their own line.
+                    if inlineActive && phase != lastPhase { fputs("\n", stderr) }
+                    fputs("\r\u{1B}[2K" + line, stderr)
+                    inlineActive = p.fraction >= 0 && p.fraction < 1
+                    if !inlineActive { fputs("\n", stderr) }
+                } else if phase != lastPhase || decile != lastDecile {
+                    fputs(line + "\n", stderr)
+                }
+                lastPhase = phase
+                lastDecile = decile
+            }
+            let secs = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e9
+            fputs(String(format: "[runtime] done in %.1f s\n", secs), stderr)
+            print(root.path)
+            return 0
+        } catch {
+            if tty { fputs("\n", stderr) }
+            fputs("runtime install failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "remove", "uninstall":
+        let dir = RuntimeManager.userARM64ECRuntimeDir()
+        do {
+            try RuntimeManager.removeUserRuntime()
+            print("removed \(dir.path)")
+            return 0
+        } catch {
+            fputs("runtime remove failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "warm":
+        guard let name = rest.first, !name.hasPrefix("--") else {
+            fputs("error: runtime warm requires <prefix_name> [--seconds <N>]\n", stderr)
+            return 1
+        }
+        var seconds = WineserverPool.defaultPersistSeconds
+        if let i = rest.firstIndex(of: "--seconds") {
+            guard i + 1 < rest.count, let n = Int(rest[i + 1]), n > 0 else {
+                fputs("error: --seconds requires a positive integer\n", stderr)
+                return 1
+            }
+            seconds = n
+        }
+        guard let ws = wineserverForPrefixes() else {
+            fputs("runtime warm failed: no DirectMetal runtime installed (run `DirectMetal runtime install`)\n", stderr)
+            return 1
+        }
+        let prefix = PrefixManager().prefixURL(named: name)
+        guard FileManager.default.fileExists(atPath: prefix.path) else {
+            fputs("runtime warm failed: prefix \"\(name)\" not found at \(prefix.path) (create it with `DirectMetal prefix create \(name)`)\n", stderr)
+            return 1
+        }
+        let wasRunning = WineserverPool.runningPID(prefixURL: prefix)
+        let t0 = DispatchTime.now().uptimeNanoseconds
+        let ok = WineserverPool.warm(prefixURL: prefix, wineserverBin: ws, persistSeconds: seconds)
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - t0) / 1e6
+        let pid = WineserverPool.runningPID(prefixURL: prefix)
+        guard ok else {
+            fputs("runtime warm failed: wineserver did not start for \(prefix.path)\n", stderr)
+            return 1
+        }
+        print(String(format: "warm prefix=%@ pid=%@ %@ in %.1f ms", name, pid.map { String($0) } ?? "?",
+                     wasRunning != nil ? "reused (existing server keeps its own lifetime)" : "started persist=\(seconds)s", ms))
+        return 0
+
+    case "stop-servers", "stop":
+        guard let ws = wineserverForPrefixes() else {
+            fputs("runtime stop-servers failed: no DirectMetal runtime installed\n", stderr)
+            return 1
+        }
+        let mgr = PrefixManager()
+        let names = rest.isEmpty ? mgr.listPrefixes() : rest
+        var stopped = 0
+        for name in names {
+            let prefix = mgr.prefixURL(named: name)
+            guard let pid = WineserverPool.runningPID(prefixURL: prefix) else {
+                if !rest.isEmpty { print("prefix=\(name) no wineserver running") }
+                continue
+            }
+            WineserverPool.stop(prefixURL: prefix, wineserverBin: ws)
+            let still = WineserverPool.runningPID(prefixURL: prefix)
+            print("prefix=\(name) pid=\(pid) \(still == nil ? "stopped" : "STILL RUNNING")")
+            if still == nil { stopped += 1 }
+        }
+        print("stopped \(stopped) wineserver(s)")
+        return 0
+
+    default:
+        fputs("unknown runtime subcommand: \(sub)\n", stderr)
+        return 1
+    }
 }
 
 private func printLibraryJSON<T: Encodable>(_ value: T) {
@@ -211,7 +412,23 @@ private func runLibraryCLI(args: [String]) -> Int32 {
         } else {
             keyParts = rest
         }
-        let key = keyParts.joined(separator: " ")
+        var warmServerSeconds: Int? = nil
+        var titleParts: [String] = []
+        var k = 0
+        while k < keyParts.count {
+            if let w = parseWarmServerFlag(keyParts, at: k) {
+                guard w.seconds >= 0 else {
+                    fputs("error: invalid --warm-server value \"\(keyParts[k])\"\n", stderr)
+                    return 1
+                }
+                warmServerSeconds = w.seconds
+                k += w.consumed
+            } else {
+                titleParts.append(keyParts[k])
+                k += 1
+            }
+        }
+        let key = titleParts.joined(separator: " ")
         guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
             fputs("library play failed: no unique game matches \"\(key)\"\n", stderr)
             return 1
@@ -233,7 +450,8 @@ private func runLibraryCLI(args: [String]) -> Int32 {
                 dx9Backend: entry.dx9Backend,
                 perfProfile: entry.perfProfile,
                 retinaMode: entry.retinaMode,
-                sandboxed: entry.enableSandbox
+                sandboxed: entry.enableSandbox,
+                warmServerSeconds: warmServerSeconds
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath)\n", stderr)
@@ -278,6 +496,7 @@ private func runCLI(args: [String]) -> Int32 {
             "supports_metal4fx": hw.supportsMetal4FX,
             "runtime": rosettaStatus,
             "arm64ec_fex_runtime": arm64ecStatus,
+            "arm64ec_runtime_source": RuntimeManager.status(checkCodesign: false, measureDisk: false).source.rawValue,
             "vk_compat_layer": resolved?.vkCompatLayerDir?.path ?? "unavailable",
             "kosmickrisp_icd": resolved?.arm64ecKosmicKrispICD?.path ?? "unavailable",
         ]
@@ -492,6 +711,9 @@ private func runCLI(args: [String]) -> Int32 {
     case "library":
         return runLibraryCLI(args: Array(args.dropFirst()))
 
+    case "runtime":
+        return runRuntimeCLI(args: Array(args.dropFirst()))
+
     case "verify-attest":
         guard args.count >= 2 else {
             fputs("error: verify-attest requires <bundle.json> [--nonce <hex>]\n", stderr)
@@ -587,6 +809,7 @@ private func runCLI(args: [String]) -> Int32 {
         var perfProfile: PerfProfile = .balanced
         var retinaMode: Bool? = nil
         var virtualDesktop: String? = nil
+        var warmServerSeconds: Int? = nil
         var childArgs: [String] = []
 
         var i = 2
@@ -595,6 +818,13 @@ private func runCLI(args: [String]) -> Int32 {
             if a == "--" {
                 childArgs.append(contentsOf: args[(i + 1)...])
                 break
+            } else if let w = parseWarmServerFlag(args, at: i) {
+                guard w.seconds >= 0 else {
+                    fputs("error: invalid --warm-server value \"\(a)\"\n", stderr)
+                    return 1
+                }
+                warmServerSeconds = w.seconds
+                i += w.consumed
             } else if a == "--prefix", i + 1 < args.count {
                 prefixName = args[i + 1]
                 i += 2
@@ -663,7 +893,8 @@ private func runCLI(args: [String]) -> Int32 {
                 sandboxed: sandboxed,
                 sandboxOffline: sandboxOffline,
                 sandboxOutputDir: sandboxOutDir,
-                fexTSOOverride: fexTSOOverride
+                fexTSOOverride: fexTSOOverride,
+                warmServerSeconds: warmServerSeconds
             )
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)
