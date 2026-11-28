@@ -308,7 +308,7 @@ _directmetal() {
       _values 'update subcommand' $sub
       ;;
     profiles)
-      _values 'profiles subcommand' list match
+      _values 'profiles subcommand' list match save export-pr remove
       ;;
     completions)
       _values 'shell' zsh bash
@@ -380,7 +380,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "check apply" -- "${cur}") )
       ;;
     profiles)
-      COMPREPLY=( $(compgen -W "list match" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "list match save export-pr remove" -- "${cur}") )
       ;;
     completions)
       COMPREPLY=( $(compgen -W "zsh bash" -- "${cur}") )

@@ -599,8 +599,73 @@ func runProfilesCLI(args: [String]) -> Int32 {
             return 1
         }
 
+    case "save", "export-pr":
+        let asJSON = rest.contains("--json")
+        let markVerified = rest.contains("--verified")
+        var notes: String? = nil
+        var positional: [String] = []
+        var idx = 0
+        while idx < rest.count {
+            if rest[idx] == "--notes", idx + 1 < rest.count {
+                notes = rest[idx + 1]
+                idx += 2
+            } else if rest[idx] == "--json" || rest[idx] == "--verified" {
+                idx += 1
+            } else {
+                positional.append(rest[idx])
+                idx += 1
+            }
+        }
+        let key = positional.joined(separator: " ")
+        let mgr = GameLibraryManager()
+        guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
+            fputs("profiles \(sub) failed: no unique library game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        let hw = markVerified ? RuntimeLauncher.queryHardwareInfo() : nil
+        let drafted = UserProfileOverlayManager.draftProfile(
+            from: entry,
+            hardware: hw,
+            notes: notes,
+            markVerifiedOnCurrentHardware: markVerified
+        )
+        do {
+            if sub == "export-pr" {
+                let snippet = try UserProfileOverlayManager.exportPRSnippet(drafted)
+                print(snippet)
+                return 0
+            }
+            let doc = try UserProfileOverlayManager.upsert(drafted)
+            if asJSON {
+                printLibraryJSON(drafted)
+            } else {
+                let path = LaunchDiagnostics.redactHome(UserProfileOverlayManager.defaultOverlayURL().path)
+                print("Saved custom profile \"\(drafted.id)\" (\(drafted.title)) to \(path) (\(doc.profiles.count) local override(s)).")
+            }
+            return 0
+        } catch {
+            fputs("profiles \(sub) failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+
+    case "remove", "delete":
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard let profileID = positional.first, !profileID.isEmpty else {
+            fputs("error: profiles remove requires <profile_id>\n", stderr)
+            return 1
+        }
+        do {
+            let doc = try UserProfileOverlayManager.remove(id: profileID)
+            let path = LaunchDiagnostics.redactHome(UserProfileOverlayManager.defaultOverlayURL().path)
+            print("Removed custom profile \"\(profileID)\" from \(path) (\(doc.profiles.count) remaining).")
+            return 0
+        } catch {
+            fputs("profiles remove failed: \(error.localizedDescription)\n", stderr)
+            return 1
+        }
+
     default:
-        fputs("unknown profiles subcommand: \(sub) (expected: list [--json] | match <exe> [--json])\n", stderr)
+        fputs("unknown profiles subcommand: \(sub) (expected: list|match|save|export-pr|remove)\n", stderr)
         return 1
     }
 }

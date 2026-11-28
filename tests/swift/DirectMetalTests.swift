@@ -392,6 +392,9 @@ struct DirectMetalTests {
             ("GameProfileRegistry: 200+ profiles, zero duplicate IDs/exes & multi-store lookup", {
                 try testGameProfileRegistry200Milestone()
             }),
+            ("UserProfileOverlayManager: draft, validate, upsert/remove overlay & PR snippet", {
+                try testUserProfileOverlayManager(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2812,5 +2815,66 @@ struct DirectMetalTests {
         try expectEqual(aoe2?.id, "age-of-empires-2-definitive-edition")
         let dave = registry.match(title: "Dave the Diver", exePath: "/Games/Dave/DaveTheDiver.exe", steamAppID: nil)
         try expectEqual(dave?.id, "dave-the-diver")
+    }
+
+    private static func testUserProfileOverlayManager(tempRoot: URL) throws {
+        try expectEqual(UserProfileOverlayManager.slugify("Pokémon: Café Remix! 2026"), "pokemon-cafe-remix-2026")
+
+        let entry = GameLibraryEntry(
+            title: "Indie Space Sim",
+            exePath: "/Games/IndieSpaceSim/SpaceSim64.exe",
+            prefixName: "IndieSpaceSim",
+            perfProfile: .ultra,
+            upscaleMode: "quality",
+            retinaMode: true,
+            enableHUD: false,
+            enableSandbox: true,
+            steamAppID: "9876543"
+        )
+        let drafted = UserProfileOverlayManager.draftProfile(
+            from: entry,
+            notes: "Runs smoothly on Apple Silicon via DirectMetal D3D11 with MetalFX quality."
+        )
+        try expectEqual(drafted.id, "indie-space-sim")
+        try expectEqual(drafted.status, "preset")
+        try expectEqual(drafted.verifiedOn, ["preset"])
+        try expectEqual(UserProfileOverlayManager.validate(drafted), [], "drafted profile must pass schema validation")
+
+        // Dishonest hardware verification & generic exe rejection
+        let badProfile = GameProfile(
+            id: "BAD_ID",
+            title: "Bad",
+            matchTitles: [],
+            matchExeNames: ["launcher.exe"],
+            steamAppIds: ["not-numeric"],
+            perfProfile: .balanced,
+            dx9Backend: .auto,
+            upscaleMode: "invalid_mode",
+            retinaMode: true,
+            enableHUD: false,
+            enableSandbox: false,
+            status: "playable",
+            notes: "short",
+            verifiedOn: ["preset"],
+            gameEngine: nil,
+            stores: ["standalone"],
+            gogGameIds: [],
+            epicAppNames: []
+        )
+        let errs = UserProfileOverlayManager.validate(badProfile)
+        try expect(errs.count >= 5, "invalid profile should trigger multiple schema hygiene errors, got \(errs.count)")
+
+        // Upsert, reload, exportPRSnippet & remove round-trip
+        let overlayURL = tempRoot.appendingPathComponent("user_overlay/game_profiles.json")
+        let doc1 = try UserProfileOverlayManager.upsert(drafted, at: overlayURL)
+        try expectEqual(doc1.profiles.count, 1)
+        let reloaded = try UserProfileOverlayManager.loadOverlay(from: overlayURL)
+        try expectEqual(reloaded.profiles.first?.id, "indie-space-sim")
+
+        let prSnippet = try UserProfileOverlayManager.exportPRSnippet(drafted)
+        try expect(prSnippet.contains("\"indie-space-sim\""), "PR snippet should emit validated profile JSON")
+
+        let doc2 = try UserProfileOverlayManager.remove(id: "indie-space-sim", at: overlayURL)
+        try expectEqual(doc2.profiles.count, 0)
     }
 }

@@ -47,6 +47,9 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal library import <backup.json> [--overwrite]` | Restore games and controller profiles from a backup (preserves existing entries unless `--overwrite` is passed). |
 | `DirectMetal profiles list [--json]` | List all built-in + user-overlay community game profiles (`runtime/profiles/game_profiles.json`). |
 | `DirectMetal profiles match <exe>` | Show which community profile matches a given executable. |
+| `DirectMetal profiles save <id\|title> [--verified] [--notes <text>] [--json]` | Draft, schema-validate, and save a library game's tuned settings into the local user overlay (`~/Library/Application Support/DirectMetal/game_profiles.json`). |
+| `DirectMetal profiles export-pr <id\|title> [--verified] [--notes <text>]` | Emit a schema-validated JSON snippet ready to submit in a PR to `runtime/profiles/game_profiles.json`. |
+| `DirectMetal profiles remove <profile_id>` | Remove a custom profile from the local user overlay. |
 
 ---
 
