@@ -672,14 +672,82 @@ private func runCLI(args: [String]) -> Int32 {
                 fpsCap: fpsCap,
                 customEnv: customEnvPairs
             )
+            LaunchHistoryStore().append(LaunchHistoryEntry(
+                gameID: nil,
+                title: GameLibraryManager.deriveTitle(exePath: exePath),
+                exePath: GameLibraryManager.canonicalPath(exePath),
+                prefixName: prefixName,
+                requestedEngine: engine.rawValue,
+                activeEngine: res.activeEngine,
+                exitCode: res.exitCode,
+                elapsedSeconds: res.elapsedSeconds,
+                sandboxed: res.sandboxed,
+                cowCloneMs: res.cloneMs > 0 ? res.cloneMs : nil,
+                fpsCap: fpsCap,
+                upscaleMode: upscaleMode ?? "off",
+                failure: nil
+            ))
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             let cloneStr = String(format: "%.2f", res.cloneMs)
             fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath) (clone_ms=\(cloneStr)) cache=\(res.shaderCacheDir)\n", stderr)
             return res.exitCode
         } catch {
+            LaunchHistoryStore().append(LaunchHistoryEntry(
+                gameID: nil,
+                title: GameLibraryManager.deriveTitle(exePath: exePath),
+                exePath: GameLibraryManager.canonicalPath(exePath),
+                prefixName: prefixName,
+                requestedEngine: engine.rawValue,
+                activeEngine: engine.rawValue,
+                exitCode: nil,
+                elapsedSeconds: 0,
+                sandboxed: sandboxed,
+                cowCloneMs: nil,
+                fpsCap: fpsCap,
+                upscaleMode: upscaleMode ?? "off",
+                failure: "\(error)"
+            ))
             fputs("run failed: \(error)\n", stderr)
             return 1
         }
+
+    case "history":
+        let rest = Array(args.dropFirst())
+        let store = LaunchHistoryStore()
+        if rest.contains("--clear") {
+            store.clear()
+            print("Cleared launch history (\(store.historyURL.path)).")
+            return 0
+        }
+        var limit = 25
+        if let idx = rest.firstIndex(of: "--limit"), idx + 1 < rest.count, let n = Int(rest[idx + 1]), n > 0 {
+            limit = min(n, LaunchHistoryStore.maxEntries)
+        }
+        if rest.contains("--markdown") {
+            print(store.markdownReport(limit: limit))
+            return 0
+        }
+        let entries = store.load(limit: limit)
+        if rest.contains("--json") {
+            printLibraryJSON(entries)
+            return 0
+        }
+        if entries.isEmpty {
+            print("No launch history recorded yet (\(store.historyURL.path)).")
+            return 0
+        }
+        print("DirectMetal Launch History (latest \(entries.count))")
+        print("--------------------------------------------------------------------------------")
+        for e in entries {
+            let status = e.succeeded ? "[OK]  " : "[FAIL]"
+            let code = e.exitCode.map { "exit=\($0)" } ?? "error"
+            let sb = e.sandboxed ? " seatbelt" : ""
+            print("\(status) \(e.timestampUtc)  \(e.title.padding(toLength: 26, withPad: " ", startingAt: 0))  \(e.durationLabel.padding(toLength: 9, withPad: " ", startingAt: 0))  \(code)  [\(e.activeEngine)\(sb)]")
+            if let fail = e.failure, !fail.isEmpty {
+                print("       -> \(fail)")
+            }
+        }
+        return 0
 
     default:
         fputs("unknown command: \(cmd)\n", stderr)

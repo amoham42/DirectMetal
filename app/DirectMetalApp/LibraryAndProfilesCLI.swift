@@ -269,10 +269,40 @@ func runLibraryCLI(args: [String]) -> Int32 {
                 customEnv: entry.customEnvDictionary
             )
             mgr.recordSessionDuration(id: entry.id, seconds: res.elapsedSeconds)
+            LaunchHistoryStore().append(LaunchHistoryEntry(
+                gameID: entry.id,
+                title: entry.title,
+                exePath: entry.exePath,
+                prefixName: entry.launchPrefixName,
+                requestedEngine: entry.engine.rawValue,
+                activeEngine: res.activeEngine,
+                exitCode: res.exitCode,
+                elapsedSeconds: res.elapsedSeconds,
+                sandboxed: res.sandboxed,
+                cowCloneMs: res.cloneMs > 0 ? res.cloneMs : nil,
+                fpsCap: entry.fpsCap,
+                upscaleMode: entry.upscaleMode,
+                failure: nil
+            ))
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath)\n", stderr)
             return res.exitCode
         } catch {
+            LaunchHistoryStore().append(LaunchHistoryEntry(
+                gameID: entry.id,
+                title: entry.title,
+                exePath: entry.exePath,
+                prefixName: entry.launchPrefixName,
+                requestedEngine: entry.engine.rawValue,
+                activeEngine: entry.engine.rawValue,
+                exitCode: nil,
+                elapsedSeconds: 0,
+                sandboxed: entry.enableSandbox,
+                cowCloneMs: nil,
+                fpsCap: entry.fpsCap,
+                upscaleMode: entry.upscaleMode,
+                failure: "\(error)"
+            ))
             fputs("library play failed: \(error)\n", stderr)
             return 1
         }

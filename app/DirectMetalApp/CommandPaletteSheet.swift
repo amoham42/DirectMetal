@@ -214,6 +214,7 @@ private struct PaletteQuickAction: Identifiable {
         case addExeOrFolder
         case systemHealth
         case prefixManager
+        case launchHistory
         case controllers
         case checkUpdates
         case posterGallery
@@ -287,6 +288,17 @@ private struct PaletteQuickAction: Identifiable {
             tint: .purple,
             shortcutHint: "⌘,",
             keywords: ["controller", "gamepad", "remap", "deadzone", "xbox", "dualsense", "haptics", "input"],
+            presentsModal: true
+        ),
+        PaletteQuickAction(
+            id: "action.launch-history",
+            kind: .launchHistory,
+            title: "Launch History…",
+            subtitle: "Review recent game sessions, exit codes, durations & copy reports",
+            systemImage: "clock.arrow.circlepath",
+            tint: .indigo,
+            shortcutHint: "⇧⌘H",
+            keywords: ["history", "launches", "log", "sessions", "recent", "exit", "crash"],
             presentsModal: true
         ),
         PaletteQuickAction(
@@ -892,6 +904,8 @@ struct CommandPaletteSheet: View {
                 vm.openSystemHealth()
             case .prefixManager:
                 vm.openPrefixManager()
+            case .launchHistory:
+                vm.openLaunchHistory()
             case .controllers:
                 vm.openControllers()
             case .checkUpdates:

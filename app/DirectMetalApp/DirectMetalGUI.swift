@@ -66,6 +66,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showPrefixManagerSheet: Bool = false
     // Quick-Launch Command Palette (⌘K)
     @Published var showCommandPalette: Bool = false
+    // Structured Launch History sheet (⇧⌘H)
+    @Published var showLaunchHistorySheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -146,7 +148,8 @@ final class DirectMetalViewModel: ObservableObject {
     var isRunning: Bool { runningGameID != nil }
 
     var isPresentingModal: Bool {
-        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet || showPrefixManagerSheet || showCommandPalette || showRemoveConfirm
+        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
+            || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -189,6 +192,12 @@ final class DirectMetalViewModel: ObservableObject {
         }
         guard !isPresentingModal else { return }
         showCommandPalette = true
+    }
+
+    /// ⇧⌘H: open the Launch History sheet.
+    func openLaunchHistory() {
+        guard !isPresentingModal || showLaunchHistorySheet else { return }
+        showLaunchHistorySheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -428,6 +437,8 @@ final class DirectMetalViewModel: ObservableObject {
                 )
                 let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: result,
                                                             failure: nil, gpuSummary: gpu)
+                LaunchHistoryStore().append(LaunchHistoryEntry(from: diagnostics, fpsCap: current.fpsCap,
+                                                               upscaleMode: current.upscaleMode))
                 DispatchQueue.main.async {
                     self.runningGameID = nil
                     self.manager.recordSessionDuration(id: current.id, seconds: result.elapsedSeconds)
@@ -443,6 +454,8 @@ final class DirectMetalViewModel: ObservableObject {
             } catch {
                 let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: nil,
                                                             failure: "\(error)", gpuSummary: gpu)
+                LaunchHistoryStore().append(LaunchHistoryEntry(from: diagnostics, fpsCap: current.fpsCap,
+                                                               upscaleMode: current.upscaleMode))
                 DispatchQueue.main.async {
                     self.runningGameID = nil
                     self.lastLaunches[current.id] = diagnostics
@@ -612,6 +625,9 @@ struct DirectMetalContentView: View {
         .sheet(isPresented: $vm.showCommandPalette) {
             CommandPaletteSheet(vm: vm)
         }
+        .sheet(isPresented: $vm.showLaunchHistorySheet) {
+            LaunchHistorySheet(vm: vm)
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -664,6 +680,9 @@ struct DirectMetalCommands: Commands {
             Button("APFS Prefixes & Storage…") { vm?.openPrefixManager() }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
                 .disabled(vm == nil || (modal && vm?.showPrefixManagerSheet != true))
+            Button("Launch History…") { vm?.openLaunchHistory() }
+                .keyboardShortcut("h", modifiers: [.command, .shift])
+                .disabled(vm == nil || (modal && vm?.showLaunchHistorySheet != true))
         }
         CommandGroup(replacing: .appSettings) {
             Button("Controllers…") { vm?.openControllers() }

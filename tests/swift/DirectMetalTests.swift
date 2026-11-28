@@ -344,6 +344,9 @@ struct DirectMetalTests {
             ("CommandPaletteMatcher: exact, prefix, boundary, CamelCase, subsequence & diacritic ranking", {
                 try testCommandPaletteMatcherRanking()
             }),
+            ("LaunchHistoryStore: JSONL append/load, malformed tolerance, 200-entry cap & redaction", {
+                try testLaunchHistoryStorePersistenceAndCap(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -1950,5 +1953,88 @@ struct DirectMetalTests {
         try expect(midSub > subseq, "substring (\(midSub)) should outrank subsequence (\(subseq))")
         try expect(camel >= 600, "CamelCase boundary should score in boundary tier, got \(camel)")
         try expect(diacritic >= 800, "diacritic-folded prefix should score in prefix tier, got \(diacritic)")
+    }
+
+    private static func testLaunchHistoryStorePersistenceAndCap(tempRoot: URL) throws {
+        let dir = tempRoot.appendingPathComponent("history_store", isDirectory: true)
+        let store = LaunchHistoryStore(supportRoot: dir)
+
+        let okEntry = LaunchHistoryEntry(
+            timestampUtc: "2026-11-27T10:00:00Z",
+            gameID: "abc123",
+            title: "Hades",
+            exePath: "/Users/alice/Games/Hades/Hades.exe",
+            prefixName: "Hades",
+            requestedEngine: "auto",
+            activeEngine: "arm64ec",
+            exitCode: 0,
+            elapsedSeconds: 42.5,
+            sandboxed: true,
+            cowCloneMs: 0.45,
+            fpsCap: 120,
+            upscaleMode: "off",
+            failure: nil
+        )
+        let failEntry = LaunchHistoryEntry(
+            timestampUtc: "2026-11-27T10:05:00Z",
+            gameID: "def456",
+            title: "BrokenGame",
+            exePath: "/Users/alice/Games/Broken/Broken.exe",
+            prefixName: "Broken",
+            requestedEngine: "auto",
+            activeEngine: "arm64ec",
+            exitCode: nil,
+            elapsedSeconds: 0.2,
+            sandboxed: false,
+            cowCloneMs: nil,
+            fpsCap: 0,
+            upscaleMode: "quality",
+            failure: "Missing DLL"
+        )
+        try expectEqual(okEntry.succeeded, true)
+        try expectEqual(failEntry.succeeded, false)
+
+        store.append(okEntry)
+        // Inject a malformed JSONL line directly to verify tolerant reading
+        let corrupt = Data("not-valid-json-line\n\n".utf8)
+        let fh = try FileHandle(forWritingTo: store.historyURL)
+        fh.seekToEndOfFile()
+        fh.write(corrupt)
+        try fh.close()
+        store.append(failEntry)
+
+        let loaded = store.load(limit: 10)
+        try expectEqual(loaded.count, 2, "tolerant loader must skip corrupt lines")
+        try expectEqual(loaded[0].title, "BrokenGame", "newest entry must be first")
+        try expectEqual(loaded[1].title, "Hades")
+
+        let md = store.markdownReport(limit: 10, home: "/Users/alice")
+        try expect(md.contains("Hades"), "markdown report should include game title")
+        try expect(!md.contains("/Users/alice"), "markdown report must redact home directory")
+
+        // Verify rolling cap trims cleanly past maxEntries
+        store.clear()
+        try expectEqual(store.load().count, 0)
+        for idx in 1...205 {
+            store.append(LaunchHistoryEntry(
+                gameID: nil,
+                title: "Session \(idx)",
+                exePath: "/Games/S\(idx).exe",
+                prefixName: "S\(idx)",
+                requestedEngine: "auto",
+                activeEngine: "arm64ec",
+                exitCode: 0,
+                elapsedSeconds: 1.0,
+                sandboxed: false,
+                cowCloneMs: nil,
+                fpsCap: 0,
+                upscaleMode: "off",
+                failure: nil
+            ))
+        }
+        let capped = store.load(limit: 250)
+        try expectEqual(capped.count, LaunchHistoryStore.maxEntries, "rolling cap must trim to maxEntries")
+        try expectEqual(capped.first?.title, "Session 205", "newest entry preserved after trim")
+        try expectEqual(capped.last?.title, "Session 6", "oldest 5 entries trimmed")
     }
 }
