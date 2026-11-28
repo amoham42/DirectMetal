@@ -383,6 +383,9 @@ struct DirectMetalTests {
             ("StorageFootprintAnalyzer: 6-category audit, symlink safety & reclamation hints", {
                 try testStorageFootprintAnalyzer(tempRoot: tempRoot)
             }),
+            ("LaunchEnvValidator: blocked keys, Linux/Proton hints, conflicts & secret redaction", {
+                try testLaunchEnvValidator()
+            }),
         ]
 
         var passed = 0
@@ -2668,5 +2671,48 @@ struct DirectMetalTests {
         try expect(!text.contains(tempRoot.path), "formatText must redact home prefix")
         let md = StorageFootprintAnalyzer.formatMarkdown(report, home: tempRoot.path)
         try expect(md.contains("DirectMetal Storage Footprint"), "formatMarkdown should emit heading")
+    }
+
+    private static func testLaunchEnvValidator() throws {
+        // Clean valid input
+        let clean = LaunchEnvValidator.validate(
+            customEnv: "LC_ALL=ja_JP.UTF-8 WINEDLLOVERRIDES=\"version=n,b\"",
+            extraArgs: "-windowed -dx11"
+        )
+        try expectEqual(clean.isClean, true, "valid env & args should pass cleanly")
+        try expectEqual(clean.validEnvKeyCount, 2)
+        try expectEqual(clean.argCount, 2)
+
+        // Combined edge cases: blocked key, Linux/Proton no-op, conflict, secret advisory, syntax error & Steam wrapper
+        var entry = GameLibraryEntry(
+            title: "TestGame",
+            exePath: "/Games/TestGame.exe",
+            prefixName: "TestGame",
+            fpsCap: 60,
+            enableHUD: true
+        )
+        entry.customEnv = "WINEPREFIX=/tmp/evil MANGOHUD=1 MTL_HUD_ENABLED=0 DXVK_FRAME_RATE=144 MY_API_TOKEN=super_secret_98765 BADTOKEN"
+        entry.extraArgs = "gamemoderun %command% \"-unclosed"
+
+        let report = LaunchEnvValidator.validate(entry: entry)
+        try expectEqual(report.hasErrors, true, "malformed token & unclosed quote must produce error severity")
+        try expectEqual(report.blockedKeyCount, 1, "WINEPREFIX must be counted as blocked")
+
+        let categories = Set(report.issues.map(\.category))
+        try expect(categories.contains(.blockedKey), "should detect blockedKey")
+        try expect(categories.contains(.linuxProtonOnly), "should detect Linux/Proton MANGOHUD/gamemoderun")
+        try expect(categories.contains(.conflict), "should detect HUD/FPS cap conflict")
+        try expect(categories.contains(.secretAdvisory), "should flag MY_API_TOKEN as secretAdvisory")
+        try expect(categories.contains(.syntaxError), "should detect BADTOKEN and unclosed quote")
+
+        // Verify raw secret value NEVER appears in issues, text, or Markdown reports
+        let text = LaunchEnvValidator.formatText(report)
+        let md = LaunchEnvValidator.formatMarkdown(report)
+        try expect(!text.contains("super_secret_98765"), "formatText must never echo secret values")
+        try expect(!md.contains("super_secret_98765"), "formatMarkdown must never echo secret values")
+        for issue in report.issues {
+            try expect(!issue.message.contains("super_secret_98765"), "issue.message must never echo secret values")
+            try expect(!issue.suggestion.contains("super_secret_98765"), "issue.suggestion must never echo secret values")
+        }
     }
 }

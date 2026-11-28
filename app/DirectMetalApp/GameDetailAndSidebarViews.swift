@@ -465,6 +465,54 @@ struct GameDetailView: View {
                         .toggleStyle(.checkbox)
                     }
                 }
+                if !e.customEnv.isEmpty || !e.extraArgs.isEmpty {
+                    let lintReport = LaunchEnvValidator.validate(entry: e)
+                    if !lintReport.isClean {
+                        VStack(alignment: .leading, spacing: 5) {
+                            ForEach(lintReport.issues.prefix(4)) { issue in
+                                let tint: Color = {
+                                    switch issue.severity {
+                                    case .error: return .red
+                                    case .warning: return .orange
+                                    case .info: return .blue
+                                    }
+                                }()
+                                let icon: String = {
+                                    switch issue.severity {
+                                    case .error: return "xmark.octagon.fill"
+                                    case .warning: return "exclamationmark.triangle.fill"
+                                    case .info: return "info.circle.fill"
+                                    }
+                                }()
+                                HStack(alignment: .top, spacing: 6) {
+                                    Image(systemName: icon)
+                                        .font(.caption)
+                                        .foregroundStyle(tint)
+                                        .padding(.top, 1)
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text("\(issue.keyOrToken): \(issue.message)")
+                                            .font(.caption.weight(.medium))
+                                        Text(issue.suggestion)
+                                            .font(.caption2)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                            if lintReport.issues.count > 4 {
+                                Text("+\(lintReport.issues.count - 4) more advisories — run `DirectMetal library lint` for full details.")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background((lintReport.hasErrors ? Color.red : Color.orange).opacity(0.08), in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .strokeBorder((lintReport.hasErrors ? Color.red : Color.orange).opacity(0.25))
+                        )
+                    }
+                }
                 HStack(spacing: 4) {
                     Image(systemName: "checkmark.icloud")
                     Text("Changes save automatically to library.json")

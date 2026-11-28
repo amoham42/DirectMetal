@@ -39,6 +39,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | `DirectMetal library artwork <id\|title> [--style banner\|icon]` | Inspect resolved storefront artwork or embedded PE `.exe` icon provenance and dimensions. |
 | `DirectMetal library play <id\|title> [--warm-server]` | Launch a library title using its saved settings (`--warm-server` uses the persistent `wineserver` pool for `70–100 ms` repeat launches). |
 | `DirectMetal library explain <id\|title> [--json\|--markdown]` | Dry-run inspect a game's resolved engine, graphics translator, MetalFX upscaling, FPS cap env, prefix, shader cache, sandbox, and sanitized custom env without launching it. |
+| `DirectMetal library lint <id\|title> [--json\|--markdown]` | Lint a game's `customEnv` and `extraArgs` for syntax errors, blocked security keys, Linux/Proton no-op vars (`MANGOHUD`, `PROTON_*`, `%command%`), setting conflicts, and secret advisories. |
 | `DirectMetal library shortcut <id\|title> [--format app\|command] [--dir <path>] [--json]` | Export a standalone macOS `.app` launcher (with game icon for Spotlight/Dock/Launchpad) or executable `.command` script for one-click launching. |
 | `DirectMetal library remove <id\|title>` | Hide and remove a title from the library without deleting game files. |
 | `DirectMetal library export <backup.json>` | Export all saved game settings and controller remapping profiles to a portable JSON backup. |
