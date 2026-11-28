@@ -11,7 +11,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-3b82f6.svg)](LICENSE)
 [![macOS 15+ Apple Silicon](https://img.shields.io/badge/Apple%20Silicon-macOS%2015%2B-111827.svg)](#system-requirements)
 
-[Download v1.0.1](https://github.com/amoham42/DirectMetal/releases/latest) · [Quick Start](#-quick-start) · [Benchmarks](#-benchmarks) · [Compatibility](COMPATIBILITY.md) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
+[Download v1.1.0](https://github.com/amoham42/DirectMetal/releases/latest) · [Quick Start](#-quick-start) · [Benchmarks](#-benchmarks) · [Compatibility](COMPATIBILITY.md) · [Architecture](ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -25,7 +25,7 @@
   </picture>
 </p>
 <p align="center">
-  <sub><b>DirectMetal v1.0.1</b> — Native SwiftUI launcher auto-detecting PE APIs (<code>DX12</code> / <code>DX11</code> / <code>DX9</code>), DLSS/FSR → MetalFX bridges, embedded Windows <code>.exe</code> icons, Retina PPI, ProMotion 120 Hz &amp; HDR/EDR</sub>
+  <sub><b>DirectMetal v1.1.0</b> — Native SwiftUI launcher auto-detecting PE APIs (<code>DX12</code> / <code>DX11</code> / <code>DX9</code> / <code>Vulkan</code> / <code>OpenGL</code>), DLSS/FSR → MetalFX bridges, embedded Windows <code>.exe</code> icons, Retina PPI, ProMotion 120 Hz &amp; HDR/EDR</sub>
 </p>
 
 <p align="center">
@@ -44,8 +44,8 @@ Traditional Mac gaming wrappers stack layers (`DirectX → Vulkan → MoltenVK �
 - **100% Post-Rosetta ARM64EC + FEX:** Runs both **64-bit and 32-bit** Windows games on a native `arm64` host (`Wine 11.22` + `USync 6` + `FEX-Emu`) with zero Rosetta 2 on macOS 26.4+ (plus optional `--include-rosetta` fallback for macOS 15–26.3).
 - **`2.8 MiB` Lite Installer & Verified Self-Updater:** Ships as a `2.9 MB` `DirectMetal-Lite.app` that downloads and SHA-256 + `codesign` verifies `MetalSharp-Wine` on first launch — or grab the `1.3 GB` self-contained offline DMG.
 - **Instant Launches & Zero Stutter:** Persistent warm `wineserver` pool (**`70–100 ms`** repeat launches, `10.7×` faster), **`0.25–0.41 ms`** APFS CoW prefixes, `~150 ms` zero-copy prefix hydration, and double-SHA-256 verified **Cloud Shader Cache CDN** (`MTLBinaryArchive`, `67×–254×` warm load).
-- **Consumer Game Library & Power-User Launcher:** Native macOS 15 SwiftUI launcher with **Detail Inspector (`⌘1`) & Poster Gallery (`⌘2`)**, **`⌘K` Quick-Launch Command Palette**, **Favorites pinning**, auto-discovery for **Steam, GOG Galaxy, and Epic Games Store** with real storefront artwork + embedded Windows PE `.exe` icons, **75 validated community game presets**, **Spotlight/Dock `.app` shortcut export**, per-game **FPS cap & ProMotion frame-pacing**, sanitized custom env vars, playtime tracking, **portable library backup/restore**, and interactive `GCController` remapping + deadzones.
-- **Built-in Diagnostics, Benchmarking & Storage Maintenance:** One-click **System Health, Shader Cache & Apple Silicon Benchmark Sheet (`⌘D`, `DirectMetal doctor`, `DirectMetal bench`)**, **APFS Prefix Manager & Orphaned Prefix Pruning (`⇧⌘P`, `prefix stats|prune`)**, **Structured Launch History (`⇧⌘H`, `DirectMetal history`)**, and native `zsh`/`bash` tab completions.
+- **Consumer Game Library & Power-User Launcher:** Native macOS 15 SwiftUI launcher with **Detail Inspector (`⌘1`) & Poster Gallery (`⌘2`)**, **`⌘K` Quick-Launch Command Palette**, **Favorites pinning**, auto-discovery for **Steam, GOG Galaxy, and Epic Games Store** with real storefront artwork + embedded Windows PE `.exe` icons, **100 validated community game presets (`⇧⌘B`)**, **Spotlight/Dock `.app` shortcut export**, **Dry-Run Launch Plan Inspector (`⇧⌘I`)**, per-game **FPS cap & ProMotion frame-pacing**, sanitized custom env vars, playtime tracking, **portable library backup/restore**, and interactive `GCController` remapping + deadzones.
+- **Built-in Diagnostics, Benchmarking & Storage Maintenance:** One-click **System Health, Shader Cache & Apple Silicon Benchmark Sheet (`⌘D`, `DirectMetal doctor`, `DirectMetal bench`)**, **APFS Prefix Manager, Orphaned Prefix Pruning & SHA-256 Save Backup/Restore (`⇧⌘P`, `prefix stats|prune|export-saves|import-saves`)**, **Structured Launch History (`⇧⌘H`, `DirectMetal history`)**, and native `zsh`/`bash` tab completions.
 - **Hardened Per-Game Sandbox & Attestation:** Opt-in macOS kernel Seatbelt confinement (`--sandbox`) and Apple Silicon Secure Enclave P-256 hardware attestation (`DirectMetal attest`).
 
 ---

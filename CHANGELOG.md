@@ -4,6 +4,35 @@ All notable changes to **DirectMetal** are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-11-28
+
+### Added
+
+- **Native macOS 15 Launcher Power-User Suite (`app/DirectMetalApp/`):**
+  - **Game Poster Gallery (`⌘2`, `GameGridView.swift`):** Adaptive cover-art grid toggleable with Detail Inspector (`⌘1`), hover Play overlay, scrollable API badge pills, and context menus.
+  - **Quick-Launch Command Palette (`⌘K`, `CommandPaletteSheet.swift`):** Fuzzy/word-boundary/CamelCase/diacritic-ranked launcher jumping straight to games (`↩` inspect, `⌘↩` play) and all launcher sheets/actions.
+  - **Per-Game Favorites / Pinning (`isFavorite`):** Star pinning across sidebar rows, detail header, poster gallery cards, `★` filter chip, and CLI (`DirectMetal library set <game> favorite=true|false`).
+  - **System Health, Shader Cache & Built-in Apple Silicon Benchmark Sheet (`⌘D`, `SystemHealthSheet.swift`, `ShaderCacheAndBenchTabs.swift`, `BenchmarkCLI.swift`):** 9-point health doctor (`DirectMetal doctor [--json]`), stale shader cache inspection & pruning (`DirectMetal cache list|prune`), and live Apple Silicon microbenchmarks (`DirectMetal bench [--json|--markdown]`: Metal UMA compute bandwidth, APFS CoW `clonefile`, ARMv8 hardware SHA-256, cached PE32+ inspection).
+  - **APFS Prefix Manager, Orphaned Prefix Pruning & SHA-256 Save Backup/Restore (`⇧⌘P`, `PrefixManagerSheet.swift`, `SaveBackupManager.swift`):** Logical size & CoW telemetry (`DirectMetal prefix stats`), safe orphaned prefix pruning (`DirectMetal prefix prune [--dry-run]`), and SHA-256 verified Windows save-data export/restore (`DirectMetal prefix export-saves|import-saves`, with `O_NOFOLLOW` & path-traversal rejection).
+  - **Structured Launch History (`⇧⌘H`, `LaunchHistoryStore.swift`, `DirectMetal history`):** Rolling 200-entry JSONL session log capturing exit codes, durations, engines, CoW clone latency, and sandbox state with Markdown export.
+  - **Dry-Run Launch Plan Inspector (`⇧⌘I`, `LaunchPlanInspector.swift`, `DirectMetal library explain`):** Side-effect-free preview of resolved execution engine, graphics translator, MetalFX upscaling, FPS cap env, prefix, shader cache, controller profile, and blocked custom env keys.
+  - **Community Game Profiles Browser (`⇧⌘B`, `ProfileBrowserSheet.swift`, `DirectMetal profiles match`):** Searchable in-app browser over **100 validated community game profiles** (`5` hardware-verified, `95` community presets) with one-click preset application.
+  - **Spotlight & Dock `.app` / `.command` Shortcut Exporter (`ShortcutExporter.swift`, `DirectMetal library shortcut`):** Generates standalone `.app` launcher bundles (with game `.icns` artwork) or `.command` scripts with POSIX-safe escaping.
+  - **Per-Game FPS Cap & ProMotion Frame-Pacing + Sanitized Custom Env Vars:** Per-game `0/30/40/60/90/120/144` FPS pacing (`dxgi.maxFrameRate`, `DXMT_FRAME_RATE_CAP`, `DXVK_FRAME_RATE`), sanitized custom env editor (blocking `WINEPREFIX`/`DYLD_*`/`LD_PRELOAD` and merging `WINEDLLOVERRIDES`/`MULLION_CONFIG`), playtime duration tracking, portable library + controller backup/restore (`DirectMetal library export|import`), `bumperTriggerSwap` controller preset, and native `zsh`/`bash` completions (`DirectMetal completions`).
+- **Root CMake Superbuild & Comprehensive Test Coverage (`78` Automated Tests):**
+  - Top-level `CMakeLists.txt` with `10/10` CTest native C/Obj-C++ subsystem tests (`-Wall -Wextra -Werror -Wformat=2`, Release `-DNDEBUG` safe), **39** Swift unit tests (`-warnings-as-errors`), **22** Python packaging/profile tests, and **7** PSNR/SSIM visual-diff tests.
+  - Homebrew Cask (`Casks/directmetal.rb`) and reference docs (`docs/BENCHMARKS.md`, `docs/CLI_REFERENCE.md`, `docs/GAME_PROFILES_GUIDE.md`, `docs/SHADER_CACHE_CDN.md`).
+
+### Changed & Optimized
+
+- **Hot-Path Performance:** Parallel SHA-256 hashing (`DispatchQueue.concurrentPerform`) in `ShaderCacheManager` & `SaveBackupManager`; parallel multi-game folder scanning in `GameLibraryManager`; `O(1)` stat-cached `SteamLibraryLocator.manifestIndex`; `pthread_once` env caching & atomic dispatch in `dm_vk_compat_layer.c`; single-init cached forwarding in `d3d12_guard.c`; bounded exponential-backoff retry for transient runtime downloads in `RuntimeManager.swift`.
+- **Full Swift Modularization:** Refactored monolithic Swift files (`main.swift`, `DirectMetalGUI.swift`, `GameLibraryManager.swift`, `RuntimeLauncher.swift`, `SystemHealthSheet.swift`, `ShaderCacheManager.swift`, `GameArtworkManager.swift`, `AppUpdater.swift`) into focused, maintainable modules.
+
+### Fixed
+
+- **Graphics & Inspection:** Fixed `UInt32` RVA overflow in `PEInspector.swift` (using `UInt64` arithmetic) and added `Vulkan`/`OpenGL` API detection; fixed `uint8` overflow wraparound in `tools/diff_harness.py` error heatmaps and vectorized 3-channel SSIM convolution.
+- **Native Systems & Security:** Fixed 3 `CFErrorRef` leaks and `NSTask`/`NSPipe` deadlock in `dm_attestation.mm`; added `EINTR` timeout recomputation in `dm_sync.c` and `waitpid` retry in `dm_sandbox.c`; hardened Seatbelt SBPL escaping (newline stripping) and expanded deny list (`.netrc`, `.npmrc`, `.pypirc`, Brave/Edge/Arc); added RFC 8259 JSON escaping and `"/"`/`/.` delete guards in `dm_prefix.c`; fixed Release `-DNDEBUG` assertion elision across native C tests.
+
 ## [1.0.1] - 2026-11-27
 
 ### Added
