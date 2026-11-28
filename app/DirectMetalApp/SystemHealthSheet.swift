@@ -2,17 +2,39 @@ import AppKit
 import Foundation
 import SwiftUI
 
-// System Health & Shader Cache Maintenance Sheet.
-// Provides live 9-point System Doctor diagnostics (off main thread) with Markdown export
-// and local Shader Cache inspection, stale-build pruning, and Finder reveal.
+// System Health, Shader Cache & Apple Silicon Benchmark Sheet.
+// Provides live 9-point System Doctor diagnostics (off main thread) with Markdown export,
+// local Shader Cache inspection/pruning/Finder reveal, and on-device Apple Silicon microbenchmarks.
 
 // MARK: - Models
 
 enum SystemHealthTab: String, CaseIterable, Identifiable {
     case doctor = "System Doctor"
     case shaderCache = "Shader Cache"
+    case benchmark = "Benchmark"
 
     var id: String { rawValue }
+}
+
+extension BenchmarkScorecard {
+    /// Generates a GitHub-ready Markdown scorecard matching `DirectMetal bench --markdown`.
+    func markdownReport() -> String {
+        let metalTier = supportsMetal4 ? "Metal 4" : "Metal 3"
+        var lines: [String] = [
+            "### DirectMetal Apple Silicon Benchmark (`v\(appVersion)`)",
+            "- **GPU:** `\(gpuName)` (`\(gpuFamily)`, `\(String(format: "%.1f", workingSetGiB)) GiB` UMA, `\(metalTier)`)",
+            "- **macOS:** `\(macosVersion)` (`\(macosBuild)`)",
+            "",
+            "| Subsystem | Result | Details |",
+            "| :--- | ---: | :--- |",
+        ]
+        for m in metrics {
+            let safeDetail = m.detail.replacingOccurrences(of: "|", with: "\\|")
+            lines.append("| **\(m.label)** | **`\(m.value) \(m.unit)`** | \(safeDetail) |")
+        }
+        lines.append("")
+        return lines.joined(separator: "\n")
+    }
 }
 
 enum DoctorCheckSeverity: String, Sendable {
@@ -398,6 +420,11 @@ struct SystemHealthSheet: View {
     @State private var isPruningCaches: Bool = false
     @State private var cacheBanner: CacheBannerNotice?
 
+    // Benchmark state
+    @State private var benchmarkScorecard: BenchmarkScorecard?
+    @State private var isRunningBenchmark: Bool = false
+    @State private var copiedBenchmark: Bool = false
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             headerBar
@@ -408,13 +435,15 @@ struct SystemHealthSheet: View {
                     doctorTabContent
                 case .shaderCache:
                     shaderCacheTabContent
+                case .benchmark:
+                    benchmarkTabContent
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             footerBar
         }
-        .frame(minWidth: 660, idealWidth: 740, minHeight: 500, idealHeight: 580)
+        .frame(minWidth: 700, idealWidth: 760, minHeight: 500, idealHeight: 580)
         .onAppear {
             if doctorSnapshot == nil && !isRunningDoctor {
                 refreshDoctor()
@@ -432,6 +461,7 @@ struct SystemHealthSheet: View {
             Label("System Health & Shader Cache", systemImage: "stethoscope")
                 .font(.title2.bold())
                 .lineLimit(1)
+                .minimumScaleFactor(0.85)
             Spacer(minLength: 12)
             Picker("Section", selection: $selectedTab) {
                 ForEach(SystemHealthTab.allCases) { tab in
@@ -440,7 +470,7 @@ struct SystemHealthSheet: View {
             }
             .labelsHidden()
             .pickerStyle(.segmented)
-            .frame(width: 260)
+            .frame(width: 320)
         }
         .padding(.horizontal, 22)
         .padding(.vertical, 16)
@@ -448,7 +478,8 @@ struct SystemHealthSheet: View {
 
     private var footerBar: some View {
         HStack(spacing: 10) {
-            if selectedTab == .doctor {
+            switch selectedTab {
+            case .doctor:
                 if let snap = doctorSnapshot {
                     HStack(spacing: 6) {
                         Image(systemName: snap.overallSeverity.iconName)
@@ -462,13 +493,37 @@ struct SystemHealthSheet: View {
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
-            } else {
+            case .shaderCache:
                 Text(LaunchDiagnostics.redactHome(cacheSnapshot?.rootPath ?? RuntimeLauncher.shaderCacheRoot().path))
                     .font(.caption.monospaced())
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+            case .benchmark:
+                if let card = benchmarkScorecard {
+                    HStack(spacing: 6) {
+                        Image(systemName: "cpu")
+                            .foregroundStyle(.secondary)
+                        Text("\(card.gpuName) (\(card.gpuFamily)) · \(String(format: "%.1f", card.workingSetGiB)) GiB UMA · \(card.supportsMetal4 ? "Metal 4" : "Metal 3") · macOS \(card.macosVersion) (\(card.macosBuild))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "cpu")
+                            .foregroundStyle(.secondary)
+                        Text("\(vm.gpuInfo.gpuName) (\(vm.gpuInfo.gpuFamily)) · \(String(format: "%.1f", vm.gpuInfo.workingSetGiB)) GiB UMA · macOS \(vm.gpuInfo.macosVersion) (\(vm.gpuInfo.macosBuild))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .textSelection(.enabled)
+                    }
+                }
             }
             Spacer(minLength: 12)
             Button("Done") { dismiss() }
@@ -719,6 +774,133 @@ struct SystemHealthSheet: View {
         }
     }
 
+    // MARK: Benchmark tab
+
+    private var benchmarkTabContent: some View {
+        let gridColumns = [
+            GridItem(.flexible(), spacing: 12),
+            GridItem(.flexible(), spacing: 12),
+        ]
+
+        return VStack(alignment: .leading, spacing: 14) {
+            benchmarkHeader
+                .padding(.horizontal, 22)
+                .padding(.top, 14)
+
+            if isRunningBenchmark && benchmarkScorecard == nil {
+                VStack(spacing: 10) {
+                    ProgressView()
+                    Text("Running on-device Apple Silicon microbenchmarks…")
+                        .font(.callout.weight(.medium))
+                    Text("Measuring Metal UMA compute bandwidth, APFS CoW clonefile(2), CryptoKit SHA-256 & PE32+ cache (~1 s)")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 460)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if let card = benchmarkScorecard {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 12) {
+                        LazyVGrid(columns: gridColumns, spacing: 12) {
+                            ForEach(card.metrics, id: \.id) { metric in
+                                BenchmarkMetricCard(metric: metric)
+                            }
+                        }
+                        .opacity(isRunningBenchmark ? 0.6 : 1.0)
+                        .overlay {
+                            if isRunningBenchmark {
+                                HStack(spacing: 8) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Running benchmark…")
+                                        .font(.callout.weight(.medium))
+                                }
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 8)
+                                .background(.regularMaterial, in: Capsule())
+                                .overlay(
+                                    Capsule().strokeBorder(Color.secondary.opacity(0.2))
+                                )
+                            }
+                        }
+
+                        BenchmarkHostFooter(card: card)
+                    }
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 16)
+                }
+            } else {
+                VStack(spacing: 10) {
+                    Image(systemName: "speedometer")
+                        .font(.system(size: 36))
+                        .foregroundStyle(.tertiary)
+                    Text("Ready to Benchmark This Mac")
+                        .font(.headline)
+                    Text("Click Run Benchmark to measure Metal UMA zero-copy bandwidth, APFS CoW clone latency, ARMv8 SHA-256 speed, and cached PE32+ inspection in ~1 second.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 460)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    private var benchmarkHeader: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Label("On-Device Apple Silicon Microbenchmarks", systemImage: "speedometer")
+                        .font(.headline)
+                    Text("Measures Metal UMA zero-copy compute bandwidth, APFS CoW clonefile(2) latency, ARMv8 CryptoKit SHA-256 verification speed, and cached PE32+ inspection latency — runs in ~1 second with no external binaries.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                HStack(spacing: 8) {
+                    Button {
+                        runBenchmark()
+                    } label: {
+                        if isRunningBenchmark {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.mini)
+                                Text("Running…")
+                            }
+                        } else {
+                            Label("Run Benchmark", systemImage: "play.fill")
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isRunningBenchmark)
+                    .help("Run all 4 on-device Apple Silicon microbenchmarks (~1 second)")
+
+                    Button {
+                        copyBenchmarkMarkdown()
+                    } label: {
+                        Label(
+                            copiedBenchmark ? "Copied" : "Copy Markdown Scorecard",
+                            systemImage: copiedBenchmark ? "checkmark" : "doc.on.doc"
+                        )
+                    }
+                    .disabled(benchmarkScorecard == nil || isRunningBenchmark)
+                    .help("Copy a GitHub-ready Markdown scorecard matching `DirectMetal bench --markdown`")
+
+                    Spacer(minLength: 8)
+
+                    if let card = benchmarkScorecard {
+                        Text("v\(card.appVersion) · \(card.metrics.count) metrics")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                }
+            }
+            .padding(6)
+        }
+    }
+
     // MARK: Actions
 
     private func refreshDoctor() {
@@ -799,6 +981,34 @@ struct SystemHealthSheet: View {
         let root = RuntimeLauncher.shaderCacheRoot()
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         NSWorkspace.shared.open(root)
+    }
+
+    private func runBenchmark() {
+        guard !isRunningBenchmark else { return }
+        isRunningBenchmark = true
+        copiedBenchmark = false
+        DispatchQueue.global(qos: .userInitiated).async {
+            let card = DirectMetalBenchmark.runAll()
+            DispatchQueue.main.async {
+                self.benchmarkScorecard = card
+                self.isRunningBenchmark = false
+                self.vm.statusMessage = "Completed Apple Silicon benchmark scorecard (\(card.metrics.count) subsystems)."
+            }
+        }
+    }
+
+    private func copyBenchmarkMarkdown() {
+        guard let card = benchmarkScorecard else { return }
+        let report = card.markdownReport()
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(report, forType: .string)
+        vm.statusMessage = "Copied Apple Silicon benchmark scorecard Markdown."
+        withAnimation { copiedBenchmark = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            withAnimation { copiedBenchmark = false }
+        }
     }
 
     private func formatMiB(_ bytes: UInt64) -> String {
@@ -915,5 +1125,106 @@ private struct ShaderCacheEntryRow: View {
                 .strokeBorder(Color.secondary.opacity(0.12))
         )
         .help(entry.path)
+    }
+}
+
+private struct BenchmarkMetricCard: View {
+    let metric: BenchmarkMetric
+
+    private var visualStyle: (icon: String, tint: Color) {
+        switch metric.id {
+        case "metal_uma_bandwidth":
+            return ("memorychip", .blue)
+        case "apfs_cow_clone":
+            return ("doc.on.doc.fill", .purple)
+        case "sha256_verify_throughput":
+            return ("checkmark.shield.fill", .green)
+        case "pe_inspector_cached":
+            return ("bolt.fill", .orange)
+        default:
+            return ("speedometer", .accentColor)
+        }
+    }
+
+    var body: some View {
+        let style = visualStyle
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: style.icon)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(style.tint)
+                    .frame(width: 26, height: 26)
+                    .background(style.tint.opacity(0.14), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+
+                Text(metric.label)
+                    .font(.callout.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Text("\(metric.value) \(metric.unit)")
+                .font(.system(size: 22, weight: .bold, design: .monospaced))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .textSelection(.enabled)
+
+            Spacer(minLength: 0)
+
+            Text(metric.detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, minHeight: 118, maxHeight: .infinity, alignment: .topLeading)
+        .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.14))
+        )
+    }
+}
+
+private struct BenchmarkHostFooter: View {
+    let card: BenchmarkScorecard
+
+    var body: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Image(systemName: "cpu")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Text("\(card.gpuName) (\(card.gpuFamily))")
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            }
+
+            Text("\(String(format: "%.1f", card.workingSetGiB)) GiB UMA · \(card.supportsMetal4 ? "Metal 4" : "Metal 3")")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 2)
+                .background(Color.secondary.opacity(0.1), in: Capsule())
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            Text("macOS \(card.macosVersion) (\(card.macosBuild))")
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .textSelection(.enabled)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Color.secondary.opacity(0.12))
+        )
     }
 }
