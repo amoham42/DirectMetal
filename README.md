@@ -182,6 +182,8 @@ make dmg-ultra      # Build max-compression offline DMG (1.0 GB ULMO LZMA)
 | [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Complete CLI subcommand, flag, and environment-variable reference |
 | [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Reproducible M1 Pro vs. M4 vs. RTX 3070 throughput, microbenchmark & bundle-size tables |
 | [docs/COMPARISON.md](docs/COMPARISON.md) | Honest comparison vs. Whisky, CrossOver, Kegworks, and Apple GPTK |
+| [docs/GAME_PROFILES_GUIDE.md](docs/GAME_PROFILES_GUIDE.md) | How community presets work, local overrides, and schema validation |
+| [docs/SHADER_CACHE_CDN.md](docs/SHADER_CACHE_CDN.md) | `MTLBinaryArchive` hardware keying, double-SHA-256 sync & stale cache pruning |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Fixes for quarantine, macOS 15 Rosetta fallback, Retina PPI, Steam & warm servers |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Full 25/25 PSNR/SSIM conformance tables and M1 Pro / M4 vs. RTX 3070 benchmarks |
 | [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md) | Engine & retail game test telemetry (UE5, Source, DX9/11/12) |
