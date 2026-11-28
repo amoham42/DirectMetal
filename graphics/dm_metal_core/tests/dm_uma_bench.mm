@@ -3,6 +3,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -14,7 +15,7 @@
         if (!(expr)) {                                                                 \
             fprintf(stderr, "[dm_uma_bench] CHECK FAILED (%s:%d): %s\n",               \
                     __FILE__, __LINE__, #expr);                                        \
-            return 1;                                                                  \
+            std::abort();                                                              \
         }                                                                              \
     } while (0)
 
@@ -27,6 +28,199 @@ static double now_ms(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1000000.0;
+}
+
+static void run_device_independent_uma_tests(void) {
+    // Zero-size and integer-overflow creation guards (no GPU required)
+    DM_CHECK(dm_uma_ring_create(0, DM_UMA_HEAP_UPLOAD) == nullptr);
+    DM_CHECK(dm_uma_ring_create(0, DM_UMA_HEAP_READBACK) == nullptr);
+    DM_CHECK(dm_uma_ring_create(0, DM_UMA_HEAP_DYNAMIC_CB) == nullptr);
+    DM_CHECK(dm_uma_ring_create(0, DM_UMA_HEAP_DEFAULT_SHARED) == nullptr);
+    DM_CHECK(dm_uma_ring_create(SIZE_MAX, DM_UMA_HEAP_UPLOAD) == nullptr);
+
+    DM_CHECK(dm_uma_pool_create(0, DM_UMA_HEAP_UPLOAD) == nullptr);
+    DM_CHECK(dm_uma_pool_create(0, DM_UMA_HEAP_READBACK) == nullptr);
+    DM_CHECK(dm_uma_pool_create(0, DM_UMA_HEAP_DYNAMIC_CB) == nullptr);
+    DM_CHECK(dm_uma_pool_create(0, DM_UMA_HEAP_DEFAULT_SHARED) == nullptr);
+    DM_CHECK(dm_uma_pool_create(SIZE_MAX, DM_UMA_HEAP_DYNAMIC_CB) == nullptr);
+
+    // NULL ring lifecycle, buffer & telemetry guards
+    dm_uma_ring_destroy(nullptr);
+    dm_uma_ring_reset(nullptr);
+    DM_CHECK(dm_uma_ring_metal_buffer(nullptr) == nullptr);
+    const dm_uma_telemetry_t null_rt = dm_uma_ring_telemetry(nullptr);
+    DM_CHECK(null_rt.bytes_allocated == 0);
+    DM_CHECK(null_rt.bytes_pooled_capacity == 0);
+    DM_CHECK(null_rt.bytes_saved_vs_discrete == 0);
+    DM_CHECK(null_rt.alloc_count == 0);
+    DM_CHECK(null_rt.reuse_hits == 0);
+    DM_CHECK(null_rt.zero_copy_mappings == 0);
+
+    // NULL ring allocation must fail and sanitize non-null out_slice
+    dm_uma_slice_t poisoned_slice;
+    std::memset(&poisoned_slice, 0xCC, sizeof(poisoned_slice));
+    DM_CHECK(!dm_uma_ring_alloc(nullptr, 256, 256, &poisoned_slice));
+    DM_CHECK(poisoned_slice.cpu_ptr == nullptr);
+    DM_CHECK(poisoned_slice.metal_buffer_bridge == nullptr);
+    DM_CHECK(poisoned_slice.offset == 0);
+    DM_CHECK(poisoned_slice.size == 0);
+    DM_CHECK(!dm_uma_ring_alloc(nullptr, 256, 256, nullptr));
+    DM_CHECK(!dm_uma_ring_alloc(nullptr, 0, 0, nullptr));
+
+    // NULL pool lifecycle, acquire, recycle & telemetry guards
+    dm_uma_pool_destroy(nullptr);
+    dm_uma_pool_recycle_buffer(nullptr, nullptr);
+    int dummy_tag = 7;
+    dm_uma_pool_recycle_buffer(nullptr, &dummy_tag);
+
+    const dm_uma_telemetry_t null_pt = dm_uma_pool_telemetry(nullptr);
+    DM_CHECK(null_pt.bytes_allocated == 0);
+    DM_CHECK(null_pt.bytes_pooled_capacity == 0);
+    DM_CHECK(null_pt.bytes_saved_vs_discrete == 0);
+    DM_CHECK(null_pt.alloc_count == 0);
+    DM_CHECK(null_pt.reuse_hits == 0);
+    DM_CHECK(null_pt.zero_copy_mappings == 0);
+
+    void *cpu_sentinel = &dummy_tag;
+    DM_CHECK(dm_uma_pool_acquire_buffer(nullptr, 1024, &cpu_sentinel) == nullptr);
+    DM_CHECK(cpu_sentinel == nullptr);
+    DM_CHECK(dm_uma_pool_acquire_buffer(nullptr, 0, nullptr) == nullptr);
+}
+
+static void run_gpu_uma_edge_case_tests(id<MTLDevice> dev) {
+    constexpr size_t kPageSize = 16384u;
+    constexpr size_t kMinAlign = 256u;
+
+    // 1. UMA Ring: page rounding, zero-size/NULL/overflow guards, alignment invariants & reset lifecycle
+    dm_uma_ring_t *r = dm_uma_ring_create(100, DM_UMA_HEAP_READBACK);
+    DM_CHECK(r != nullptr);
+    void *ring_buf_raw = dm_uma_ring_metal_buffer(r);
+    DM_CHECK(ring_buf_raw != nullptr);
+    {
+        id<MTLBuffer> ring_mtl = (__bridge id<MTLBuffer>)ring_buf_raw;
+        DM_CHECK(ring_mtl.length == kPageSize);
+        DM_CHECK(ring_mtl.storageMode == MTLStorageModeShared);
+    }
+    const dm_uma_telemetry_t r_init = dm_uma_ring_telemetry(r);
+    DM_CHECK(r_init.bytes_pooled_capacity == kPageSize);
+    DM_CHECK(r_init.zero_copy_mappings == 1);
+    DM_CHECK(r_init.alloc_count == 0);
+
+    dm_uma_slice_t s{};
+    std::memset(&s, 0xAB, sizeof(s));
+    DM_CHECK(!dm_uma_ring_alloc(r, 0, 256, &s));
+    DM_CHECK(s.cpu_ptr == nullptr && s.offset == 0 && s.size == 0);
+    DM_CHECK(!dm_uma_ring_alloc(r, 64, 256, nullptr));
+    DM_CHECK(!dm_uma_ring_alloc(r, SIZE_MAX, 256, &s));
+    DM_CHECK(!dm_uma_ring_alloc(r, 64, SIZE_MAX, &s));
+    DM_CHECK(!dm_uma_ring_alloc(r, kPageSize + 1u, 256, &s));
+    DM_CHECK(dm_uma_ring_telemetry(r).alloc_count == 0);
+
+    // Alignment invariants: minimum 256B offset/pointer alignment, non-multiple rounding & power-of-2 alignments
+    dm_uma_slice_t s1{}, s2{}, s3{}, s4{}, s5{};
+    DM_CHECK(dm_uma_ring_alloc(r, 13, 0, &s1));
+    DM_CHECK(s1.offset == 0 && s1.size == 13 && s1.metal_buffer_bridge == ring_buf_raw);
+    DM_CHECK((reinterpret_cast<uintptr_t>(s1.cpu_ptr) % kPageSize) == 0u);
+
+    DM_CHECK(dm_uma_ring_alloc(r, 7, 1, &s2));
+    DM_CHECK(s2.offset == kMinAlign && s2.size == 7);
+    DM_CHECK((s2.offset % kMinAlign) == 0u);
+    DM_CHECK((reinterpret_cast<uintptr_t>(s2.cpu_ptr) % kMinAlign) == 0u);
+    DM_CHECK(s2.offset >= s1.offset + s1.size);
+    DM_CHECK(static_cast<uint8_t *>(s2.cpu_ptr) == static_cast<uint8_t *>(s1.cpu_ptr) + s2.offset);
+
+    // Non-multiple alignment 300 (>256) must round up to 512
+    DM_CHECK(dm_uma_ring_alloc(r, 33, 300, &s3));
+    DM_CHECK(s3.offset == 512u && (s3.offset % 512u) == 0u);
+    DM_CHECK((reinterpret_cast<uintptr_t>(s3.cpu_ptr) % 512u) == 0u);
+    DM_CHECK(s3.offset >= s2.offset + s2.size);
+
+    DM_CHECK(dm_uma_ring_alloc(r, 64, 1024, &s4));
+    DM_CHECK(s4.offset == 1024u && (s4.offset % 1024u) == 0u);
+    DM_CHECK((reinterpret_cast<uintptr_t>(s4.cpu_ptr) % 1024u) == 0u);
+
+    DM_CHECK(dm_uma_ring_alloc(r, 128, 4096, &s5));
+    DM_CHECK(s5.offset == 4096u && (s5.offset % 4096u) == 0u);
+    DM_CHECK((reinterpret_cast<uintptr_t>(s5.cpu_ptr) % 4096u) == 0u);
+
+    const dm_uma_telemetry_t r_mid = dm_uma_ring_telemetry(r);
+    DM_CHECK(r_mid.alloc_count == 5);
+    DM_CHECK(r_mid.bytes_allocated == (13u + 7u + 33u + 64u + 128u));
+    DM_CHECK(r_mid.bytes_saved_vs_discrete == r_mid.bytes_allocated);
+
+    // Over-remaining-capacity request must fail cleanly without advancing cursor
+    DM_CHECK(!dm_uma_ring_alloc(r, kPageSize - 4096u, 256, &s));
+    dm_uma_slice_t s_tail{};
+    DM_CHECK(dm_uma_ring_alloc(r, kPageSize - 4352u, 256, &s_tail));
+    DM_CHECK(s_tail.offset == 4352u);
+    DM_CHECK(!dm_uma_ring_alloc(r, 1, 1, &s));  // Completely full
+
+    // Reset reclaims entire capacity while preserving cumulative telemetry
+    dm_uma_ring_reset(r);
+    dm_uma_slice_t s_full{};
+    DM_CHECK(dm_uma_ring_alloc(r, kPageSize, 256, &s_full));
+    DM_CHECK(s_full.offset == 0 && s_full.size == kPageSize);
+    dm_uma_ring_destroy(r);
+
+    // 2. UMA Pool: zero-size, overflow, over-heap, double-recycle (double-free) & foreign-buffer safety
+    dm_uma_pool_t *pool = dm_uma_pool_create(65536, DM_UMA_HEAP_DEFAULT_SHARED);
+    dm_uma_pool_t *pool_other = dm_uma_pool_create(32768, DM_UMA_HEAP_UPLOAD);
+    DM_CHECK(pool != nullptr && pool_other != nullptr);
+    DM_CHECK(dm_uma_pool_telemetry(pool).bytes_pooled_capacity >= 65536u);
+
+    int marker = 0;
+    void *cpu = &marker;
+    DM_CHECK(dm_uma_pool_acquire_buffer(pool, 0, &cpu) == nullptr && cpu == nullptr);
+    cpu = &marker;
+    DM_CHECK(dm_uma_pool_acquire_buffer(pool, SIZE_MAX, &cpu) == nullptr && cpu == nullptr);
+    cpu = &marker;
+    DM_CHECK(dm_uma_pool_acquire_buffer(pool, 64u * 1024u * 1024u, &cpu) == nullptr && cpu == nullptr);
+    DM_CHECK(dm_uma_pool_telemetry(pool).alloc_count == 0);
+
+    // Acquire with nullptr out_cpu_ptr and verify 256-byte sub-allocation alignment
+    void *b1 = dm_uma_pool_acquire_buffer(pool, 100, nullptr);
+    DM_CHECK(b1 != nullptr);
+    {
+        id<MTLBuffer> mtl_b1 = (__bridge id<MTLBuffer>)b1;
+        DM_CHECK(mtl_b1.length >= kMinAlign && (mtl_b1.length % kMinAlign) == 0u);
+        DM_CHECK(mtl_b1.contents != nullptr);
+        DM_CHECK((reinterpret_cast<uintptr_t>(mtl_b1.contents) % kMinAlign) == 0u);
+    }
+
+    // Recycle nullptr must be a safe no-op; foreign/cross-pool recycle must be ignored
+    dm_uma_pool_recycle_buffer(pool, nullptr);
+    {
+        id<MTLBuffer> foreign = [dev newBufferWithLength:512 options:MTLResourceStorageModeShared];
+        DM_CHECK(foreign != nil);
+        dm_uma_pool_recycle_buffer(pool, (__bridge void *)foreign);
+    }
+    dm_uma_pool_recycle_buffer(pool_other, b1);  // b1 belongs to pool, not pool_other
+
+    // Double-recycle (double-free) safety: recycling b1 multiple times must NOT duplicate free_list entries
+    dm_uma_pool_recycle_buffer(pool, b1);
+    dm_uma_pool_recycle_buffer(pool, b1);
+    dm_uma_pool_recycle_buffer(pool, b1);
+
+    void *p_c1 = nullptr;
+    void *p_c2 = nullptr;
+    void *c1 = dm_uma_pool_acquire_buffer(pool, 100, &p_c1);
+    void *c2 = dm_uma_pool_acquire_buffer(pool, 100, &p_c2);
+    DM_CHECK(c1 == b1 && p_c1 != nullptr);
+    DM_CHECK(c2 != nullptr && c2 != c1 && p_c2 != nullptr && p_c2 != p_c1);
+    DM_CHECK(dm_uma_pool_telemetry(pool).reuse_hits == 1);
+
+    // Smaller free buffer (256B) must not satisfy larger request (4096B), keeping sizing safe
+    dm_uma_pool_recycle_buffer(pool, c1);
+    void *p_large = nullptr;
+    void *large_buf = dm_uma_pool_acquire_buffer(pool, 4096, &p_large);
+    DM_CHECK(large_buf != nullptr && large_buf != c1 && p_large != nullptr);
+    DM_CHECK(dm_uma_pool_telemetry(pool).reuse_hits == 1);
+
+    // Lifecycle teardown with buffers simultaneously in free_list (c1) and in_use (c2, large_buf)
+    dm_uma_pool_destroy(pool);
+    dm_uma_pool_destroy(pool_other);
+
+    printf("[dm_uma_bench] Unit tests (NULL/zero-size guards, alignment, double-recycle, lifecycle) OK\n");
 }
 
 static constexpr uint32_t kInCount = 1024u * 1024u;   // 4 MiB
@@ -42,6 +236,8 @@ int main(int argc, char **argv) {
         }
     }
 
+    run_device_independent_uma_tests();
+
     @autoreleasepool {
         id<MTLDevice> dev = MTLCreateSystemDefaultDevice();
         if ((!dev || !dev.hasUnifiedMemory) && ctest_skip_allowed()) {
@@ -49,6 +245,8 @@ int main(int argc, char **argv) {
             return 77;
         }
         DM_CHECK(dev != nil && dev.hasUnifiedMemory);
+
+        run_gpu_uma_edge_case_tests(dev);
 
         NSString *msl = @R"(
 #include <metal_stdlib>

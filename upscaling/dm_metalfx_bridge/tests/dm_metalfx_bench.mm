@@ -1,10 +1,14 @@
 #include "dm_metalfx_bridge.h"
+#include "dm_upscaler_abi.h"
 #include "dm_png_writer.hpp"
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 #import <MetalFX/MetalFX.h>
 
+#include <climits>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -12,12 +16,19 @@
 #include <sys/stat.h>
 #include <time.h>
 
+extern "C" {
+int dm_ffx_fsr_query_render_resolution(int quality_mode, uint32_t out_w, uint32_t out_h,
+                                       uint32_t *in_w, uint32_t *in_h);
+int dm_xess_get_input_resolution(int quality_preset, uint32_t out_w, uint32_t out_h,
+                                 uint32_t *in_w, uint32_t *in_h);
+}
+
 #define DM_CHECK(expr)                                                                 \
     do {                                                                               \
         if (!(expr)) {                                                                 \
             fprintf(stderr, "[dm_metalfx_bench] CHECK FAILED (%s:%d): %s\n",           \
                     __FILE__, __LINE__, #expr);                                        \
-            std::exit(1);                                                              \
+            std::abort();                                                              \
         }                                                                              \
     } while (0)
 
@@ -103,6 +114,331 @@ destinationBytesPerImage:total_bytes];
                                  static_cast<const uint8_t *>(rb.contents), (uint32_t)row_pitch));
 }
 
+static void run_device_independent_metalfx_and_shim_tests(void) {
+    // 1. NULL context / output / parameter guards (device-independent)
+    DM_CHECK(!dm_metalfx_query_caps(nullptr));
+    dm_metalfx_spatial_destroy(nullptr);
+    dm_metalfx_temporal_destroy(nullptr);
+    dm_upscaler_destroy(nullptr);
+
+    int dummy = 42;
+    DM_CHECK(!dm_metalfx_spatial_encode(nullptr, &dummy, &dummy, &dummy, 1280, 720));
+    DM_CHECK(!dm_metalfx_spatial_encode(nullptr, nullptr, nullptr, nullptr, 0, 0));
+    DM_CHECK(!dm_metalfx_temporal_encode(nullptr, &dummy, &dummy, &dummy, &dummy, &dummy,
+                                         0.0f, 0.0f, 1.0f, 1.0f, true));
+    DM_CHECK(!dm_metalfx_temporal_encode(nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                                         0.0f, 0.0f, 1.0f, 1.0f, false));
+
+    dm_upscale_dispatch_desc_t empty_desc{};
+    DM_CHECK(!dm_upscaler_dispatch(nullptr, nullptr));
+    DM_CHECK(!dm_upscaler_dispatch(nullptr, &empty_desc));
+
+    uint32_t sentinel_w = 0xDEADu;
+    uint32_t sentinel_h = 0xBEEFu;
+    dm_upscaler_get_render_resolution(nullptr, nullptr, nullptr);
+    dm_upscaler_get_render_resolution(nullptr, &sentinel_w, &sentinel_h);
+    DM_CHECK(sentinel_w == 0xDEADu && sentinel_h == 0xBEEFu);
+
+    // 2. Invalid 0x0, downscale (input > output), and invalid pixel format (0) create guards
+    DM_CHECK(dm_metalfx_spatial_create(0, 0, 0, 0, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(0, 720, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1280, 0, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1280, 720, 0, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1280, 720, 1920, 0, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1921, 1080, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1920, 1081, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(3840, 2160, 1920, 1080, MTLPixelFormatRGBA16Float, true) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1280, 720, 1920, 1080, 0, false) == nullptr);
+
+    DM_CHECK(dm_metalfx_temporal_create(0, 0, 0, 0,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(0, 720, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 0, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 720, 0, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 720, 1920, 0,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1921, 1080, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1920, 1081, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 720, 1920, 1080,
+                                        0, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 720, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, 0,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 720, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        0, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(1280, 720, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, 0) == nullptr);
+
+    // Unified ABI create rejection on 0x0, sub-minimum (<64px where clamped rw > output), and format=0
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 0, 0, false,
+                                MTLPixelFormatRGBA8Unorm, 0, 0) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 0, 1080, false,
+                                MTLPixelFormatRGBA8Unorm, 0, 0) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 1920, 0, false,
+                                MTLPixelFormatRGBA8Unorm, 0, 0) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_XESS, DM_UPSCALE_QUALITY, 0, 0, true,
+                                MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float, MTLPixelFormatRG16Float) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_METALFX, DM_UPSCALE_QUALITY, 32, 32, false,
+                                MTLPixelFormatRGBA8Unorm, 0, 0) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_METALFX, DM_UPSCALE_QUALITY, 32, 32, true,
+                                MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float, MTLPixelFormatRG16Float) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 1920, 1080, false, 0, 0, 0) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 1920, 1080, true,
+                                MTLPixelFormatRGBA16Float, 0, MTLPixelFormatRG16Float) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 1920, 1080, true,
+                                MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float, 0) == nullptr);
+
+    // 3. Resolution resolver NULL out-pointers, 0x0 clamping, monotonicity & invalid quality/vendor enums
+    uint32_t rw = 0, rh = 0;
+    dm_metalfx_resolve_render_size(DM_UPSCALER_METALFX, DM_UPSCALE_QUALITY, 1920, 1080, nullptr, nullptr);
+    dm_metalfx_resolve_render_size(DM_UPSCALER_METALFX, DM_UPSCALE_QUALITY, 1920, 1080, &rw, nullptr);
+    dm_metalfx_resolve_render_size(DM_UPSCALER_METALFX, DM_UPSCALE_QUALITY, 1920, 1080, nullptr, &rh);
+    DM_CHECK(rw == 1280u && rh == 720u);
+
+    uint32_t zero_w = 0, zero_h = 0;
+    dm_metalfx_resolve_render_size(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 0, 0, &zero_w, &zero_h);
+    DM_CHECK(zero_w == 64u && zero_h == 64u);
+    dm_metalfx_resolve_render_size(DM_UPSCALER_DLSS, DM_UPSCALE_ULTRA_PERFORMANCE, 13, 19, &zero_w, &zero_h);
+    DM_CHECK(zero_w == 64u && zero_h == 64u);
+
+    const dm_upscaler_vendor_t vendors[4] = {
+        DM_UPSCALER_METALFX, DM_UPSCALER_DLSS, DM_UPSCALER_FSR, DM_UPSCALER_XESS
+    };
+    const dm_upscale_quality_t qualities[5] = {
+        DM_UPSCALE_ULTRA_QUALITY, DM_UPSCALE_QUALITY, DM_UPSCALE_BALANCED,
+        DM_UPSCALE_PERFORMANCE, DM_UPSCALE_ULTRA_PERFORMANCE
+    };
+    for (dm_upscaler_vendor_t v : vendors) {
+        uint32_t prev_w = 3840u, prev_h = 2160u;
+        for (dm_upscale_quality_t q : qualities) {
+            uint32_t cw = 0, ch = 0;
+            dm_metalfx_resolve_render_size(v, q, 3840, 2160, &cw, &ch);
+            DM_CHECK(cw >= 64u && ch >= 64u);
+            DM_CHECK((cw % 2u) == 0u && (ch % 2u) == 0u);
+            DM_CHECK(cw <= prev_w && ch <= prev_h);
+            prev_w = cw;
+            prev_h = ch;
+        }
+    }
+
+    // Invalid quality and vendor enum values must safely default to Quality (1.5x -> 1280x720)
+    const int bad_qualities[3] = {-1, 99, INT_MAX};
+    for (int bq : bad_qualities) {
+        uint32_t bw = 0, bh = 0;
+        dm_metalfx_resolve_render_size(static_cast<dm_upscaler_vendor_t>(-7),
+                                       static_cast<dm_upscale_quality_t>(bq),
+                                       1920, 1080, &bw, &bh);
+        DM_CHECK(bw == 1280u && bh == 720u);
+    }
+
+    // 4. ffx_fsr_shim & libxess_shim NULL / 0x0 / invalid quality parameter safety
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(1, 1920, 1080, nullptr, nullptr) == 0);
+    uint32_t fsr_w = 0, fsr_h = 0;
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(1, 1920, 1080, &fsr_w, nullptr) == 0 && fsr_w == 1280u);
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(1, 1920, 1080, nullptr, &fsr_h) == 0 && fsr_h == 720u);
+
+    uint32_t exp_bw = 0, exp_bh = 0;
+    dm_metalfx_resolve_render_size(DM_UPSCALER_FSR, DM_UPSCALE_BALANCED, 1920, 1080, &exp_bw, &exp_bh);
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(2, 1920, 1080, &fsr_w, &fsr_h) == 0);
+    DM_CHECK(fsr_w == exp_bw && fsr_h == exp_bh);
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(3, 1920, 1080, &fsr_w, &fsr_h) == 0);
+    DM_CHECK(fsr_w == 960u && fsr_h == 540u);
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(4, 1920, 1080, &fsr_w, &fsr_h) == 0);
+    DM_CHECK(fsr_w == 640u && fsr_h == 360u);
+
+    const int invalid_fsr_modes[6] = {INT_MIN, -1, 0, 5, 999, INT_MAX};
+    for (int m : invalid_fsr_modes) {
+        fsr_w = 0;
+        fsr_h = 0;
+        DM_CHECK(dm_ffx_fsr_query_render_resolution(m, 1920, 1080, &fsr_w, &fsr_h) == 0);
+        DM_CHECK(fsr_w == 1280u && fsr_h == 720u);
+    }
+    DM_CHECK(dm_ffx_fsr_query_render_resolution(3, 0, 0, &fsr_w, &fsr_h) == 0);
+    DM_CHECK(fsr_w == 64u && fsr_h == 64u);
+
+    DM_CHECK(dm_xess_get_input_resolution(102, 1920, 1080, nullptr, nullptr) == 0);
+    uint32_t xess_w = 0, xess_h = 0;
+    DM_CHECK(dm_xess_get_input_resolution(102, 1920, 1080, &xess_w, nullptr) == 0 && xess_w == 1280u);
+    DM_CHECK(dm_xess_get_input_resolution(102, 1920, 1080, nullptr, &xess_h) == 0 && xess_h == 720u);
+    DM_CHECK(dm_xess_get_input_resolution(100, 1920, 1080, &xess_w, &xess_h) == 0);
+    DM_CHECK(xess_w == 960u && xess_h == 540u);
+    DM_CHECK(dm_xess_get_input_resolution(101, 1920, 1080, &xess_w, &xess_h) == 0);
+    DM_CHECK(xess_w == exp_bw && xess_h == exp_bh);
+
+    uint32_t exp_uqw = 0, exp_uqh = 0;
+    dm_metalfx_resolve_render_size(DM_UPSCALER_XESS, DM_UPSCALE_ULTRA_QUALITY, 1920, 1080, &exp_uqw, &exp_uqh);
+    DM_CHECK(dm_xess_get_input_resolution(103, 1920, 1080, &xess_w, &xess_h) == 0);
+    DM_CHECK(xess_w == exp_uqw && xess_h == exp_uqh);
+
+    const int invalid_xess_presets[7] = {INT_MIN, -1, 0, 99, 104, 5000, INT_MAX};
+    for (int p : invalid_xess_presets) {
+        xess_w = 0;
+        xess_h = 0;
+        DM_CHECK(dm_xess_get_input_resolution(p, 1920, 1080, &xess_w, &xess_h) == 0);
+        DM_CHECK(xess_w == 1280u && xess_h == 720u);
+    }
+    DM_CHECK(dm_xess_get_input_resolution(100, 0, 0, &xess_w, &xess_h) == 0);
+    DM_CHECK(xess_w == 64u && xess_h == 64u);
+}
+
+static void run_gpu_metalfx_and_shim_edge_tests(id<MTLDevice> dev,
+                                                id<MTLCommandQueue> queue,
+                                                const dm_metalfx_caps_t &caps) {
+    DM_CHECK(std::isfinite(caps.temporal_min_scale) && std::isfinite(caps.temporal_max_scale));
+    DM_CHECK(caps.temporal_min_scale > 0.0f && caps.temporal_max_scale >= caps.temporal_min_scale);
+
+    // 1. Out-of-range upscale dimensions & unsupported scale ratios on live MetalFX device
+    // Downscale dimensions (input > output) and sub-minimum (<64px) output sizes must fail cleanly
+    DM_CHECK(dm_metalfx_spatial_create(2560, 1440, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
+    DM_CHECK(dm_metalfx_spatial_create(1922, 1080, 1920, 1080, MTLPixelFormatRGBA16Float, true) == nullptr);
+    DM_CHECK(dm_metalfx_temporal_create(2560, 1440, 1920, 1080,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    // Extreme 60x upscale ratio (64x64 -> 3840x2160, within 16384 2D texture limit) exceeds temporal_max_scale
+    DM_CHECK(dm_metalfx_temporal_create(64, 64, 3840, 2160,
+                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_FSR, DM_UPSCALE_ULTRA_QUALITY, 48, 48, false,
+                                MTLPixelFormatRGBA8Unorm, 0, 0) == nullptr);
+    DM_CHECK(dm_upscaler_create(DM_UPSCALER_XESS, DM_UPSCALE_ULTRA_QUALITY, 48, 48, true,
+                                MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float, MTLPixelFormatRG16Float) == nullptr);
+
+    auto make_priv_tex = [&](uint32_t w, uint32_t h, MTLPixelFormat fmt, MTLTextureUsage usage) -> id<MTLTexture> {
+        MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:fmt width:w height:h mipmapped:NO];
+        DM_CHECK(td != nil);
+        td.usage = usage;
+        td.storageMode = MTLStorageModePrivate;
+        id<MTLTexture> t = [dev newTextureWithDescriptor:td];
+        DM_CHECK(t != nil);
+        return t;
+    };
+
+    // 2. Live spatial & temporal encode NULL and out-of-bounds content dimension guards
+    dm_metalfx_spatial_t *sc = dm_metalfx_spatial_create(640, 360, 1280, 720, MTLPixelFormatRGBA8Unorm, false);
+    DM_CHECK(sc != nullptr);
+    dm_metalfx_spatial_t *sc_hdr = dm_metalfx_spatial_create(640, 360, 1280, 720, MTLPixelFormatRGBA16Float, true);
+    DM_CHECK(sc_hdr != nullptr);
+    dm_metalfx_spatial_destroy(sc_hdr);
+
+    id<MTLTexture> sp_in = make_priv_tex(640, 360, MTLPixelFormatRGBA8Unorm,
+                                         MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+    id<MTLTexture> sp_out = make_priv_tex(1280, 720, MTLPixelFormatRGBA8Unorm,
+                                          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+    id<MTLCommandBuffer> guard_cb = [queue commandBuffer];
+    DM_CHECK(guard_cb != nil);
+
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, nullptr, (__bridge void *)sp_in, (__bridge void *)sp_out, 640, 360));
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, (__bridge void *)guard_cb, nullptr, (__bridge void *)sp_out, 640, 360));
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, (__bridge void *)guard_cb, (__bridge void *)sp_in, nullptr, 640, 360));
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, (__bridge void *)guard_cb, (__bridge void *)sp_in, (__bridge void *)sp_out, 0, 360));
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, (__bridge void *)guard_cb, (__bridge void *)sp_in, (__bridge void *)sp_out, 640, 0));
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, (__bridge void *)guard_cb, (__bridge void *)sp_in, (__bridge void *)sp_out, 641, 360));
+    DM_CHECK(!dm_metalfx_spatial_encode(sc, (__bridge void *)guard_cb, (__bridge void *)sp_in, (__bridge void *)sp_out, 640, 361));
+    dm_metalfx_spatial_destroy(sc);
+
+    dm_metalfx_temporal_t *tc = dm_metalfx_temporal_create(
+        640, 360, 1280, 720,
+        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
+        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float);
+    DM_CHECK(tc != nullptr);
+    id<MTLTexture> tp_col = make_priv_tex(640, 360, MTLPixelFormatRGBA16Float,
+                                          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+    id<MTLTexture> tp_dep = make_priv_tex(640, 360, MTLPixelFormatDepth32Float,
+                                          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+    id<MTLTexture> tp_mot = make_priv_tex(640, 360, MTLPixelFormatRG16Float,
+                                          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+    id<MTLTexture> tp_out = make_priv_tex(1280, 720, MTLPixelFormatRGBA16Float,
+                                          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite);
+
+    DM_CHECK(!dm_metalfx_temporal_encode(tc, nullptr, (__bridge void *)tp_col, (__bridge void *)tp_dep,
+                                         (__bridge void *)tp_mot, (__bridge void *)tp_out, 0.0f, 0.0f, 1.0f, 1.0f, true));
+    DM_CHECK(!dm_metalfx_temporal_encode(tc, (__bridge void *)guard_cb, nullptr, (__bridge void *)tp_dep,
+                                         (__bridge void *)tp_mot, (__bridge void *)tp_out, 0.0f, 0.0f, 1.0f, 1.0f, true));
+    DM_CHECK(!dm_metalfx_temporal_encode(tc, (__bridge void *)guard_cb, (__bridge void *)tp_col, nullptr,
+                                         (__bridge void *)tp_mot, (__bridge void *)tp_out, 0.0f, 0.0f, 1.0f, 1.0f, true));
+    DM_CHECK(!dm_metalfx_temporal_encode(tc, (__bridge void *)guard_cb, (__bridge void *)tp_col, (__bridge void *)tp_dep,
+                                         nullptr, (__bridge void *)tp_out, 0.0f, 0.0f, 1.0f, 1.0f, true));
+    DM_CHECK(!dm_metalfx_temporal_encode(tc, (__bridge void *)guard_cb, (__bridge void *)tp_col, (__bridge void *)tp_dep,
+                                         (__bridge void *)tp_mot, nullptr, 0.0f, 0.0f, 1.0f, 1.0f, true));
+    dm_metalfx_temporal_destroy(tc);
+
+    // 3. Unified dm_upscaler_* shim context lifecycle, invalid quality fallback & dispatch validation
+    dm_upscaler_context_t *fsr_ctx = dm_upscaler_create(
+        DM_UPSCALER_FSR, static_cast<dm_upscale_quality_t>(77), 1280, 720, false,
+        MTLPixelFormatRGBA8Unorm, 0, 0);
+    DM_CHECK(fsr_ctx != nullptr);
+    uint32_t ctx_w = 0, ctx_h = 0, exp_ctx_w = 0, exp_ctx_h = 0;
+    dm_metalfx_resolve_render_size(DM_UPSCALER_FSR, DM_UPSCALE_QUALITY, 1280, 720, &exp_ctx_w, &exp_ctx_h);
+    dm_upscaler_get_render_resolution(fsr_ctx, nullptr, nullptr);
+    dm_upscaler_get_render_resolution(fsr_ctx, &ctx_w, nullptr);
+    dm_upscaler_get_render_resolution(fsr_ctx, nullptr, &ctx_h);
+    DM_CHECK(ctx_w == 852u && ctx_h == 480u);
+    DM_CHECK(ctx_w == exp_ctx_w && ctx_h == exp_ctx_h);
+
+    id<MTLTexture> fsr_in = make_priv_tex(ctx_w, ctx_h, MTLPixelFormatRGBA8Unorm,
+                                          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead);
+    DM_CHECK(!dm_upscaler_dispatch(fsr_ctx, nullptr));
+    dm_upscale_dispatch_desc_t bad_sp_desc{};
+    DM_CHECK(!dm_upscaler_dispatch(fsr_ctx, &bad_sp_desc));
+
+    bad_sp_desc.command_buffer = (__bridge void *)guard_cb;
+    bad_sp_desc.color_texture = (__bridge void *)fsr_in;
+    bad_sp_desc.output_texture = (__bridge void *)sp_out;
+    bad_sp_desc.render_width = ctx_w + 2u;  // Exceeds color_texture.width
+    bad_sp_desc.render_height = ctx_h;
+    DM_CHECK(!dm_upscaler_dispatch(fsr_ctx, &bad_sp_desc));
+
+    // render_width/height == 0 falls back cleanly to ctx->render_width/height
+    bad_sp_desc.render_width = 0;
+    bad_sp_desc.render_height = 0;
+    DM_CHECK(dm_upscaler_dispatch(fsr_ctx, &bad_sp_desc));
+
+    dm_upscaler_context_t *xess_ctx = dm_upscaler_create(
+        DM_UPSCALER_XESS, DM_UPSCALE_PERFORMANCE, 1280, 720, true,
+        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float, MTLPixelFormatRG16Float);
+    DM_CHECK(xess_ctx != nullptr);
+    uint32_t xw = 0, xh = 0;
+    dm_upscaler_get_render_resolution(xess_ctx, &xw, &xh);
+    DM_CHECK(xw == 640u && xh == 360u);
+
+    dm_upscale_dispatch_desc_t tp_desc{};
+    tp_desc.command_buffer = (__bridge void *)guard_cb;
+    tp_desc.color_texture = (__bridge void *)tp_col;
+    tp_desc.output_texture = (__bridge void *)tp_out;
+    DM_CHECK(!dm_upscaler_dispatch(xess_ctx, &tp_desc));  // Missing depth & motion textures
+
+    tp_desc.depth_texture = (__bridge void *)tp_dep;
+    tp_desc.motion_texture = (__bridge void *)tp_mot;
+    tp_desc.motion_scale_x = 1.0f;
+    tp_desc.motion_scale_y = 1.0f;
+    tp_desc.reset = true;
+    DM_CHECK(dm_upscaler_dispatch(xess_ctx, &tp_desc));
+
+    [guard_cb commit];
+    [guard_cb waitUntilCompleted];
+    DM_CHECK(guard_cb.status == MTLCommandBufferStatusCompleted);
+
+    dm_upscaler_destroy(fsr_ctx);
+    dm_upscaler_destroy(xess_ctx);
+
+    printf("[dm_metalfx_bench] Unit tests (NULL/0x0/out-of-range guards, quality modes, FSR/XeSS shims) OK\n");
+}
+
 int main(int argc, char **argv) {
     const char *json_path = nullptr;
     std::string out_dir = "captures/m1pro/metalfx";
@@ -114,8 +450,13 @@ int main(int argc, char **argv) {
         }
     }
 
-    dm_metalfx_caps_t caps{};
+    run_device_independent_metalfx_and_shim_tests();
+
+    dm_metalfx_caps_t caps;
+    std::memset(&caps, 0xA5, sizeof(caps));
     if (!dm_metalfx_query_caps(&caps)) {
+        DM_CHECK(!caps.spatial_supported && !caps.temporal_supported);
+        DM_CHECK(caps.temporal_min_scale == 0.0f && caps.temporal_max_scale == 0.0f);
         if (ctest_skip_allowed()) {
             printf("[dm_metalfx_bench] SKIP: no Metal device available in headless environment\n");
             return 77;
@@ -137,12 +478,6 @@ int main(int argc, char **argv) {
     }
     DM_CHECK(caps.spatial_supported && caps.temporal_supported);
 
-    // Invalid input validation checks
-    DM_CHECK(dm_metalfx_spatial_create(0, 720, 1920, 1080, MTLPixelFormatRGBA8Unorm, false) == nullptr);
-    DM_CHECK(dm_metalfx_temporal_create(0, 720, 1920, 1080,
-                                        MTLPixelFormatRGBA16Float, MTLPixelFormatDepth32Float,
-                                        MTLPixelFormatRG16Float, MTLPixelFormatRGBA16Float) == nullptr);
-
     ensure_dir(out_dir);
 
     @autoreleasepool {
@@ -150,6 +485,8 @@ int main(int argc, char **argv) {
         DM_CHECK(dev != nil);
         id<MTLCommandQueue> queue = [dev newCommandQueue];
         DM_CHECK(queue != nil);
+
+        run_gpu_metalfx_and_shim_edge_tests(dev, queue, caps);
 
         // Realistic pixel-shading heavy procedural scene + depth + zero-motion output
         NSString *msl = @R"(

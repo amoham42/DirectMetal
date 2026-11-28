@@ -15,7 +15,7 @@
         if (!(expr)) {                                                                 \
             fprintf(stderr, "[dm_tbdr_bench] CHECK FAILED (%s:%d): %s\n",              \
                     __FILE__, __LINE__, #expr);                                        \
-            std::exit(1);                                                              \
+            std::abort();                                                              \
         }                                                                              \
     } while (0)
 
@@ -45,7 +45,8 @@ static void run_unit_tests(void) {
     }
     ops.push_back({DM_DX_OP_RESOLVE_MSAA, 0, 2, 1, UINT32_MAX, 0});
 
-    dm_tbdr_optimized_plan_t plan{};
+    dm_tbdr_optimized_plan_t plan;
+    std::memset(&plan, 0xCC, sizeof(plan));
     DM_CHECK(dm_tbdr_optimize_passes(atts, 3, ops.data(), ops.size(), &plan));
     DM_CHECK(plan.original_pass_count == 9);
     DM_CHECK(plan.coalesced_pass_count == 1);
@@ -57,6 +58,9 @@ static void run_unit_tests(void) {
     DM_CHECK(plan.attachments[0].promote_memoryless == true);
     DM_CHECK(plan.attachments[1].promote_memoryless == true);
     DM_CHECK(plan.attachments[2].promote_memoryless == false);
+    DM_CHECK(plan.attachments[0].optimized_dram_bytes == 0);
+    DM_CHECK(plan.attachments[1].optimized_dram_bytes == 0);
+    DM_CHECK(plan.total_optimized_dram_bytes == plan.attachments[2].baseline_dram_bytes);
 
     // 2. Intervening SRV barrier must split pass into 2 and disable Memoryless for read target
     dm_dx_pass_op_t split_ops[4] = {
@@ -70,14 +74,185 @@ static void run_unit_tests(void) {
     DM_CHECK(split_plan.coalesced_pass_count == 2);
     DM_CHECK(split_plan.attachments[0].promote_memoryless == false);
 
-    // 3. Null / zero-count rejection checks
+    // 3. NULL, zero-count & capacity-limit rejection checks
     DM_CHECK(!dm_tbdr_optimize_passes(nullptr, 3, split_ops, 4, &split_plan));
     DM_CHECK(!dm_tbdr_optimize_passes(atts, 0, split_ops, 4, &split_plan));
     DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, nullptr, 4, &split_plan));
     DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, split_ops, 0, &split_plan));
     DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, split_ops, 4, nullptr));
+    DM_CHECK(!dm_tbdr_optimize_passes(nullptr, 0, nullptr, 0, nullptr));
 
-    printf("[dm_tbdr_bench] Unit tests (pass coalescing, action inference, barrier split, memoryless) OK\n");
+    std::vector<dm_dx_attachment_desc_t> max_atts(DM_TBDR_MAX_ATTACHMENTS + 1);
+    for (size_t i = 0; i < max_atts.size(); ++i) {
+        max_atts[i] = {static_cast<uint32_t>(i), 64, 64, 1, 4, false, true};
+    }
+    // Over-limit attachment_count rejected; exact DM_TBDR_MAX_ATTACHMENTS accepted
+    DM_CHECK(!dm_tbdr_optimize_passes(max_atts.data(), DM_TBDR_MAX_ATTACHMENTS + 1, split_ops, 4, &split_plan));
+    DM_CHECK(!dm_tbdr_optimize_passes(max_atts.data(), SIZE_MAX, split_ops, 4, &split_plan));
+    DM_CHECK(dm_tbdr_optimize_passes(max_atts.data(), DM_TBDR_MAX_ATTACHMENTS, split_ops, 4, &split_plan));
+    DM_CHECK(split_plan.attachment_count == DM_TBDR_MAX_ATTACHMENTS);
+
+    // Pass capacity boundary: exactly DM_TBDR_MAX_PASSES succeeds, DM_TBDR_MAX_PASSES + 1 fails
+    std::vector<dm_dx_pass_op_t> many_passes;
+    many_passes.reserve(DM_TBDR_MAX_PASSES + 1);
+    for (uint32_t p = 0; p < DM_TBDR_MAX_PASSES; ++p) {
+        many_passes.push_back({DM_DX_OP_DRAW_BATCH, (p % 2u == 0u) ? 0u : 2u, UINT32_MAX, UINT32_MAX, UINT32_MAX, 1});
+    }
+    dm_tbdr_optimized_plan_t max_pass_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, many_passes.data(), many_passes.size(), &max_pass_plan));
+    DM_CHECK(max_pass_plan.coalesced_pass_count == DM_TBDR_MAX_PASSES);
+
+    many_passes.push_back({DM_DX_OP_DRAW_BATCH, 0u, UINT32_MAX, UINT32_MAX, UINT32_MAX, 1});
+    DM_CHECK(!dm_tbdr_optimize_passes(atts, 3, many_passes.data(), many_passes.size(), &max_pass_plan));
+
+    // 4. Degenerate attachment dimensions (0x0, sample_count=0, bpp=0), overflow saturation & barrier-only ops
+    dm_dx_attachment_desc_t degen_atts[3] = {
+        {10, 0, 1080, 0, 4, false, false},                     // 0 width, sample_count=0
+        {11, 1920, 1080, 4, 0, true, false},                   // 0 bytes_per_pixel
+        {12, UINT32_MAX, UINT32_MAX, 16, 16, false, true},     // u64 DRAM overflow saturation
+    };
+    dm_dx_pass_op_t overflow_draw_ops[3] = {
+        {DM_DX_OP_CLEAR_RTV, 10, UINT32_MAX, 11, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 10, UINT32_MAX, 11, UINT32_MAX, UINT32_MAX - 5u},
+        {DM_DX_OP_DRAW_BATCH, 10, UINT32_MAX, 11, UINT32_MAX, 100u},
+    };
+    dm_tbdr_optimized_plan_t degen_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(degen_atts, 3, overflow_draw_ops, 3, &degen_plan));
+    DM_CHECK(degen_plan.coalesced_pass_count == 1);
+    DM_CHECK(degen_plan.passes[0].total_draws == UINT32_MAX);
+    DM_CHECK(degen_plan.attachments[0].baseline_dram_bytes == 0);
+    DM_CHECK(degen_plan.attachments[0].promote_memoryless == false);  // sample_count=0 -> treated as 1x non-depth
+    DM_CHECK(degen_plan.attachments[1].baseline_dram_bytes == 0);
+    DM_CHECK(degen_plan.attachments[2].baseline_dram_bytes == UINT64_MAX);
+    DM_CHECK(degen_plan.total_baseline_dram_bytes == UINT64_MAX);
+
+    // Barrier-only ops list & unreferenced attachments must never promote unused targets to Memoryless
+    dm_dx_pass_op_t barrier_only[2] = {
+        {DM_DX_OP_READ_SRV_BARRIER, UINT32_MAX, UINT32_MAX, UINT32_MAX, 0, 0},
+        {DM_DX_OP_READ_SRV_BARRIER, UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX, 0},
+    };
+    dm_tbdr_optimized_plan_t barrier_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, barrier_only, 2, &barrier_plan));
+    DM_CHECK(barrier_plan.original_pass_count == 2);
+    DM_CHECK(barrier_plan.coalesced_pass_count == 0);
+    DM_CHECK(!barrier_plan.attachments[0].promote_memoryless);
+    DM_CHECK(!barrier_plan.attachments[1].promote_memoryless);
+    DM_CHECK(!barrier_plan.attachments[2].promote_memoryless);
+
+    // Unknown attachment IDs in ops must not index out of bounds
+    dm_dx_pass_op_t unknown_id_ops[2] = {
+        {DM_DX_OP_CLEAR_RTV, 999, UINT32_MAX, 888, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 999, UINT32_MAX, 888, UINT32_MAX, 4},
+    };
+    dm_tbdr_optimized_plan_t unknown_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, unknown_id_ops, 2, &unknown_plan));
+    DM_CHECK(unknown_plan.coalesced_pass_count == 1);
+    DM_CHECK(!unknown_plan.attachments[0].promote_memoryless);
+    DM_CHECK(!unknown_plan.attachments[1].promote_memoryless);
+
+    // 5. Memoryless eligibility edge cases
+    // 5a. DISCARD_ATTACHMENT before draws promotes transient MSAA + depth to Memoryless
+    dm_dx_pass_op_t discard_ops[3] = {
+        {DM_DX_OP_DISCARD_ATTACHMENT, 0, UINT32_MAX, 1, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 0, UINT32_MAX, 1, UINT32_MAX, 16},
+        {DM_DX_OP_RESOLVE_MSAA, 0, 2, 1, UINT32_MAX, 0},
+    };
+    dm_tbdr_optimized_plan_t discard_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, discard_ops, 3, &discard_plan));
+    DM_CHECK(discard_plan.passes[0].color_load == DM_TBDR_LOAD_DONT_CARE);
+    DM_CHECK(discard_plan.passes[0].depth_load == DM_TBDR_LOAD_DONT_CARE);
+    DM_CHECK(discard_plan.attachments[0].promote_memoryless == true);
+    DM_CHECK(discard_plan.attachments[1].promote_memoryless == true);
+
+    // 5b. CLEAR followed by DISCARD keeps LOAD_CLEAR; CLEAR/DISCARD after DRAW keeps LOAD_LOAD (disables Memoryless)
+    dm_dx_pass_op_t clear_then_discard[3] = {
+        {DM_DX_OP_CLEAR_RTV, 0, UINT32_MAX, 1, UINT32_MAX, 0},
+        {DM_DX_OP_DISCARD_ATTACHMENT, 0, UINT32_MAX, 1, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 0, UINT32_MAX, 1, UINT32_MAX, 8},
+    };
+    dm_tbdr_optimized_plan_t ctd_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, clear_then_discard, 3, &ctd_plan));
+    DM_CHECK(ctd_plan.passes[0].color_load == DM_TBDR_LOAD_CLEAR);
+    DM_CHECK(ctd_plan.passes[0].depth_load == DM_TBDR_LOAD_DONT_CARE);
+
+    dm_dx_pass_op_t late_clear_ops[3] = {
+        {DM_DX_OP_DRAW_BATCH, 0, UINT32_MAX, 1, UINT32_MAX, 8},
+        {DM_DX_OP_CLEAR_RTV, 0, UINT32_MAX, 1, UINT32_MAX, 0},
+        {DM_DX_OP_RESOLVE_MSAA, 0, 2, 1, UINT32_MAX, 0},
+    };
+    dm_tbdr_optimized_plan_t late_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(atts, 3, late_clear_ops, 3, &late_plan));
+    DM_CHECK(late_plan.passes[0].color_load == DM_TBDR_LOAD_LOAD);
+    DM_CHECK(late_plan.passes[0].depth_load == DM_TBDR_LOAD_LOAD);
+    DM_CHECK(late_plan.attachments[0].promote_memoryless == false);
+    DM_CHECK(late_plan.attachments[1].promote_memoryless == false);
+
+    // 5c. Exported depth/MSAA, 1x non-depth transient color, and resolve_dst target must NOT become Memoryless
+    dm_dx_attachment_desc_t edge_atts[4] = {
+        {0, 1280, 720, 4, 4, false, false},  // MSAA source (eligible)
+        {1, 1280, 720, 1, 4, true, true},    // Exported depth (ineligible: is_backbuffer_or_exported)
+        {2, 1280, 720, 4, 4, false, false},  // Resolve destination (ineligible: resolved_target)
+        {3, 1280, 720, 1, 4, false, false},  // Transient 1x color (DontCare store, but ineligible for Memoryless)
+    };
+    dm_dx_pass_op_t edge_ops[6] = {
+        {DM_DX_OP_CLEAR_RTV, 0, UINT32_MAX, 1, UINT32_MAX, 0},
+        {DM_DX_OP_CLEAR_DSV, 0, UINT32_MAX, 1, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 0, UINT32_MAX, 1, UINT32_MAX, 10},
+        {DM_DX_OP_RESOLVE_MSAA, 0, 2, 1, UINT32_MAX, 0},
+        {DM_DX_OP_CLEAR_RTV, 3, UINT32_MAX, UINT32_MAX, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 3, UINT32_MAX, UINT32_MAX, UINT32_MAX, 4},
+    };
+    dm_tbdr_optimized_plan_t edge_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(edge_atts, 4, edge_ops, 6, &edge_plan));
+    DM_CHECK(edge_plan.coalesced_pass_count == 2);
+    DM_CHECK(edge_plan.passes[0].depth_store == DM_TBDR_STORE_STORE);
+    DM_CHECK(edge_plan.passes[1].color_store == DM_TBDR_STORE_DONT_CARE);
+    DM_CHECK(edge_plan.attachments[0].promote_memoryless == true);
+    DM_CHECK(edge_plan.attachments[1].promote_memoryless == false);
+    DM_CHECK(edge_plan.attachments[2].promote_memoryless == false);
+    DM_CHECK(edge_plan.attachments[3].promote_memoryless == false);
+
+    // 5d. Depth-only pass (color_rtv_id == UINT32_MAX): transient vs SRV-sampled shadow map, and cross-pass DSV load
+    dm_dx_attachment_desc_t shadow_atts[3] = {
+        {0, 2048, 2048, 1, 4, true, false},   // Depth-only attachment
+        {1, 1920, 1080, 1, 4, false, true},   // Lighting RTV A
+        {2, 1920, 1080, 1, 4, false, true},   // Lighting RTV B
+    };
+    dm_dx_pass_op_t transient_depth_only[2] = {
+        {DM_DX_OP_CLEAR_DSV, UINT32_MAX, UINT32_MAX, 0, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, UINT32_MAX, UINT32_MAX, 0, UINT32_MAX, 32},
+    };
+    dm_tbdr_optimized_plan_t td_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(shadow_atts, 1, transient_depth_only, 2, &td_plan));
+    DM_CHECK(td_plan.coalesced_pass_count == 1);
+    DM_CHECK(td_plan.passes[0].depth_store == DM_TBDR_STORE_DONT_CARE);
+    DM_CHECK(td_plan.attachments[0].promote_memoryless == true);
+
+    dm_dx_pass_op_t sampled_shadow_ops[4] = {
+        {DM_DX_OP_CLEAR_DSV, UINT32_MAX, UINT32_MAX, 0, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, UINT32_MAX, UINT32_MAX, 0, UINT32_MAX, 32},
+        {DM_DX_OP_READ_SRV_BARRIER, UINT32_MAX, UINT32_MAX, UINT32_MAX, 0, 0},
+        {DM_DX_OP_DRAW_BATCH, 1, UINT32_MAX, UINT32_MAX, UINT32_MAX, 16},
+    };
+    dm_tbdr_optimized_plan_t sm_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(shadow_atts, 3, sampled_shadow_ops, 4, &sm_plan));
+    DM_CHECK(sm_plan.passes[0].depth_store == DM_TBDR_STORE_STORE);
+    DM_CHECK(sm_plan.attachments[0].promote_memoryless == false);
+
+    // Cross-pass shared DSV loaded in second pass without re-clear cannot be Memoryless
+    dm_dx_pass_op_t shared_dsv_ops[4] = {
+        {DM_DX_OP_CLEAR_RTV, 1, UINT32_MAX, 0, UINT32_MAX, 0},
+        {DM_DX_OP_CLEAR_DSV, 1, UINT32_MAX, 0, UINT32_MAX, 0},
+        {DM_DX_OP_DRAW_BATCH, 1, UINT32_MAX, 0, UINT32_MAX, 12},
+        {DM_DX_OP_DRAW_BATCH, 2, UINT32_MAX, 0, UINT32_MAX, 12},
+    };
+    dm_tbdr_optimized_plan_t shared_dsv_plan{};
+    DM_CHECK(dm_tbdr_optimize_passes(shadow_atts, 3, shared_dsv_ops, 4, &shared_dsv_plan));
+    DM_CHECK(shared_dsv_plan.coalesced_pass_count == 2);
+    DM_CHECK(shared_dsv_plan.passes[1].depth_load == DM_TBDR_LOAD_LOAD);
+    DM_CHECK(shared_dsv_plan.attachments[0].promote_memoryless == false);
+
+    printf("[dm_tbdr_bench] Unit tests (NULL/bounds guards, degenerate configs, barrier split, memoryless edge cases) OK\n");
 }
 
 struct TriVertex {
