@@ -18,11 +18,22 @@
 ---
 
 <p align="center">
-  <img src="docs/assets/gameplay-hades.jpg" alt="Hades running at 120 FPS (1.87 ms GPU) via DirectMetal D3D11 on Apple M1 Pro" width="49%" />
-  <img src="docs/assets/gameplay-reanimal.jpg" alt="REANIMAL Unreal Engine 5 running D3D12 Feature Level 12_2 on Metal 4 via DirectMetal" width="49%" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/directmetal-launcher-dark.png" />
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/directmetal-launcher-light.png" />
+    <img src="docs/assets/directmetal-launcher-dark.png" alt="DirectMetal SwiftUI Game Library Launcher on Apple Silicon" width="100%" />
+  </picture>
 </p>
 <p align="center">
-  <sub><b>Left:</b> <i>Hades</i> (DX11, Seatbelt sandboxed) locked at <b>120.00 FPS · 1.87 ms GPU</b> on Apple M1 Pro &nbsp;|&nbsp; <b>Right:</b> <i>REANIMAL</i> (Unreal Engine 5, DX12 <code>FL 12_2</code>) on <b>Metal 4</b></sub>
+  <sub><b>DirectMetal v1.0.1</b> — Native SwiftUI launcher auto-detecting PE APIs (<code>DX12</code> / <code>DX11</code> / <code>DX9</code>), DLSS/FSR → MetalFX bridges, embedded Windows <code>.exe</code> icons, Retina PPI, ProMotion 120 Hz &amp; HDR/EDR</sub>
+</p>
+
+<p align="center">
+  <img src="docs/assets/gameplay-hades.jpg" alt="Hades running at 120 FPS (1.87 ms GPU) via DirectMetal D3D11 on Apple M1 Pro" width="49%" />
+  <img src="docs/assets/conformance-showcase.jpg" alt="Split pixel-accuracy comparison: Windows 11 RTX 3070 vs Apple Silicon Metal 4 (25/25 passing, SSIM 0.9999)" width="49%" />
+</p>
+<p align="center">
+  <sub><b>Left:</b> <i>Hades</i> (DX11, Seatbelt sandboxed) locked at <b>120.00 FPS · 1.87 ms GPU</b> on Apple M1 Pro &nbsp;|&nbsp; <b>Right:</b> Live split-frame ground truth — <b>Windows 11 RTX 3070 vs. Apple Silicon Metal 4</b> (<code>25/25</code> passing, <code>SSIM 0.9999</code>)</sub>
 </p>
 
 ## Why DirectMetal?
