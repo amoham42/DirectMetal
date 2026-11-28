@@ -31,8 +31,12 @@ foreach(_dm_sub IN LISTS DM_NATIVE_SUBSYSTEMS)
     endif()
 endforeach()
 
+if(NOT TARGET dm_vk_compat_layer)
+    add_subdirectory(graphics/dm_vk_compat)
+endif()
+
 # Keep C assert() checks active in C test harnesses even under -DCMAKE_BUILD_TYPE=Release (-DNDEBUG).
-foreach(_dm_c_test_tgt IN ITEMS dm_sync_test dm_prefix_test dm_sandbox_test)
+foreach(_dm_c_test_tgt IN ITEMS dm_sync_test dm_prefix_test dm_sandbox_test dm_vk_compat_test)
     if(TARGET "${_dm_c_test_tgt}")
         set_property(TARGET "${_dm_c_test_tgt}" APPEND PROPERTY COMPILE_OPTIONS -UNDEBUG)
     endif()
@@ -69,5 +73,15 @@ if(TARGET dm_sandbox_test)
         "sandbox/dm_sandbox"
         dm_sandbox_test
         dm_sandbox_test "${CMAKE_CURRENT_SOURCE_DIR}/sandbox/profiles/directmetal_game.sb.tmpl"
+    )
+endif()
+
+if(TARGET dm_vk_compat_test)
+    add_test(
+        NAME dm_vk_compat_test
+        COMMAND dm_vk_compat_test $<TARGET_FILE:dm_vk_compat_layer>
+    )
+    set_tests_properties(dm_vk_compat_test PROPERTIES
+        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 endif()
