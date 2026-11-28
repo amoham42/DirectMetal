@@ -837,5 +837,61 @@ class TestDehydrateBasePrefix(unittest.TestCase):
             dehydrate_base_prefix.scan_tree(str(fifo_dir))
 
 
+class TestPublishShaderCache(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory(prefix="dm_publish_cache_test_")
+        self.tmp_dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_export_local_honors_env_root_and_builds_valid_index(self) -> None:
+        script = REPO_ROOT / "scripts" / "publish_shader_cache.sh"
+        cache_root = self.tmp_dir / "local_shaders"
+        out_dir = self.tmp_dir / "published"
+        entry_dir = cache_root / "abcdef123456_1700000000_65536_apple9_25G241"
+        entry_dir.mkdir(parents=True)
+        (entry_dir / "pso_0.metallib").write_bytes(b"METAL_BINARY_ARCHIVE_TEST_0")
+        (entry_dir / "pso_1.metallib").write_bytes(b"METAL_BINARY_ARCHIVE_TEST_1")
+
+        env = os.environ.copy()
+        env["DIRECTMETAL_SHADER_CACHE_ROOT"] = str(cache_root)
+        proc = subprocess.run(
+            [
+                "bash",
+                str(script),
+                "--dir",
+                str(out_dir),
+                "--export-local",
+                "--base-url",
+                "https://cdn.example.test/v1.0.1",
+                "--dry-run",
+            ],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertEqual(proc.returncode, 0, msg=f"stderr={proc.stderr}\nstdout={proc.stdout}")
+
+        index_path = out_dir / "index.json"
+        self.assertTrue(index_path.is_file(), "index.json must be created")
+        index_data = json.loads(index_path.read_text(encoding="utf-8"))
+        self.assertEqual(index_data["schema"], "directmetal.shadercache.index.v1")
+        self.assertEqual(len(index_data["entries"]), 1)
+
+        entry = index_data["entries"][0]
+        self.assertEqual(entry["build_hash"], "abcdef123456_1700000000_65536")
+        self.assertEqual(entry["gpu_family"], "Apple9")
+        self.assertEqual(entry["macos_build"], "25G241")
+        self.assertEqual(entry["file_count"], 2)
+        self.assertTrue(entry["archive_url"].startswith("https://cdn.example.test/v1.0.1/"))
+
+        archive_path = out_dir / f"{entry_dir.name}.dmcache.tar.gz"
+        self.assertTrue(archive_path.is_file(), "exported .dmcache.tar.gz must exist")
+        actual_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+        self.assertEqual(entry["archive_sha256"], actual_sha)
+
+
 if __name__ == "__main__":
     unittest.main()
