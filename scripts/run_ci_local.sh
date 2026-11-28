@@ -199,11 +199,7 @@ else
   echo "  [SKIP] No hardware Metal GPU device detected; skipping dm_shader_cache_test."
 fi
 
-if csrutil status 2>/dev/null | grep -q "enabled" && csrutil authenticated-root status 2>/dev/null | grep -q "enabled"; then
-  "${REPO_ROOT}/build/dm_attestation/dm_attestation_test"
-else
-  echo "  [SKIP] SIP/SSV disabled in this environment; skipping live SIP assertion in dm_attestation_test."
-fi
+"${REPO_ROOT}/build/dm_attestation/dm_attestation_test"
 
 echo "=== [6/7] Swift Unit Tests ==="
 if [[ -f "${REPO_ROOT}/tests/swift/DirectMetalTests.swift" ]]; then
@@ -224,6 +220,7 @@ if [[ -f "${REPO_ROOT}/tests/swift/DirectMetalTests.swift" ]]; then
     SWIFT_TEST_ENTRY="${REPO_ROOT}/build/swift_tests/main.swift"
   fi
   xcrun swiftc \
+    -warnings-as-errors \
     -target arm64-apple-macos15.0 \
     -framework SwiftUI \
     -framework AppKit \
@@ -259,6 +256,13 @@ echo "  [OK] DirectMetal help passed"
 INFO_OUT="$("${DM_BIN}" info)"
 printf '%s\n' "${INFO_OUT}" | python3 -m json.tool >/dev/null
 echo "  [OK] DirectMetal info emitted valid JSON"
+
+"${DM_BIN}" completions zsh | zsh -n
+"${DM_BIN}" completions bash | bash -n
+"${DM_BIN}" profiles match /Games/Hades/x64/Hades.exe --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" history --json | python3 -m json.tool >/dev/null
+"${DM_BIN}" prefix prune --dry-run --json | python3 -m json.tool >/dev/null
+echo "  [OK] DirectMetal CLI completions, profiles match, history & prefix prune smoke passed"
 
 TEMP_ATTEST="$(mktemp "${TMPDIR:-/tmp}/dm-ci-attest.XXXXXX.json")"
 "${DM_BIN}" attest --nonce a1b2c3d4e5f60718293a4b5c6d7e8f90 > "${TEMP_ATTEST}"

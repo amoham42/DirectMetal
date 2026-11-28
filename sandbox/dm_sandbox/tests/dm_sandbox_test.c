@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include "dm_sandbox.h"
 
 #include <assert.h>

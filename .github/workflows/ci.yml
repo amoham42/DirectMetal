@@ -119,12 +119,8 @@ jobs:
             echo "[SKIP] Headless CI VM has no hardware Metal GPU device; skipping interactive GPU binary-archive test."
           fi
 
-          echo "=== Running dm_attestation_test (when SIP & SSV are enabled) ==="
-          if csrutil status 2>/dev/null | grep -q "enabled" && csrutil authenticated-root status 2>/dev/null | grep -q "enabled"; then
-            ./build/dm_attestation/dm_attestation_test
-          else
-            echo "[SKIP] Headless CI VM image runs with SIP/SSV disabled; dm_attestation compiled cleanly (-Werror)."
-          fi
+          echo "=== Running dm_attestation_test (ECDSA P-256 + tamper security checks) ==="
+          ./build/dm_attestation/dm_attestation_test
 
       - name: Run Swift unit tests (DirectMetalTests)
         run: |
@@ -147,6 +143,7 @@ jobs:
               SWIFT_TEST_ENTRY="build/swift_tests/main.swift"
             fi
             xcrun swiftc \
+              -warnings-as-errors \
               -target arm64-apple-macos15.0 \
               -framework SwiftUI \
               -framework AppKit \
@@ -180,6 +177,9 @@ jobs:
           "${DM_BIN}" completions zsh | zsh -n
           "${DM_BIN}" completions bash | bash -n
           "${DM_BIN}" profiles list --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" profiles match /Games/Hades/x64/Hades.exe --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" history --json | python3 -m json.tool >/dev/null
+          "${DM_BIN}" prefix prune --dry-run --json | python3 -m json.tool >/dev/null
 
           # Verify synthetic attestation bundle sign + verify round-trip via CLI
           ATTEST_FILE="${RUNNER_TEMP}/ci_attest.json"

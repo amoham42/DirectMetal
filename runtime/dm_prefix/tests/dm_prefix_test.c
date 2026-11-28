@@ -1,3 +1,4 @@
+#undef NDEBUG
 #include "dm_prefix.h"
 
 #include <assert.h>
