@@ -225,6 +225,7 @@ private struct PaletteQuickAction: Identifiable {
         case exportBackup
         case importBackup
         case exportSupportBundle
+        case libraryReport
     }
 
     let id: String
@@ -402,6 +403,17 @@ private struct PaletteQuickAction: Identifiable {
             tint: .teal,
             shortcutHint: nil,
             keywords: ["support", "bundle", "diagnostics", "bug", "report", "logs", "export", "redact"],
+            presentsModal: true
+        ),
+        PaletteQuickAction(
+            id: "action.library-report",
+            kind: .libraryReport,
+            title: "Library Playtime & Stability Report…",
+            subtitle: "Preview and export privacy-safe Markdown or CSV playtime & stability tables",
+            systemImage: "tablecells",
+            tint: .indigo,
+            shortcutHint: nil,
+            keywords: ["report", "csv", "markdown", "playtime", "stability", "export", "table", "stats"],
             presentsModal: true
         ),
     ]
@@ -974,6 +986,8 @@ struct CommandPaletteSheet: View {
                 vm.importLibraryBackup()
             case .exportSupportBundle:
                 vm.exportDiagnosticsBundle()
+            case .libraryReport:
+                vm.openLibraryReport()
             }
         }
 

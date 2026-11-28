@@ -78,6 +78,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showLogTriageSheet: Bool = false
     // Custom local game profile overlay & PR snippet editor sheet
     @Published var showCustomProfileEditorSheet: Bool = false
+    // Privacy-safe Library Playtime & Compatibility Report sheet
+    @Published var showLibraryReportSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -161,7 +163,7 @@ final class DirectMetalViewModel: ObservableObject {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
             || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
             || showProfileBrowserSheet || showLaunchPlanSheet || showHUDCustomizerSheet
-            || showLogTriageSheet || showCustomProfileEditorSheet || showRemoveConfirm
+            || showLogTriageSheet || showCustomProfileEditorSheet || showLibraryReportSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -242,6 +244,12 @@ final class DirectMetalViewModel: ObservableObject {
         guard selectedEntry != nil else { return }
         guard !isPresentingModal || showCustomProfileEditorSheet else { return }
         showCustomProfileEditorSheet = true
+    }
+
+    /// Open the privacy-safe Library Playtime & Compatibility Report sheet.
+    func openLibraryReport() {
+        guard !isPresentingModal || showLibraryReportSheet else { return }
+        showLibraryReportSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -752,6 +760,9 @@ struct DirectMetalContentView: View {
                 CustomProfileEditorSheet(entry: entry, vm: vm)
             }
         }
+        .sheet(isPresented: $vm.showLibraryReportSheet) {
+            LibraryReportSheet(vm: vm)
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -838,6 +849,8 @@ struct DirectMetalCommands: Commands {
             Divider()
             Button("Export Diagnostics Bundle…") { vm?.exportDiagnosticsBundle() }
                 .disabled(modal)
+            Button("Library Playtime & Stability Report…") { vm?.openLibraryReport() }
+                .disabled(vm == nil || (modal && vm?.showLibraryReportSheet != true))
         }
         CommandMenu("Library") {
             Button("Quick Launch…") { vm?.openCommandPalette() }
