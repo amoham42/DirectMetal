@@ -371,6 +371,9 @@ struct DirectMetalTests {
             ("ConfigDiffEngine: baseline diffing, customization counts & stats-preserving reset", {
                 try testConfigDiffAndBaselineReset()
             }),
+            ("ShaderCacheVerifier: detects corrupt metallib/JSON/symlinks & safely quarantines", {
+                try testShaderCacheVerifierAndQuarantine(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2389,5 +2392,75 @@ struct DirectMetalTests {
         try expectEqual(entry.totalPlaySeconds, 7200, "reset must preserve playtime")
         try expectEqual(entry.isFavorite, true, "reset must preserve isFavorite")
         try expectEqual(entry.prefixName, "Hades", "reset must preserve prefixName")
+    }
+
+    private static func testShaderCacheVerifierAndQuarantine(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let missingRoot = tempRoot.appendingPathComponent("missing_shader_cache", isDirectory: true)
+        let missingReport = ShaderCacheVerifier.verify(cacheRoot: missingRoot)
+        try expectEqual(missingReport.isHealthy, true)
+        try expectEqual(missingReport.totalFilesScanned, 0)
+
+        let cacheRoot = tempRoot.appendingPathComponent("shader_verify_root", isDirectory: true)
+        let entryDir = cacheRoot.appendingPathComponent("gamehash_apple9_25G241", isDirectory: true)
+        try fm.createDirectory(at: entryDir, withIntermediateDirectories: true)
+
+        // Healthy files
+        var validMetallib = Data([0x4D, 0x54, 0x4C, 0x42]) // "MTLB"
+        validMetallib.append(Data(repeating: 0x11, count: 60))
+        try validMetallib.write(to: entryDir.appendingPathComponent("good.metallib"))
+        try Data("{\"ok\":true}".utf8).write(to: entryDir.appendingPathComponent("meta.json"))
+        try Data(repeating: 0x00, count: 10).write(to: entryDir.appendingPathComponent(".DS_Store"))
+
+        // Corrupt files
+        try Data().write(to: entryDir.appendingPathComponent("empty.metallib"))
+        try Data(repeating: 0x42, count: 48).write(to: entryDir.appendingPathComponent("bad_magic.metallib"))
+        try Data("{broken json".utf8).write(to: entryDir.appendingPathComponent("corrupt.json"))
+        try Data(repeating: 0x00, count: 64).write(to: entryDir.appendingPathComponent("zeroed.binaryarchive"))
+
+        // Broken symlink & symlink escape
+        try fm.createSymbolicLink(
+            at: entryDir.appendingPathComponent("dangling.metallib"),
+            withDestinationURL: entryDir.appendingPathComponent("does_not_exist.metallib")
+        )
+        let outsideFile = tempRoot.appendingPathComponent("outside_secret.txt")
+        try Data("keep-me-intact".utf8).write(to: outsideFile)
+        try fm.createSymbolicLink(
+            at: entryDir.appendingPathComponent("escape.metallib"),
+            withDestinationURL: outsideFile
+        )
+
+        let report = ShaderCacheVerifier.verify(cacheRoot: cacheRoot)
+        try expectEqual(report.isHealthy, false)
+        try expectEqual(report.healthyFileCount, 2, "good.metallib and meta.json should be healthy")
+        try expectEqual(report.issues.count, 6, "expected 6 corrupt/invalid cache items")
+
+        let kinds = Set(report.issues.map(\.kind))
+        try expect(kinds.contains(.zeroByteFile), "should detect zeroByteFile")
+        try expect(kinds.contains(.invalidMetallibHeader), "should detect invalidMetallibHeader")
+        try expect(kinds.contains(.invalidJSON), "should detect invalidJSON")
+        try expect(kinds.contains(.truncatedArchive), "should detect zero-filled binaryarchive")
+        try expect(kinds.contains(.brokenSymlink), "should detect brokenSymlink")
+        try expect(kinds.contains(.symlinkEscape), "should detect symlinkEscape")
+
+        // Dry-run leaves disk untouched
+        let dryResult = try ShaderCacheVerifier.quarantineCorruptFiles(report: report, cacheRoot: cacheRoot, dryRun: true)
+        try expectEqual(dryResult.dryRun, true)
+        try expectEqual(dryResult.movedCount, 6)
+        try expect(fm.fileExists(atPath: entryDir.appendingPathComponent("empty.metallib").path), "dry-run must not move files")
+
+        // Real quarantine moves corrupt items without touching external symlink target or healthy files
+        let liveResult = try ShaderCacheVerifier.quarantineCorruptFiles(report: report, cacheRoot: cacheRoot, dryRun: false)
+        try expectEqual(liveResult.dryRun, false)
+        try expectEqual(liveResult.movedCount, 6)
+        try expect(fm.fileExists(atPath: outsideFile.path), "quarantine must never touch external symlink target")
+        try expectEqual(try String(contentsOf: outsideFile, encoding: .utf8), "keep-me-intact")
+        try expect(fm.fileExists(atPath: entryDir.appendingPathComponent("good.metallib").path), "healthy metallib must stay intact")
+
+        // Post-quarantine re-verify skips _quarantine and reports 100% healthy
+        let afterReport = ShaderCacheVerifier.verify(cacheRoot: cacheRoot)
+        try expectEqual(afterReport.isHealthy, true, "re-verify after quarantine should report healthy")
+        try expectEqual(afterReport.healthyFileCount, 2)
+        try expect(ShaderCacheVerifier.formatMarkdown(report).contains("Shader Cache Integrity"), "markdown formatter should emit header")
     }
 }

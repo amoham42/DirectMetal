@@ -291,7 +291,7 @@ _directmetal() {
       _values 'prefix subcommand' $sub
       ;;
     cache)
-      local -a sub=(status list prune export import sync clear)
+      local -a sub=(status list verify prune export import sync clear)
       _values 'cache subcommand' $sub
       ;;
     controller)
@@ -367,7 +367,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "list stats prune create reset delete export-saves import-saves" -- "${cur}") )
       ;;
     cache)
-      COMPREPLY=( $(compgen -W "status list prune export import sync clear" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "status list verify prune export import sync clear" -- "${cur}") )
       ;;
     controller)
       COMPREPLY=( $(compgen -W "list show set reset" -- "${cur}") )

@@ -17,6 +17,8 @@ private func printUsage() {
       DirectMetal prefix reset <name>    Reset an existing APFS CoW prefix
       DirectMetal prefix delete <name>   Delete an APFS CoW prefix
       DirectMetal cache status           Show pre-compiled shader cache stats
+      DirectMetal cache verify [--quarantine|--repair] [--dry-run] [--json|--markdown]
+                                         Verify local shader cache integrity and safely quarantine corrupt files
       DirectMetal cache export <file.tar.gz> [--filter <key>]
                                          Export portable SHA-256 verified shader cache archive
       DirectMetal cache import <path_or_url> [--force]
@@ -335,7 +337,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "cache":
         guard args.count >= 2 else {
-            fputs("error: cache requires subcommand (status|list|prune|export|import|sync|clear)\n", stderr)
+            fputs("error: cache requires subcommand (status|list|verify|prune|export|import|sync|clear)\n", stderr)
             return 1
         }
         let sub = args[1]
@@ -371,6 +373,57 @@ private func runCLI(args: [String]) -> Int32 {
                 let tag = !e.isKnownKeyedEntry ? "generic" : (e.matchesHostCacheKey ? "current" : "stale  ")
                 print("[\(tag)] \(mib)  (\(String(format: "%4d", e.fileCount)) files)  \(e.name)")
             }
+            return 0
+        case "verify", "check":
+            let rest = Array(args.dropFirst(2))
+            let doQuarantine = rest.contains("--quarantine") || rest.contains("--repair")
+            let dryRun = rest.contains("--dry-run") || rest.contains("-n")
+            let asJSON = rest.contains("--json")
+            let asMarkdown = rest.contains("--markdown") || rest.contains("--md")
+
+            let report = ShaderCacheVerifier.verify()
+            if doQuarantine {
+                do {
+                    let quarantine = try ShaderCacheVerifier.quarantineCorruptFiles(
+                        report: report,
+                        dryRun: dryRun
+                    )
+                    if asJSON {
+                        struct CacheVerifyQuarantinePayload: Codable {
+                            let verification: ShaderCacheVerificationReport
+                            let quarantine: ShaderCacheQuarantineResult
+                        }
+                        let enc = JSONEncoder()
+                        enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                        let payload = CacheVerifyQuarantinePayload(verification: report, quarantine: quarantine)
+                        if let data = try? enc.encode(payload), let str = String(data: data, encoding: .utf8) {
+                            print(str)
+                        }
+                        return 0
+                    }
+                    print(asMarkdown ? ShaderCacheVerifier.formatMarkdown(report) : ShaderCacheVerifier.formatText(report))
+                    let verb = dryRun ? "Would quarantine" : "Quarantined"
+                    let qDir = LaunchDiagnostics.redactHome(quarantine.quarantineDirectory)
+                    print("\(verb) \(quarantine.movedCount) corrupt file(s) (\(quarantine.movedBytes) bytes) into \(qDir).")
+                    if !quarantine.skippedPaths.isEmpty {
+                        print("Skipped \(quarantine.skippedPaths.count) path(s): \(quarantine.skippedPaths.joined(separator: ", "))")
+                    }
+                    return 0
+                } catch {
+                    fputs("cache verify quarantine failed: \(error.localizedDescription)\n", stderr)
+                    return 1
+                }
+            }
+
+            if asJSON {
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? enc.encode(report), let str = String(data: data, encoding: .utf8) {
+                    print(str)
+                }
+                return 0
+            }
+            print(asMarkdown ? ShaderCacheVerifier.formatMarkdown(report) : ShaderCacheVerifier.formatText(report))
             return 0
         case "prune":
             let rest = Array(args.dropFirst(2))

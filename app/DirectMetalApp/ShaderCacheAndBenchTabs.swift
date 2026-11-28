@@ -91,6 +91,9 @@ struct ShaderCacheMaintenanceTab: View {
     @Binding var isPruningCaches: Bool
     @Binding var cacheBanner: CacheBannerNotice?
 
+    @State private var isVerifyingCache: Bool = false
+    @State private var verificationReport: ShaderCacheVerificationReport? = nil
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             cacheSummaryHeader
@@ -105,6 +108,18 @@ struct ShaderCacheMaintenanceTab: View {
                         .font(.callout)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 8)
+                    if let report = verificationReport, !report.isHealthy {
+                        Button {
+                            quarantineCorruptShaderFiles(report)
+                        } label: {
+                            Label("Quarantine \(report.issues.count)", systemImage: "bandage")
+                        }
+                        .controlSize(.small)
+                        .buttonStyle(.borderedProminent)
+                        .tint(.orange)
+                        .disabled(isVerifyingCache || isPruningCaches)
+                        .help("Move corrupt or broken shader files into _quarantine without deleting healthy caches")
+                    }
                     Button {
                         cacheBanner = nil
                     } label: {
@@ -230,6 +245,21 @@ struct ShaderCacheMaintenanceTab: View {
                           : "Remove \(staleCount) stale build cache\(staleCount == 1 ? "" : "s") (\(reclaimableMiB) MiB); current and generic caches are kept")
 
                     Button {
+                        verifyShaderCacheIntegrity()
+                    } label: {
+                        if isVerifyingCache {
+                            HStack(spacing: 5) {
+                                ProgressView().controlSize(.mini)
+                                Text("Verifying…")
+                            }
+                        } else {
+                            Label("Verify Integrity", systemImage: "checkmark.shield")
+                        }
+                    }
+                    .disabled(isVerifyingCache || isPruningCaches || isLoadingCaches)
+                    .help("Scan local shader caches for zero-byte, truncated, invalid .metallib, or broken symlink files")
+
+                    Button {
                         revealShaderCacheInFinder()
                     } label: {
                         Label("Reveal Folder in Finder", systemImage: "folder")
@@ -296,6 +326,53 @@ struct ShaderCacheMaintenanceTab: View {
         let root = RuntimeLauncher.shaderCacheRoot()
         try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         NSWorkspace.shared.open(root)
+    }
+
+    private func verifyShaderCacheIntegrity() {
+        guard !isVerifyingCache else { return }
+        isVerifyingCache = true
+        cacheBanner = nil
+        DispatchQueue.global(qos: .userInitiated).async {
+            let report = ShaderCacheVerifier.verify()
+            let msg: String
+            if report.isHealthy {
+                msg = "Shader cache verified healthy (\(report.totalFilesScanned) file\(report.totalFilesScanned == 1 ? "" : "s") scanned, 0 issues)."
+            } else {
+                msg = "Detected \(report.issues.count) corrupt or invalid shader cache item\(report.issues.count == 1 ? "" : "s") across \(report.totalFilesScanned) scanned files."
+            }
+            DispatchQueue.main.async {
+                self.verificationReport = report
+                self.isVerifyingCache = false
+                self.cacheBanner = CacheBannerNotice(message: msg, isError: !report.isHealthy)
+                self.vm.statusMessage = msg
+            }
+        }
+    }
+
+    private func quarantineCorruptShaderFiles(_ report: ShaderCacheVerificationReport) {
+        guard !isVerifyingCache else { return }
+        isVerifyingCache = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let res = try ShaderCacheVerifier.quarantineCorruptFiles(report: report, dryRun: false)
+                let updated = ShaderCacheProbe.loadShaderCaches()
+                let msg = "Quarantined \(res.movedCount) corrupt shader file\(res.movedCount == 1 ? "" : "s") (\(formatMiB(res.movedBytes)) MiB) to _quarantine."
+                DispatchQueue.main.async {
+                    self.verificationReport = nil
+                    self.cacheSnapshot = updated
+                    self.isVerifyingCache = false
+                    self.cacheBanner = CacheBannerNotice(message: msg, isError: false)
+                    self.vm.refreshShaderCache()
+                    self.vm.statusMessage = msg
+                }
+            } catch {
+                let msg = "Failed to quarantine corrupt shader files: \(error.localizedDescription)"
+                DispatchQueue.main.async {
+                    self.isVerifyingCache = false
+                    self.cacheBanner = CacheBannerNotice(message: msg, isError: true)
+                }
+            }
+        }
     }
 
     private func formatMiB(_ bytes: UInt64) -> String {
