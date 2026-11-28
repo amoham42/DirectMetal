@@ -152,4 +152,56 @@ final class PrefixManager {
             try FileManager.default.removeItem(at: dest)
         }
     }
+
+    struct PrefixStat: Codable, Identifiable {
+        var id: String { name }
+        let name: String
+        let path: String
+        let sizeBytes: UInt64
+        let fileCount: Int
+        let createdUtc: String?
+        let gameExe: String?
+        let dxApi: String?
+        let cowCloneMs: Double?
+    }
+
+    /// Computes disk footprint and metadata for each managed prefix, sorted largest first.
+    func prefixStats() -> [PrefixStat] {
+        let fm = FileManager.default
+        let names = listPrefixes()
+        return names.map { name in
+            let url = prefixURL(named: name)
+            var bytes: UInt64 = 0
+            var files = 0
+            if let en = fm.enumerator(
+                at: url,
+                includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey],
+                options: []
+            ) {
+                for case let f as URL in en {
+                    let vals = try? f.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey])
+                    if vals?.isSymbolicLink == true { continue }
+                    if vals?.isRegularFile == true {
+                        files += 1
+                        bytes += UInt64(vals?.fileSize ?? 0)
+                    }
+                }
+            }
+            let metaURL = url.appendingPathComponent("directmetal_prefix.json")
+            let meta = (try? Data(contentsOf: metaURL)).flatMap { try? JSONDecoder().decode(PrefixMetadata.self, from: $0) }
+            return PrefixStat(
+                name: name,
+                path: url.path,
+                sizeBytes: bytes,
+                fileCount: files,
+                createdUtc: meta?.createdUtc,
+                gameExe: (meta?.gameExe.isEmpty == false) ? meta?.gameExe : nil,
+                dxApi: meta?.dxApi,
+                cowCloneMs: meta?.cowCloneMs
+            )
+        }.sorted {
+            if $0.sizeBytes != $1.sizeBytes { return $0.sizeBytes > $1.sizeBytes }
+            return $0.name < $1.name
+        }
+    }
 }

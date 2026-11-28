@@ -41,7 +41,9 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | :--- | :--- |
 | `DirectMetal inspect <exe>` | Parse Windows PE32/PE32+ headers, imported & delay-loaded DLLs, graphics APIs (`D3D12`, `D3D11`, `D3D10`, `D3D9`, `Vulkan`, `OpenGL`), upscalers (`DLSS`, `FSR`, `XeSS`), and deterministic `buildHash`. |
 | `DirectMetal run <exe> [options] [-- game args]` | Execute any Windows `.exe` directly. Options: `--prefix <name>`, `--engine auto\|arm64ec\|rosetta`, `--perf-mode balanced\|ultra\|lowlatency`, `--dx9-backend auto\|dxvk\|metalgl`, `--upscale quality\|balanced\|performance`, `--retina` / `--no-retina`, `--hud` / `--no-hud`, `--sandbox`, `--warm-server`, `--reset-prefix`. |
-| `DirectMetal prefixes` | List all APFS Copy-on-Write prefixes managed by DirectMetal. |
+| `DirectMetal prefix list` | List all APFS Copy-on-Write prefixes managed by DirectMetal. |
+| `DirectMetal prefix stats [--json]` | Inspect per-prefix disk usage, file count, APFS CoW clone time, and associated game executable. |
+| `DirectMetal prefix create\|reset\|delete <name>` | Create, reset from the golden base prefix, or delete a managed APFS prefix. |
 | `DirectMetal server status\|stop` | Inspect or gracefully stop the background warm `wineserver` pool. |
 
 ---

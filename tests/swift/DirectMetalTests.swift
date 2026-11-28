@@ -293,6 +293,18 @@ struct DirectMetalTests {
             ("RuntimeLauncher: resolveBundledResources finds mullion.conf and appVersion returns semver", {
                 try testRuntimeLauncherResourcesAndVersion()
             }),
+            ("PEInspector & LauncherStyle: detects Vulkan and OpenGL imports and renders API badges", {
+                try testPEInspectorVulkanAndOpenGL(tempRoot: tempRoot)
+            }),
+            ("ShaderCacheManager: listLocalCaches, pruneStaleCaches & parallel SHA-256 export/import", {
+                try testShaderCacheListPruneAndParallelRoundTrip(tempRoot: tempRoot)
+            }),
+            ("GameLibraryManager & LauncherStyle: playtime tracking, formatting & Most Played sort", {
+                try testPlaytimeTrackingAndSorting(tempRoot: tempRoot)
+            }),
+            ("PrefixManager: prefixStats computes disk usage and metadata", {
+                try testPrefixManagerStats(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -1334,5 +1346,125 @@ struct DirectMetalTests {
             UpdateChecker.isVersionTag(version),
             "appVersion() should return a valid semver string, got '\(version)'"
         )
+    }
+
+    // MARK: - 8. Vulkan/OpenGL, Parallel Shader Cache, Playtime & Prefix Stats Tests
+
+    private static func testPEInspectorVulkanAndOpenGL(tempRoot: URL) throws {
+        let dir = tempRoot.appendingPathComponent("pe_vk_gl", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let exe = dir.appendingPathComponent("vk_game.exe")
+        let data = makeSyntheticPE(is64Bit: true, importedDLLs: ["KERNEL32.dll", "vulkan-1.dll", "opengl32.dll"])
+        try data.write(to: exe)
+
+        let prof = try PEInspector.inspect(exePath: exe.path)
+        try expect(prof.detectedAPIs.contains("Vulkan"), "expected Vulkan in detectedAPIs, got \(prof.detectedAPIs)")
+        try expect(prof.detectedAPIs.contains("OpenGL"), "expected OpenGL in detectedAPIs, got \(prof.detectedAPIs)")
+
+        var entry = GameLibraryEntry(title: "VK Game", exePath: exe.path, prefixName: "vk_game")
+        entry.apply(profile: prof)
+        let badgeTexts = LauncherStyle.apiBadges(for: entry).map(\.text)
+        try expect(badgeTexts.contains("Vulkan"), "expected Vulkan badge, got \(badgeTexts)")
+        try expect(badgeTexts.contains("OpenGL"), "expected OpenGL badge, got \(badgeTexts)")
+    }
+
+    private static func testShaderCacheListPruneAndParallelRoundTrip(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let cacheRoot = tempRoot.appendingPathComponent("shader_cache_root", isDirectory: true)
+        try fm.createDirectory(at: cacheRoot, withIntermediateDirectories: true)
+        setEnv("DIRECTMETAL_SHADER_CACHE_ROOT", cacheRoot.path)
+        defer { setEnv("DIRECTMETAL_SHADER_CACHE_ROOT", nil) }
+
+        let hostKey = RuntimeLauncher.queryHardwareInfo().cacheKey
+        let currentDir = cacheRoot.appendingPathComponent("game_current_\(hostKey)", isDirectory: true)
+        let staleDir = cacheRoot.appendingPathComponent("game_old_apple9_24A000", isDirectory: true)
+        let genericDir = cacheRoot.appendingPathComponent("generic_unkeyed", isDirectory: true)
+        for d in [currentDir, staleDir, genericDir] {
+            try fm.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+        // 8 files to exercise DispatchQueue.concurrentPerform (>= 4) in exportArchive & importArchive
+        for i in 0..<8 {
+            try Data("compiled-metal-pso-\(i)".utf8).write(to: currentDir.appendingPathComponent("pso_\(i).metallib"))
+        }
+        try Data("stale-cache-payload".utf8).write(to: staleDir.appendingPathComponent("old.metallib"))
+        try Data("generic-payload".utf8).write(to: genericDir.appendingPathComponent("gen.metallib"))
+
+        let listed = ShaderCacheManager.listLocalCaches()
+        try expectEqual(listed.count, 3, "expected 3 shader cache entries")
+        let staleListed = try expectNotNil(listed.first(where: { $0.name == staleDir.lastPathComponent }))
+        try expect(staleListed.isKnownKeyedEntry && !staleListed.matchesHostCacheKey, "stale entry should be flagged incompatible")
+
+        let archivePath = tempRoot.appendingPathComponent("parallel_test.dmcache.tar.gz").path
+        let exported = try ShaderCacheManager.exportArchive(to: archivePath, filterEntry: "game_current_")
+        try expectEqual(exported.fileCount, 8, "exported archive should contain all 8 files")
+
+        let imported = try ShaderCacheManager.importArchive(from: archivePath, allowCrossBuild: false)
+        try expectEqual(imported.verifiedFiles, 8, "parallel import should verify all 8 files")
+
+        let dryRes = try ShaderCacheManager.pruneStaleCaches(dryRun: true)
+        try expectEqual(dryRes.removedEntries, [staleDir.lastPathComponent], "dry-run should target only stale entry")
+        try expect(fm.fileExists(atPath: staleDir.path), "dry-run must not delete files")
+
+        let realRes = try ShaderCacheManager.pruneStaleCaches(dryRun: false)
+        try expectEqual(realRes.removedEntries, [staleDir.lastPathComponent], "prune should remove stale entry")
+        try expect(!fm.fileExists(atPath: staleDir.path), "stale entry should be deleted after prune")
+        try expect(fm.fileExists(atPath: currentDir.path), "current-host entry must be preserved")
+        try expect(fm.fileExists(atPath: genericDir.path), "unkeyed generic entry must be preserved")
+    }
+
+    private static func testPlaytimeTrackingAndSorting(tempRoot: URL) throws {
+        let dir = tempRoot.appendingPathComponent("playtime_test", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let exeA = dir.appendingPathComponent("Alpha.exe")
+        let exeB = dir.appendingPathComponent("Beta.exe")
+        try makeSyntheticPE(is64Bit: true, importedDLLs: ["d3d11.dll"]).write(to: exeA)
+        try makeSyntheticPE(is64Bit: true, importedDLLs: ["d3d12.dll"]).write(to: exeB)
+
+        let mgr = GameLibraryManager(
+            supportRoot: dir.appendingPathComponent("support", isDirectory: true),
+            prefixRoot: dir.appendingPathComponent("prefixes", isDirectory: true)
+        )
+        let entryA = try mgr.addOrUpdate(exePath: exeA.path, customTitle: "Alpha")
+        let entryB = try mgr.addOrUpdate(exePath: exeB.path, customTitle: "Beta")
+        mgr.recordLaunch(id: entryA.id)
+        mgr.recordSessionDuration(id: entryA.id, seconds: 120)
+        mgr.recordLaunch(id: entryB.id)
+        mgr.recordSessionDuration(id: entryB.id, seconds: 5400) // 1.5 hrs
+
+        let loaded = mgr.load()
+        let sorted = LibrarySort.mostPlayed.sorted(loaded)
+        try expectEqual(sorted.first?.title, "Beta", "Most Played should rank longer playtime first")
+        try expectNil(LauncherStyle.playtimeText(45), "under 60s should return nil")
+        try expectEqual(LauncherStyle.playtimeText(120), "2m played")
+        try expectEqual(LauncherStyle.playtimeText(5400), "1.5 hrs played")
+    }
+
+    private static func testPrefixManagerStats(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let root = tempRoot.appendingPathComponent("prefix_stats_root", isDirectory: true)
+        let p1 = root.appendingPathComponent("game_one", isDirectory: true)
+        let p2 = root.appendingPathComponent("game_two", isDirectory: true)
+        try fm.createDirectory(at: p1, withIntermediateDirectories: true)
+        try fm.createDirectory(at: p2, withIntermediateDirectories: true)
+        try Data(repeating: 0x41, count: 4096).write(to: p1.appendingPathComponent("system.reg"))
+        try Data(repeating: 0x42, count: 1024).write(to: p2.appendingPathComponent("system.reg"))
+
+        let meta = PrefixMetadata(
+            createdUtc: "2026-11-27T00:00:00Z",
+            basePrefix: "/tmp/base",
+            gameExe: "/Games/Hades.exe",
+            dxApi: "D3D11",
+            shaderCacheKey: "apple7_26B131",
+            cowCloneMs: 0.35
+        )
+        try JSONEncoder().encode(meta).write(to: p1.appendingPathComponent("directmetal_prefix.json"))
+
+        let mgr = PrefixManager(prefixRoot: root)
+        let stats = mgr.prefixStats()
+        try expectEqual(stats.count, 2, "expected 2 prefix stats")
+        try expectEqual(stats[0].name, "game_one", "prefixStats should sort largest first")
+        try expectEqual(stats[0].gameExe, "/Games/Hades.exe")
+        try expect(stats[0].sizeBytes > 4096, "game_one should include system.reg + metadata bytes")
+        try expectEqual(stats[1].sizeBytes, 1024)
     }
 }

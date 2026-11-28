@@ -579,6 +579,7 @@ private func runLibraryCLI(args: [String]) -> Int32 {
                 warmServerSeconds: warmServerSeconds,
                 controllerProfileKey: entry.id
             )
+            mgr.recordSessionDuration(id: entry.id, seconds: res.elapsedSeconds)
             let elapsedStr = String(format: "%.3f", res.elapsedSeconds)
             fputs("[DirectMetal] engine=\(res.activeEngine) sandbox=\(res.sandboxed ? "seatbelt" : "off") exit=\(res.exitCode) elapsed=\(elapsedStr)s prefix=\(res.prefixPath)\n", stderr)
             return res.exitCode
@@ -1285,7 +1286,7 @@ _directmetal() {
       _values 'runtime subcommand' $sub
       ;;
     prefix)
-      local -a sub=(list create reset delete)
+      local -a sub=(list stats create reset delete)
       _values 'prefix subcommand' $sub
       ;;
     cache)
@@ -1356,7 +1357,7 @@ _directmetal_completions() {
       COMPREPLY=( $(compgen -W "status install update remove warm stop-servers" -- "${cur}") )
       ;;
     prefix)
-      COMPREPLY=( $(compgen -W "list create reset delete" -- "${cur}") )
+      COMPREPLY=( $(compgen -W "list stats create reset delete" -- "${cur}") )
       ;;
     cache)
       COMPREPLY=( $(compgen -W "status list prune export import sync clear" -- "${cur}") )
@@ -1477,7 +1478,7 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "prefix":
         guard args.count >= 2 else {
-            fputs("error: prefix requires subcommand (list|create|reset|delete)\n", stderr)
+            fputs("error: prefix requires subcommand (list|stats|create|reset|delete)\n", stderr)
             return 1
         }
         let mgr = PrefixManager()
@@ -1487,6 +1488,35 @@ private func runCLI(args: [String]) -> Int32 {
             for p in mgr.listPrefixes() {
                 print(p)
             }
+            return 0
+
+        case "stats":
+            let stats = mgr.prefixStats()
+            if args.dropFirst(2).contains("--json") {
+                let enc = JSONEncoder()
+                enc.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? enc.encode(stats), let str = String(data: data, encoding: .utf8) {
+                    print(str)
+                }
+                return 0
+            }
+            if stats.isEmpty {
+                print("No managed prefixes found in \(mgr.prefixRoot.path).")
+                return 0
+            }
+            print("Managed Prefixes (\(mgr.prefixRoot.path))")
+            print("------------------------------------------------------------------------")
+            var totalBytes: UInt64 = 0
+            for s in stats {
+                totalBytes += s.sizeBytes
+                let mib = String(format: "%7.1f MiB", Double(s.sizeBytes) / (1024.0 * 1024.0))
+                let clone = s.cowCloneMs.map { String(format: "CoW %.2f ms", $0) } ?? "CoW —"
+                let exe = s.gameExe.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "—"
+                print("\(s.name.padding(toLength: 24, withPad: " ", startingAt: 0))  \(mib)  (\(String(format: "%5d", s.fileCount)) files)  \(clone)  \(exe)")
+            }
+            let totalGiB = String(format: "%.2f", Double(totalBytes) / (1024.0 * 1024.0 * 1024.0))
+            print("------------------------------------------------------------------------")
+            print("Total: \(stats.count) prefix(es), \(totalGiB) GiB logical size (APFS CoW shares common blocks)")
             return 0
 
         case "create", "reset":
