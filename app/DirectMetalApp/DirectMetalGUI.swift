@@ -64,6 +64,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showSystemHealthSheet: Bool = false
     // APFS prefix manager & storage inspector sheet
     @Published var showPrefixManagerSheet: Bool = false
+    // Detail vs Poster Gallery toggle
+    @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
     @Published var libraryFilter: LibraryFilter = .all
     @Published var librarySort: LibrarySort =
@@ -450,7 +452,12 @@ struct DirectMetalContentView: View {
                 LibrarySidebar(vm: vm)
                     .navigationSplitViewColumnWidth(min: 250, ideal: 290, max: 400)
             } detail: {
-                if let entry = vm.selectedEntry {
+                if vm.showGalleryView {
+                    GamePosterGridView(vm: vm) { picked in
+                        vm.selectedID = picked.id
+                        vm.showGalleryView = false
+                    }
+                } else if let entry = vm.selectedEntry {
                     GameDetailView(vm: vm, peripherals: peripherals, entry: entry)
                         .id(entry.id)
                 } else {
@@ -458,6 +465,16 @@ struct DirectMetalContentView: View {
                 }
             }
             .toolbar {
+                ToolbarItem(placement: .navigation) {
+                    Picker("View", selection: $vm.showGalleryView) {
+                        Image(systemName: "sidebar.left").tag(false).help("Detail Inspector (⌘1)")
+                        Image(systemName: "square.grid.2x2").tag(true).help("Poster Gallery (⌘2)")
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .frame(width: 72)
+                    .help("Switch between Detail Inspector (⌘1) and Poster Gallery (⌘2)")
+                }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
                         vm.showPrefixManagerSheet = true
@@ -1143,6 +1160,13 @@ struct DirectMetalCommands: Commands {
                 .disabled(modal || !(vm?.canPlaySelected ?? false))
             Button("Find Game…") { vm?.requestSearchFocus() }
                 .keyboardShortcut("f", modifiers: .command)
+                .disabled(vm == nil)
+            Divider()
+            Button("Detail Inspector") { vm?.showGalleryView = false }
+                .keyboardShortcut("1", modifiers: .command)
+                .disabled(vm == nil)
+            Button("Poster Gallery") { vm?.showGalleryView = true }
+                .keyboardShortcut("2", modifiers: .command)
                 .disabled(vm == nil)
             Divider()
             Picker("Filter", selection: Binding(get: { vm?.libraryFilter ?? .all },
