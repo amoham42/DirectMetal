@@ -14,7 +14,7 @@ SUBSYSTEMS := \
 COMMON_ROOT := $(shell c="$$(git rev-parse --git-common-dir 2>/dev/null)"; if [ -n "$$c" ]; then cd "$$c/.." 2>/dev/null && pwd; fi)
 PYTHON := $(shell if [ -x .venv/bin/python ]; then echo .venv/bin/python; elif [ -n "$(COMMON_ROOT)" ] && [ -x "$(COMMON_ROOT)/.venv/bin/python" ]; then echo "$(COMMON_ROOT)/.venv/bin/python"; else echo python3; fi)
 
-.PHONY: help lint validate-profiles test test-python test-swift ci build-subsystems app app-lite dmg dmg-lite dmg-ultra conformance phase4 clean
+.PHONY: help lint validate-profiles test test-python test-swift ctest ci build-subsystems app app-lite dmg dmg-lite dmg-ultra conformance phase4 clean
 
 help: ## Show available DirectMetal build, test, and packaging targets
 	@printf "DirectMetal — Apple Silicon DirectX Runtime Build System\n\n"
@@ -84,6 +84,7 @@ test-swift: ## Compile and run Swift unit tests (tests/swift/DirectMetalTests.sw
 			entry="build/swift_tests/main.swift"; \
 		fi; \
 		xcrun swiftc \
+			-warnings-as-errors \
 			-target arm64-apple-macos15.0 \
 			-framework SwiftUI \
 			-framework AppKit \
@@ -124,6 +125,11 @@ test-python: ## Run Python packaging, deduplication, dehydration & profile unit 
 		python3 -m unittest discover -s tests/python -v; \
 	fi
 
+ctest: ## Build and run all 10 native C/Obj-C++ subsystem tests via root CMake superbuild
+	@cmake -S . -B build/superbuild -DCMAKE_BUILD_TYPE=Release
+	@cmake --build build/superbuild -j
+	@ctest --test-dir build/superbuild --output-on-failure
+
 test: build-subsystems test-python ## Run Python, C/Obj-C++ subsystem, and Swift unit tests
 	@echo "[test] Running Python diff harness unit tests..."
 	@if $(PYTHON) -c "import PIL, numpy" >/dev/null 2>&1; then \
@@ -143,11 +149,7 @@ test: build-subsystems test-python ## Run Python, C/Obj-C++ subsystem, and Swift
 	else \
 		echo "[test] Skipping dm_shader_cache_test (no hardware Metal GPU device available)."; \
 	fi
-	@if csrutil status 2>/dev/null | grep -q "enabled" && csrutil authenticated-root status 2>/dev/null | grep -q "enabled"; then \
-		./build/dm_attestation/dm_attestation_test; \
-	else \
-		echo "[test] Skipping dm_attestation_test live SIP/SSV assertion (host VM has SIP/SSV disabled)."; \
-	fi
+	@./build/dm_attestation/dm_attestation_test
 	@if [ -f tests/swift/DirectMetalTests.swift ]; then \
 		$(MAKE) --no-print-directory test-swift; \
 	fi
