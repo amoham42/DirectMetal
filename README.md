@@ -28,21 +28,31 @@ Development uses a two-machine ground-truth testing pipeline:
 - **100% Post-Rosetta ARM64EC + FEX Execution (`Wine 11.22` + `USync 6` + `Mullion 2702d6e1` + `MetalVulkan 7.0`):** Preserves Apple's signed `com.apple.developer.cross-architecture-support` entitlement for **both 64-bit and 32-bit Windows games** with zero Rosetta 2! With `--perf-mode ultra` on macOS `27.2.1`: **`4,114.4 FPS`** D3D11 (**`3,279.8` 1%-low = `96.5%` of native RTX 3070 1%-low!!**), **`3,112.1 FPS`** D3D12 **`FL 12_2`** (**`2,489.4` 1%-low = `68.4%` of RTX 3070 1%-low**), and **`1,658.4 FPS`** (**`1,400.9` 1%-low = `5.25×` Rosetta 2 1%-low**) sandboxed `1024×1024` SM 6.0 Deferred PBR! **4 / 4 live retail games run zero-config on 100% native ARM64EC+FEX:** **Hades** (`120.00 FPS` locked, `26%` GPU, `--sandbox`), **REANIMAL** (UE5 DX12 **`FL 12_2`** + bundled `d3d12_guard.dll` + Metal 4 MetalFX Temporal at **`47%` GPU**), **Team Fortress 2** (x64 D3D9, `DXVK 3.1.1` + `KosmicKrisp 26.99.99`, `19%` GPU), and **Need for Speed: Hot Pursuit** (32-bit x86 D3D9, **zero flags**, `DXVK 3.1.1` + `KosmicKrisp 26.99.99`, **`22%` GPU**, zero Rosetta 2!).
 - **Per-Game Isolation & Hardware-Backed Attestation v2 (Swift + C/Obj-C++ SDK):** Hardened Runtime (`--options runtime`, `hardened_runtime: true`) `.app` bundle + upgraded SwiftUI GUI, macOS Seatbelt sandbox (`DirectMetal run --sandbox`, `5/5` kernel `EPERM` tests), and **Attestation v2** (`DirectMetal attest [--pid <pid>]` / `verify-attest` + `libdm_attestation.a`) backed by a persistent non-exportable **Apple Silicon Secure Enclave** P-256 hardware key, **`DCAppAttestService.isSupported: true`** & `DCDevice.isSupported: true` on macOS 27.2.1, `kern.bootsessionuuid`, live child-PID `SecCodeCopyGuestWithAttributes` inspection, dynamic `SecCodeCopySelf` status, and `_dyld_image_count` image verification.
 
-- **Consumer Launcher, Ultra-Slim `3.8 GB` `.app`, Fast `1.3 GB` DMG & Cloud Shader Cache CDN:** Two-pane SwiftUI **Game Library** (`GameLibraryManager.swift` + `DirectMetalGUI.swift` + `DirectMetal library scan|list|show|set|add|remove|play`) with Prefix/Steam/folder auto-discovery and per-game saved settings; native CoreGraphics **`AppIcon.icns`** (`scripts/generate_icon.swift`); **dehydrated base-prefix** (`scripts/dehydrate_base_prefix.py` shrinks `2,740 MiB` → **`0.62 MiB`**, `-99.98%`, hydrated on first launch via zero-copy parallel APFS `clonefile()` in **`148 ms`**) + `strip -x` (`DirectMetal` binary `1.7 MB → 908 KB`) bringing slim `DirectMetal.app` down from **`7.5 GB` → `3.8 GB`** (`-49.3%`); fast Apple **ULFO (LZFSE)** **`DirectMetal-macOS-arm64.dmg` (`1.3 GB`, `42.3 s` build vs. `5+ min` UDZO)** with `--ultra-compress` (`ULMO` LZMA) & optional Developer ID signing/`notarytool` stapling (`scripts/build_dmg.sh`); cached `PEInspector` (`0.02 ms` warm hit), dirty-checked Retina PPI registry writes, and `--perf-mode ultra` (`MULLION_D3D12_GPU_ERRORS=0`, `MULLION_D3D12_NATIVE16=1`, `FEX_TSOENABLED=0`: **`4,286.3 FPS`** D3D11 / `3,118.7` 1%-low, **`1.00 s`** warm end-to-end suite runs); and double SHA-256 verified cloud shader cache CDN indexing & sync (`scripts/publish_shader_cache.sh` + `DirectMetal cache sync <index.json>`).
+- **Consumer Launcher, `3.7 GB` Offline / `2.9 MB` Lite `.app`, `1.0 GB` ULMO / `2.8 MiB` Lite DMGs, Warm Launch Pool & Cloud Shader Cache CDN:** Two-pane SwiftUI **Game Library** (`GameLibraryManager.swift` + `DirectMetalGUI.swift` + `DirectMetal library scan|list|show|set|add|remove|play`) with Prefix/Steam/folder auto-discovery and per-game saved settings; lossless-optimized CoreGraphics **`AppIcon.icns`** (`1.57 MB → 1.18 MB`, `-25.0%`); **dehydrated base-prefix** (`scripts/dehydrate_base_prefix.py` shrinks `2,740 MiB` → **`0.62 MiB`**, `-99.98%`, hydrated on first launch via zero-copy parallel APFS `clonefile()` in **`151 ms`**) + atomic read-only **hardlink deduplication** inside `MetalSharp-Wine.app` (`scripts/dedup_bundle_hardlinks.py`, **`-75.70 MiB`** with `codesign --verify --strict --deep` intact) + Swift `-O -whole-module-optimization` + `strip -x` bringing offline `DirectMetal.app` down from **`7.5 GB` → `3.7 GB`** (`-50.7%`); **`DirectMetal-Lite.app` (`2.9 MB`, `2.8 MiB` DMG — `99.96%` smaller!)** with built-in SHA-256 & Apple Developer ID verified on-demand runtime installer (`RuntimeManager.swift` + `DirectMetal runtime install|status|remove`, **`11.86 s`** local HTTP install); fast Apple **ULFO (LZFSE)** offline DMG (**`1.3 GB`, `43.3 s` build**) and **`--ultra-compress` ULMO (LZMA)** offline DMG (**`1.0 GB` / `1,059.4 MiB`, `-45.5%`** vs `1.9 GB` UDZO) with optional Developer ID signing/`notarytool` stapling (`scripts/build_dmg.sh`); **persistent warm `wineserver` pool** (`WineserverPool`, `--warm-server`, GUI background pre-warm + clean quit shutdown) cutting repeat launches **`0.85 s` → `0.07–0.22 s`** (**`3.8×–10×` faster**) and full suite wall-clock runs **`1.84 s` → `0.665 s`** (**`2.77×` faster**); **Apple Silicon P-Core QoS** (`.userInteractive` + `.latencyCritical` activity), fast-path `d3d12_guard.c` (`-O3`), cached `PEInspector` (`0.02 ms`), dirty-checked Retina PPI registry writes, and `--perf-mode ultra` (`MULLION_D3D12_GPU_ERRORS=0`, `MULLION_D3D12_NATIVE16=1`, `FEX_TSOENABLED=0`, `FEX_DISABLETELEMETRY=1`, `FEX_EXTENDEDVOLATILEMETADATA=1`: **`4,090–4,185 FPS`** D3D11 / `3,103–3,263` 1%-low, **`2,694 FPS`** D3D12 / `2,189` 1%-low, **`1,568.9 FPS`** Deferred PBR / **`1,320.7`** 1%-low = **`3.54×`** Rosetta 2); and double SHA-256 verified cloud shader cache CDN indexing & sync (`scripts/publish_shader_cache.sh` + `DirectMetal cache sync <index.json>`).
 
 ### Quickstart
 
 ```bash
-# Build slim 100% post-Rosetta DirectMetal.app + DMG installer
+# Build offline DirectMetal.app (3.7 GB) + ULFO (1.3 GB) or ULMO (1.0 GB) DMG
 ./scripts/package_app.sh
-./scripts/build_dmg.sh
+./scripts/build_dmg.sh                     # fast ULFO (43s, 1.3 GB)
+./scripts/build_dmg.sh --ultra-compress    # max-compression ULMO (1.0 GB)
 
-# Scan games into the persistent Game Library & launch with per-game saved settings
+# Or build DirectMetal-Lite.app (2.9 MB) + Lite DMG (2.8 MiB) with verified first-run runtime setup
+./scripts/package_app.sh --lite
+./scripts/build_dmg.sh --lite
+
+# Scan games into the persistent Game Library & launch with per-game saved settings + warm server
 DM=./dist/DirectMetal.app/Contents/MacOS/DirectMetal
 "$DM" library scan
 "$DM" library list
 "$DM" library set Hades perf=ultra retina=true hud=true sandbox=true
-"$DM" library play Hades
+"$DM" library play Hades --warm-server
+
+# Manage verified ARM64EC runtime (Lite mode) & warm launch servers
+"$DM" runtime status --json
+"$DM" runtime install
+"$DM" runtime stop-servers
 
 # Publish & sync cloud shader caches (double SHA-256 verified)
 ./scripts/publish_shader_cache.sh --export-local --dir /tmp/cdn --base-url https://cdn.example.com/shaders
