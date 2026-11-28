@@ -341,6 +341,9 @@ struct DirectMetalTests {
             ("PrefixManager: pruneOrphanedPrefixes preserves referenced/default prefixes & supports dry-run", {
                 try testPrefixPruneOrphaned(tempRoot: tempRoot)
             }),
+            ("CommandPaletteMatcher: exact, prefix, boundary, CamelCase, subsequence & diacritic ranking", {
+                try testCommandPaletteMatcherRanking()
+            }),
         ]
 
         var passed = 0
@@ -1925,5 +1928,27 @@ struct DirectMetalTests {
         let again = try mgr.pruneOrphanedPrefixes(referencedNames: referenced, dryRun: false)
         try expectEqual(again.removedPrefixes, [])
         try expectEqual(again.reclaimedBytes, 0)
+    }
+
+    private static func testCommandPaletteMatcherRanking() throws {
+        // Empty query returns 0
+        try expectEqual(CommandPaletteMatcher.score(query: "   ", text: "Hades"), 0)
+        // Non-match returns nil
+        try expectNil(CommandPaletteMatcher.score(query: "zzz", text: "Hades"))
+
+        let exact = try expectNotNil(CommandPaletteMatcher.score(query: "hades", text: "Hades"))
+        let prefix = try expectNotNil(CommandPaletteMatcher.score(query: "had", text: "Hades II"))
+        let boundary = try expectNotNil(CommandPaletteMatcher.score(query: "knight", text: "Hollow Knight"))
+        let midSub = try expectNotNil(CommandPaletteMatcher.score(query: "low", text: "Hollow Knight"))
+        let subseq = try expectNotNil(CommandPaletteMatcher.score(query: "hk", text: "Hollow Knight"))
+        let camel = try expectNotNil(CommandPaletteMatcher.score(query: "metal", text: "DirectMetal"))
+        let diacritic = try expectNotNil(CommandPaletteMatcher.score(query: "pokemon", text: "Pokémon Legends"))
+
+        try expect(exact > prefix, "exact (\(exact)) should outrank prefix (\(prefix))")
+        try expect(prefix > boundary, "prefix (\(prefix)) should outrank word boundary (\(boundary))")
+        try expect(boundary > midSub, "word boundary (\(boundary)) should outrank mid-word substring (\(midSub))")
+        try expect(midSub > subseq, "substring (\(midSub)) should outrank subsequence (\(subseq))")
+        try expect(camel >= 600, "CamelCase boundary should score in boundary tier, got \(camel)")
+        try expect(diacritic >= 800, "diacritic-folded prefix should score in prefix tier, got \(diacritic)")
     }
 }

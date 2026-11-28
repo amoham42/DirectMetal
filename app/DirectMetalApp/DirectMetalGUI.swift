@@ -64,6 +64,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showSystemHealthSheet: Bool = false
     // APFS prefix manager & storage inspector sheet
     @Published var showPrefixManagerSheet: Bool = false
+    // Quick-Launch Command Palette (⌘K)
+    @Published var showCommandPalette: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -144,7 +146,7 @@ final class DirectMetalViewModel: ObservableObject {
     var isRunning: Bool { runningGameID != nil }
 
     var isPresentingModal: Bool {
-        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet || showPrefixManagerSheet || showRemoveConfirm
+        showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet || showPrefixManagerSheet || showCommandPalette || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -177,6 +179,16 @@ final class DirectMetalViewModel: ObservableObject {
     func openPrefixManager() {
         guard !isPresentingModal || showPrefixManagerSheet else { return }
         showPrefixManagerSheet = true
+    }
+
+    /// ⌘K: open (or toggle) the Quick-Launch Command Palette.
+    func openCommandPalette() {
+        if showCommandPalette {
+            showCommandPalette = false
+            return
+        }
+        guard !isPresentingModal else { return }
+        showCommandPalette = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -522,6 +534,14 @@ struct DirectMetalContentView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     Button {
+                        vm.openCommandPalette()
+                    } label: {
+                        Image(systemName: "command")
+                    }
+                    .help("Quick-Launch Command Palette (⌘K)")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button {
                         vm.showPrefixManagerSheet = true
                     } label: {
                         Label("Prefixes", systemImage: "externaldrive.badge.timemachine")
@@ -588,6 +608,9 @@ struct DirectMetalContentView: View {
         }
         .sheet(isPresented: $vm.showPrefixManagerSheet) {
             PrefixManagerSheet(vm: vm)
+        }
+        .sheet(isPresented: $vm.showCommandPalette) {
+            CommandPaletteSheet(vm: vm)
         }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
@@ -662,6 +685,9 @@ struct DirectMetalCommands: Commands {
                 .disabled(modal)
         }
         CommandMenu("Library") {
+            Button("Quick Launch…") { vm?.openCommandPalette() }
+                .keyboardShortcut("k", modifiers: .command)
+                .disabled(vm == nil || (modal && vm?.showCommandPalette != true))
             Button(vm?.selectedEntry.map { "Play \($0.title)" } ?? "Play Selected Game") { vm?.playSelected() }
                 .keyboardShortcut(.return, modifiers: .command)
                 .disabled(modal || !(vm?.canPlaySelected ?? false))
