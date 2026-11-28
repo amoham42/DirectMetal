@@ -308,6 +308,15 @@ struct DirectMetalTests {
             ("SteamLibraryLocator: stat-cached manifestIndex returns O(1) hits and invalidates on change", {
                 try testSteamManifestIndexCaching(tempRoot: tempRoot)
             }),
+            ("DirectMetalSandbox: Seatbelt profile rendering, SBPL escaping & Z: output dir inference", {
+                try testSandboxProfileRendering(tempRoot: tempRoot)
+            }),
+            ("DirectMetalAttestation: ECDSA P-256 sign/verify round-trip, nonce & tamper rejection", {
+                try testAttestationSignVerifyAndTamperRejection()
+            }),
+            ("DisplayCapabilities & LibraryFilter: Retina/ProMotion/HDR formatting, filters & home redaction", {
+                try testDisplayCapabilitiesAndLibraryFilters()
+            }),
         ]
 
         var passed = 0
@@ -1504,5 +1513,105 @@ struct DirectMetalTests {
         let idx2 = SteamLibraryLocator.manifestIndex(steamapps: steamapps)
         try expectEqual(idx2["hades"], "1145360")
         try expectEqual(idx2["hades ii"], "1145350")
+    }
+
+    private static func testSandboxProfileRendering(tempRoot: URL) throws {
+        let fm = FileManager.default
+        let prefixesRoot = tempRoot.appendingPathComponent("sb_prefixes", isDirectory: true)
+        let targetPrefix = prefixesRoot.appendingPathComponent("game_a", isDirectory: true)
+        let gameDir = tempRoot.appendingPathComponent("game \"quoted\" dir", isDirectory: true)
+        let cacheDir = tempRoot.appendingPathComponent("sb_cache", isDirectory: true)
+        for d in [prefixesRoot, targetPrefix, gameDir, cacheDir] {
+            try fm.createDirectory(at: d, withIntermediateDirectories: true)
+        }
+
+        // Z:\ drive output dir inference
+        let inferred = DirectMetalSandbox.inferOutputDir(
+            from: ["--foo", "--out", "Z:\\tmp\\dm_out"],
+            explicit: nil,
+            targetPrefix: targetPrefix.path
+        )
+        try expectEqual(inferred, "/tmp/dm_out")
+        let explicit = DirectMetalSandbox.inferOutputDir(
+            from: ["--out", "Z:\\ignored"],
+            explicit: "/tmp/explicit_dir",
+            targetPrefix: targetPrefix.path
+        )
+        try expectEqual(explicit, "/tmp/explicit_dir")
+
+        // Offline Seatbelt profile rendering + quote escaping
+        let sbURL = try DirectMetalSandbox.writeProfile(
+            prefixesRoot: prefixesRoot.path,
+            targetPrefix: targetPrefix.path,
+            gameDir: gameDir.path,
+            shaderCacheDir: cacheDir.path,
+            outputDir: targetPrefix.path,
+            allowNetwork: false
+        )
+        let content = try String(contentsOf: sbURL, encoding: .utf8)
+        try expect(!content.contains("${TARGET_PREFIX}"), "placeholders must be substituted")
+        try expect(!content.contains("${NETWORK_RULES}"), "network rules must be substituted")
+        try expect(content.contains("deny network-outbound"), "offline profile must deny outbound IP")
+        try expect(content.contains("game \\\"quoted\\\" dir"), "quotes in game path must be SBPL-escaped")
+    }
+
+    private static func testAttestationSignVerifyAndTamperRejection() throws {
+        let nonce = "deadbeef01234567"
+        let status = DirectMetalAttestation.collectStatus(targetBinaryPath: nil, sandboxActive: true)
+        let bundle = try DirectMetalAttestation.generateSignedBundle(
+            status: status,
+            nonceHex: nonce,
+            targetPid: nil
+        )
+        try expect(bundle.verified, "self-verification of freshly signed bundle must succeed")
+        try expect(
+            DirectMetalAttestation.verify(bundleJSON: bundle.json, expectedNonce: nonce),
+            "valid signed attestation must verify"
+        )
+        try expect(
+            !DirectMetalAttestation.verify(bundleJSON: bundle.json, expectedNonce: "wrong_nonce_9999"),
+            "mismatched nonce must be rejected"
+        )
+        // Tamper with a signed field inside payload
+        let tampered = bundle.json.replacingOccurrences(of: "\"sandbox_active\":true", with: "\"sandbox_active\":false")
+            .replacingOccurrences(of: "\"sandbox_active\" : true", with: "\"sandbox_active\" : false")
+        try expect(tampered != bundle.json, "tamper replacement should modify JSON")
+        try expect(
+            !DirectMetalAttestation.verify(bundleJSON: tampered, expectedNonce: nonce),
+            "tampered attestation payload must fail ECDSA verification"
+        )
+    }
+
+    private static func testDisplayCapabilitiesAndLibraryFilters() throws {
+        let xdr = DisplayCapabilities(
+            displayAvailable: true,
+            displayName: "Built-in Liquid Retina XDR",
+            logicalWidth: 1512,
+            logicalHeight: 982,
+            pixelWidth: 3024,
+            pixelHeight: 1964,
+            scaleFactor: 2.0,
+            dpi: 192,
+            refreshRateHz: 120,
+            variableRefresh: true,
+            edrHeadroom: 2.0,
+            potentialEDRHeadroom: 16.0,
+            supportsHDR: true,
+            source: "appkit"
+        )
+        try expect(xdr.isRetina && xdr.isProMotion, "2x 120Hz should be Retina + ProMotion")
+        try expectEqual(xdr.resolutionLabel, "1512×982 @2x Retina")
+        try expectEqual(xdr.refreshLabel, "120 Hz ProMotion")
+        try expectEqual(xdr.hdrLabel, "HDR/EDR 16.0x")
+
+        let dx12 = GameLibraryEntry(title: "UE5 Game", exePath: "/Games/UE5/Game.exe", prefixName: "ue5", architecture: "x86_64", detectedAPIs: ["D3D12"])
+        let dx9 = GameLibraryEntry(title: "Classic 32", exePath: "/Games/Old/Game.exe", prefixName: "old", architecture: "x86", detectedAPIs: ["D3D9"])
+        try expect(LibraryFilter.dx12.matches(dx12) && !LibraryFilter.dx12.matches(dx9), "dx12 filter should match only D3D12")
+        try expect(LibraryFilter.dx9.matches(dx9) && LibraryFilter.x86.matches(dx9), "dx9 and x86 filters should match 32-bit D3D9")
+        try expect(!LibraryFilter.x86.matches(dx12), "x86 filter must not match x86_64")
+
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let redacted = LaunchDiagnostics.redactHome("\(home)/Games/Hades/Hades.exe")
+        try expectEqual(redacted, "~/Games/Hades/Hades.exe", "home directory should redact to ~")
     }
 }
