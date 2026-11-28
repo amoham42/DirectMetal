@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting Guide
+    url: https://github.com/amoham42/DirectMetal/blob/main/docs/TROUBLESHOOTING.md
+    about: Check common fixes for macOS quarantine, Retina scaling, Steam & warm wineservers first.
+  - name: Benchmarks & Conformance Matrix
+    url: https://github.com/amoham42/DirectMetal/blob/main/docs/BENCHMARKS.md
+    about: Verified M1 Pro vs. Apple M4 vs. RTX 3070 conformance and throughput numbers.
+  - name: Community Game Profiles Guide
+    url: https://github.com/amoham42/DirectMetal/blob/main/docs/GAME_PROFILES_GUIDE.md
+    about: Learn how to add or override presets in runtime/profiles/game_profiles.json.
