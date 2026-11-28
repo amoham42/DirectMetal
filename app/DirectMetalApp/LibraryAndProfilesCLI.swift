@@ -60,7 +60,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|play|shortcut|export|import)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|play|explain|shortcut|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -306,6 +306,24 @@ func runLibraryCLI(args: [String]) -> Int32 {
             fputs("library play failed: \(error)\n", stderr)
             return 1
         }
+
+    case "explain", "plan":
+        let asJSON = rest.contains("--json")
+        let asMarkdown = rest.contains("--markdown")
+        let key = rest.filter { $0 != "--json" && $0 != "--markdown" }.joined(separator: " ")
+        guard !key.isEmpty, let entry = mgr.entry(idOrTitle: key) else {
+            fputs("library explain failed: no unique game matches \"\(key)\"\n", stderr)
+            return 1
+        }
+        let plan = LaunchPlanInspector.inspect(entry: entry)
+        if asJSON {
+            printLibraryJSON(plan)
+        } else if asMarkdown {
+            print(LaunchPlanInspector.formatMarkdown(plan))
+        } else {
+            print(LaunchPlanInspector.formatText(plan))
+        }
+        return 0
 
     case "shortcut":
         var format: ShortcutFormat = .app

@@ -33,6 +33,10 @@ struct LibrarySidebar: View {
                                 vm.toggleFavorite(entry)
                             }
                             Divider()
+                            Button("Inspect Launch Plan…") {
+                                vm.selectedID = entry.id
+                                vm.openLaunchPlan()
+                            }
                             Button("Create Spotlight / Dock Shortcut") { vm.createGameShortcut(entry) }
                             Button("Show in Finder") { vm.revealInFinder(entry) }
                             Button("Re-inspect Executable") { vm.reinspect(entry) }

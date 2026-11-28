@@ -70,6 +70,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showLaunchHistorySheet: Bool = false
     // Community Game Profiles browser sheet (⇧⌘B)
     @Published var showProfileBrowserSheet: Bool = false
+    // Dry-run Launch Plan Inspector sheet (⇧⌘I)
+    @Published var showLaunchPlanSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -152,7 +154,7 @@ final class DirectMetalViewModel: ObservableObject {
     var isPresentingModal: Bool {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
             || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
-            || showProfileBrowserSheet || showRemoveConfirm
+            || showProfileBrowserSheet || showLaunchPlanSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -207,6 +209,13 @@ final class DirectMetalViewModel: ObservableObject {
     func openProfileBrowser() {
         guard !isPresentingModal || showProfileBrowserSheet else { return }
         showProfileBrowserSheet = true
+    }
+
+    /// ⇧⌘I: open the dry-run Launch Plan Inspector sheet for the selected game.
+    func openLaunchPlan() {
+        guard selectedEntry != nil else { return }
+        guard !isPresentingModal || showLaunchPlanSheet else { return }
+        showLaunchPlanSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -651,6 +660,11 @@ struct DirectMetalContentView: View {
         .sheet(isPresented: $vm.showProfileBrowserSheet) {
             ProfileBrowserSheet(vm: vm)
         }
+        .sheet(isPresented: $vm.showLaunchPlanSheet) {
+            if let entry = vm.selectedEntry {
+                LaunchPlanSheet(entry: entry, vm: vm)
+            }
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -766,6 +780,9 @@ struct DirectMetalCommands: Commands {
                 if let vm, let e = vm.selectedEntry { vm.createGameShortcut(e) }
             }
             .disabled(vm?.selectedEntry == nil)
+            Button("Inspect Launch Plan…") { vm?.openLaunchPlan() }
+                .keyboardShortcut("i", modifiers: [.command, .shift])
+                .disabled(vm?.selectedEntry == nil || (modal && vm?.showLaunchPlanSheet != true))
             Button("Re-inspect Executable") {
                 if let vm, let e = vm.selectedEntry { vm.reinspect(e) }
             }

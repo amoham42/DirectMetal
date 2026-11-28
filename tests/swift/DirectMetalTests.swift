@@ -353,6 +353,9 @@ struct DirectMetalTests {
             ("ShortcutExporter: sanitization, shell/XML escaping & Spotlight .app/.command export", {
                 try testShortcutExporterAppAndCommand(tempRoot: tempRoot)
             }),
+            ("LaunchPlanInspector: pure dry-run resolution, blocked env detection & home redaction", {
+                try testLaunchPlanInspectorDryRun(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2123,5 +2126,41 @@ struct DirectMetalTests {
         try expect(FileManager.default.isExecutableFile(atPath: cmdRes.outputPath), ".command script must be executable")
         let cmdBody = try String(contentsOfFile: cmdRes.outputPath, encoding: .utf8)
         try expect(cmdBody.contains("library") && cmdBody.contains(entry.id), ".command script must invoke library play <id>")
+    }
+
+    private static func testLaunchPlanInspectorDryRun(tempRoot: URL) throws {
+        let pfxRoot = tempRoot.appendingPathComponent("plan_prefixes", isDirectory: true)
+        let entry = GameLibraryEntry(
+            title: "REANIMAL",
+            exePath: "/Users/alice/Games/REANIMAL/REANIMAL.exe",
+            prefixName: "REANIMAL",
+            engine: .auto,
+            perfProfile: .ultra,
+            dx9Backend: .auto,
+            upscaleMode: "quality",
+            fpsCap: 60,
+            retinaMode: true,
+            enableHUD: true,
+            enableSandbox: true,
+            extraArgs: "-dx12",
+            customEnv: "DXMT_LOG_LEVEL=warn WINEPREFIX=/tmp/evil DYLD_INSERT_LIBRARIES=/tmp/bad.dylib",
+            architecture: "x86_64",
+            detectedAPIs: ["D3D12"],
+            detectedUpscalers: ["DLSS"],
+            buildHash: "a1b2c3d4e5f6_1700000000_262144"
+        )
+        let plan = LaunchPlanInspector.inspect(entry: entry, prefixManager: PrefixManager(prefixRoot: pfxRoot))
+        try expectEqual(plan.title, "REANIMAL")
+        try expectEqual(plan.fpsCap, 60)
+        try expectEqual(plan.sandboxEnabled, true)
+        try expectEqual(plan.sanitizedCustomEnv["DXMT_LOG_LEVEL"], "warn")
+        try expectNil(plan.sanitizedCustomEnv["WINEPREFIX"])
+        try expect(plan.blockedCustomEnvKeys.contains("WINEPREFIX"), "blocked WINEPREFIX must be surfaced")
+        try expect(plan.blockedCustomEnvKeys.contains("DYLD_INSERT_LIBRARIES"), "blocked DYLD_INSERT_LIBRARIES must be surfaced")
+        try expect(!plan.prefixExists, "dry-run must NOT create prefix directory on disk")
+        try expect(!FileManager.default.fileExists(atPath: pfxRoot.appendingPathComponent("REANIMAL").path), "dry-run must not create prefix dir on disk")
+        let md = LaunchPlanInspector.formatMarkdown(plan, home: "/Users/alice")
+        try expect(md.contains("REANIMAL"), "markdown plan must include game title")
+        try expect(!md.contains("/Users/alice"), "markdown plan must redact home directory")
     }
 }
