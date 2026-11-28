@@ -74,6 +74,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showLaunchPlanSheet: Bool = false
     // Live Metal Performance HUD customizer sheet (⇧⌘M)
     @Published var showHUDCustomizerSheet: Bool = false
+    // Interactive Launch Log Crash Triage sheet (⇧⌘L)
+    @Published var showLogTriageSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -156,7 +158,8 @@ final class DirectMetalViewModel: ObservableObject {
     var isPresentingModal: Bool {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
             || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
-            || showProfileBrowserSheet || showLaunchPlanSheet || showHUDCustomizerSheet || showRemoveConfirm
+            || showProfileBrowserSheet || showLaunchPlanSheet || showHUDCustomizerSheet
+            || showLogTriageSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -224,6 +227,12 @@ final class DirectMetalViewModel: ObservableObject {
     func openHUDCustomizer() {
         guard !isPresentingModal || showHUDCustomizerSheet else { return }
         showHUDCustomizerSheet = true
+    }
+
+    /// ⇧⌘L: open the interactive Launch Log Crash Triage sheet.
+    func openLogTriage() {
+        guard !isPresentingModal || showLogTriageSheet else { return }
+        showLogTriageSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -700,6 +709,9 @@ struct DirectMetalContentView: View {
         .sheet(isPresented: $vm.showHUDCustomizerSheet) {
             MetalHUDCustomizerSheet(vm: vm)
         }
+        .sheet(isPresented: $vm.showLogTriageSheet) {
+            LaunchLogTriageSheet()
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -761,6 +773,9 @@ struct DirectMetalCommands: Commands {
             Button("Metal Performance HUD…") { vm?.openHUDCustomizer() }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
                 .disabled(vm == nil || (modal && vm?.showHUDCustomizerSheet != true))
+            Button("Diagnose Launch Log…") { vm?.openLogTriage() }
+                .keyboardShortcut("l", modifiers: [.command, .shift])
+                .disabled(vm == nil || (modal && vm?.showLogTriageSheet != true))
         }
         CommandGroup(replacing: .appSettings) {
             Button("Controllers…") { vm?.openControllers() }

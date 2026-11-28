@@ -217,6 +217,7 @@ private struct PaletteQuickAction: Identifiable {
         case launchHistory
         case profileBrowser
         case hudCustomizer
+        case logTriage
         case controllers
         case checkUpdates
         case posterGallery
@@ -324,6 +325,17 @@ private struct PaletteQuickAction: Identifiable {
             tint: .green,
             shortcutHint: "⇧⌘M",
             keywords: ["hud", "metal", "fps", "overlay", "graph", "alignment", "scale", "opacity", "telemetry"],
+            presentsModal: true
+        ),
+        PaletteQuickAction(
+            id: "action.log-triage",
+            kind: .logTriage,
+            title: "Diagnose Launch Log…",
+            subtitle: "Scan a Wine/DirectX/Metal log file or pasted crash output for fixes",
+            systemImage: "stethoscope",
+            tint: .red,
+            shortcutHint: "⇧⌘L",
+            keywords: ["log", "crash", "triage", "diagnose", "error", "dll", "anticheat", "wine", "debug"],
             presentsModal: true
         ),
         PaletteQuickAction(
@@ -946,6 +958,8 @@ struct CommandPaletteSheet: View {
                 vm.openProfileBrowser()
             case .hudCustomizer:
                 vm.openHUDCustomizer()
+            case .logTriage:
+                vm.openLogTriage()
             case .controllers:
                 vm.openControllers()
             case .checkUpdates:
