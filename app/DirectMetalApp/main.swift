@@ -8,6 +8,8 @@ private func printUsage() {
       DirectMetal                        Launch desktop GUI (game library launcher)
       DirectMetal info                   Show Apple Silicon GPU, Metal 4, and runtime info
       DirectMetal doctor [--json]        Run 9-point Apple Silicon, runtime, guard & security health check
+      DirectMetal bench [--json|--markdown]
+                                         Run built-in Apple Silicon UMA, APFS CoW, SHA-256 & PE microbenchmarks
       DirectMetal completions zsh|bash   Print native shell completion script for zsh or bash
       DirectMetal inspect <exe>          Inspect PE headers, architecture, and DirectX/upscaler APIs
       DirectMetal prefix list            List APFS CoW game prefixes
@@ -87,6 +89,9 @@ private func runCLI(args: [String]) -> Int32 {
 
     case "doctor":
         return runDoctorCLI(args: Array(args.dropFirst()))
+
+    case "bench", "benchmark":
+        return runBenchmarkCLI(args: Array(args.dropFirst()))
 
     case "completions":
         return runCompletionsCLI(args: Array(args.dropFirst()))

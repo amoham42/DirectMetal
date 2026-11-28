@@ -13,6 +13,7 @@ DM="/Applications/DirectMetal-Lite.app/Contents/MacOS/DirectMetal"
 | Command | Description |
 | :--- | :--- |
 | `DirectMetal doctor [--json]` | Run a 9-point Apple Silicon readiness check (GPU/Metal, macOS tier, ARM64EC runtime + `codesign`, graphics layers, base prefix, Display Retina/ProMotion/HDR, shader cache + profiles, controllers, SIP/SSV/Secure Enclave). Exits `0` if ok/warn, `1` on failure. |
+| `DirectMetal bench [--json\|--markdown]` | Run built-in Apple Silicon microbenchmarks (Metal UMA shared-memory compute bandwidth, APFS CoW `clonefile` latency, ARMv8 hardware SHA-256 throughput, and cached PE32+ inspection latency) and emit a shareable scorecard. |
 | `DirectMetal info` | Print structured JSON hardware telemetry (`gpu_name`, `gpu_family`, `cache_key`, `working_set_gib`, `supports_metal4`, display DPI/Hz/EDR, controllers). |
 | `DirectMetal completions zsh\|bash` | Output a native tab-completion script for `zsh` (`eval "$($DM completions zsh)"`) or `bash` (`eval "$($DM completions bash)"`). |
 | `DirectMetal help` | Show concise CLI usage summary. |

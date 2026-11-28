@@ -317,6 +317,9 @@ struct DirectMetalTests {
             ("DisplayCapabilities & LibraryFilter: Retina/ProMotion/HDR formatting, filters & home redaction", {
                 try testDisplayCapabilitiesAndLibraryFilters()
             }),
+            ("DirectMetalBenchmark: built-in UMA, APFS CoW, SHA-256 & PE microbenchmarks run cleanly", {
+                try testBuiltInBenchmarkScorecard()
+            }),
         ]
 
         var passed = 0
@@ -1613,5 +1616,14 @@ struct DirectMetalTests {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let redacted = LaunchDiagnostics.redactHome("\(home)/Games/Hades/Hades.exe")
         try expectEqual(redacted, "~/Games/Hades/Hades.exe", "home directory should redact to ~")
+    }
+
+    private static func testBuiltInBenchmarkScorecard() throws {
+        let card = DirectMetalBenchmark.runAll()
+        try expectEqual(card.schema, "directmetal.bench.v1")
+        try expectEqual(card.metrics.count, 4, "expected 4 built-in benchmark metrics")
+        for m in card.metrics {
+            try expect(m.value > 0, "benchmark \(m.id) should produce positive value, got \(m.value) (\(m.detail))")
+        }
     }
 }

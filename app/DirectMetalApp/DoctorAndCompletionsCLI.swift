@@ -252,6 +252,7 @@ _directmetal() {
   commands=(
     'info:Show Apple Silicon GPU, Metal 4, display HDR and runtime info'
     'doctor:Run 9-point Apple Silicon, runtime, guard and security health check'
+    'bench:Run built-in Apple Silicon UMA, APFS CoW, SHA-256 and PE benchmarks'
     'inspect:Inspect Windows PE headers, architecture and DirectX/upscaler APIs'
     'run:Launch a Windows DirectX executable via DirectMetal'
     'library:Manage saved games, auto-scanner, artwork and per-game settings'
@@ -341,7 +342,7 @@ _directmetal_completions() {
   cmd="${COMP_WORDS[1]}"
 
   if [[ ${COMP_CWORD} -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "info doctor inspect run library runtime prefix cache controller profiles update attest verify-attest completions help" -- "${cur}") )
+    COMPREPLY=( $(compgen -W "info doctor bench inspect run library runtime prefix cache controller profiles update attest verify-attest completions help" -- "${cur}") )
     return 0
   fi
 
