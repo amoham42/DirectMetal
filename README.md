@@ -138,12 +138,16 @@ DirectMetal library set Hades perf=ultra retina=true hud=true sandbox=true
 DirectMetal library artwork Hades
 DirectMetal library play Hades --warm-server
 
-# Runtime, Self-Updater & Cloud Shader Cache CDN
+# Diagnostics, Runtime, Self-Updater & Cloud Shader Cache CDN
+DirectMetal doctor --json             # 9-point Apple Silicon health & readiness check
+DirectMetal completions zsh           # Native zsh/bash tab completions
 DirectMetal runtime status --json
 DirectMetal runtime install
 DirectMetal runtime update
 DirectMetal update check --json
 DirectMetal update apply
+DirectMetal cache list                # Inspect local shader caches (current vs stale builds)
+DirectMetal cache prune --dry-run     # Reclaim disk space from old macOS build caches
 DirectMetal cache sync https://github.com/amoham42/DirectMetal/releases/download/v1.0.1/shader-cache-index.json --exe /path/to/game.exe
 
 # Interactive Controller Remapping & Hardware Telemetry
@@ -175,6 +179,8 @@ make dmg-ultra      # Build max-compression offline DMG (1.0 GB ULMO LZMA)
 | Document | Description |
 | :--- | :--- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | DirectX-to-Metal stack, UMA/TBDR optimizations, and ARM64EC + FEX design |
+| [docs/CLI_REFERENCE.md](docs/CLI_REFERENCE.md) | Complete CLI subcommand, flag, and environment-variable reference |
+| [docs/BENCHMARKS.md](docs/BENCHMARKS.md) | Reproducible M1 Pro vs. M4 vs. RTX 3070 throughput, microbenchmark & bundle-size tables |
 | [docs/COMPARISON.md](docs/COMPARISON.md) | Honest comparison vs. Whisky, CrossOver, Kegworks, and Apple GPTK |
 | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) | Fixes for quarantine, macOS 15 Rosetta fallback, Retina PPI, Steam & warm servers |
 | [COMPATIBILITY.md](COMPATIBILITY.md) | Full 25/25 PSNR/SSIM conformance tables and M1 Pro / M4 vs. RTX 3070 benchmarks |
