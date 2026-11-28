@@ -423,3 +423,318 @@ struct AttestationSecurityCard: View {
         }
     }
 }
+
+// MARK: - Library quick filter & sort
+
+/// Sidebar quick filter chips. `matches` is pure so it is unit-testable and cheap to re-run on every keystroke.
+enum LibraryFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case dx12 = "DX12"
+    case dx11 = "DX11"
+    case dx9 = "DX9"
+    case x86 = "32-bit"
+
+    var id: String { rawValue }
+
+    var tint: Color {
+        switch self {
+        case .all: return .accentColor
+        case .dx12: return .purple
+        case .dx11: return .blue
+        case .dx9: return .orange
+        case .x86: return .gray
+        }
+    }
+
+    var help: String {
+        switch self {
+        case .all: return "Show every game in the library"
+        case .dx12: return "Games importing Direct3D 12 (d3d12.dll)"
+        case .dx11: return "Games importing Direct3D 11 (d3d11.dll)"
+        case .dx9: return "Games importing Direct3D 9 (d3d9.dll)"
+        case .x86: return "32-bit (x86) executables"
+        }
+    }
+
+    func matches(_ entry: GameLibraryEntry) -> Bool {
+        switch self {
+        case .all: return true
+        case .dx12: return entry.detectedAPIs.contains("D3D12")
+        case .dx11: return entry.detectedAPIs.contains("D3D11")
+        case .dx9: return entry.detectedAPIs.contains("D3D9")
+        case .x86: return entry.architecture == "x86"
+        }
+    }
+}
+
+/// Sidebar sort order. Sorting is stable: ties keep the library's stored order.
+enum LibrarySort: String, CaseIterable, Identifiable {
+    case recent = "Recent"
+    case title = "Title A–Z"
+    case mostPlayed = "Most Played"
+
+    static let defaultsKey = "DirectMetal.librarySort"
+
+    var id: String { rawValue }
+
+    var systemImage: String {
+        switch self {
+        case .recent: return "clock"
+        case .title: return "textformat"
+        case .mostPlayed: return "flame"
+        }
+    }
+
+    func sorted(_ entries: [GameLibraryEntry]) -> [GameLibraryEntry] {
+        Array(entries.enumerated()).sorted { a, b in
+            let x = a.element, y = b.element
+            switch self {
+            case .recent:
+                // ISO-8601 UTC timestamps compare lexicographically; never-played ("") sinks to the bottom.
+                let lx = x.lastPlayedUtc ?? "", ly = y.lastPlayedUtc ?? ""
+                if lx != ly { return lx > ly }
+            case .title:
+                let order = x.title.localizedStandardCompare(y.title)
+                if order != .orderedSame { return order == .orderedAscending }
+            case .mostPlayed:
+                if x.playCount != y.playCount { return x.playCount > y.playCount }
+                let order = x.title.localizedStandardCompare(y.title)
+                if order != .orderedSame { return order == .orderedAscending }
+            }
+            return a.offset < b.offset
+        }.map(\.element)
+    }
+}
+
+/// Compact capsule toggle used by the sidebar filter bar.
+struct FilterChip: View {
+    let title: String
+    let count: Int
+    let tint: Color
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Text(title)
+                    .font(.system(size: 11, weight: .semibold, design: .rounded))
+                Text("\(count)")
+                    .font(.system(size: 9.5, weight: .medium, design: .rounded))
+                    .monospacedDigit()
+                    .opacity(0.75)
+            }
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2.5)
+            .foregroundStyle(isSelected ? Color.white : (count == 0 ? Color.secondary : tint))
+            .background(isSelected ? tint : tint.opacity(count == 0 ? 0.06 : 0.13), in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+}
+
+// MARK: - Launch diagnostics
+
+/// Snapshot of one game launch, rendered as a copy-pasteable report for GitHub bug reports.
+struct LaunchDiagnostics: Equatable {
+    let gameID: String
+    let title: String
+    let exePath: String
+    let architecture: String
+    let detectedAPIs: [String]
+    let startedAt: Date
+    let elapsedSeconds: Double
+    /// `nil` when the launch threw before the game process exited.
+    let exitCode: Int32?
+    let failure: String?
+    let requestedEngine: String
+    let activeEngine: String
+    let sandboxed: Bool
+    let cloneMs: Double?
+    let prefixName: String
+    let prefixPath: String
+    let shaderCacheDir: String
+    let controllerProfile: String
+    let settings: String
+    let extraArgs: String
+    let gpuSummary: String
+    let appVersion: String
+    let runtimeVersion: String
+    let macOSVersion: String
+
+    var succeeded: Bool { failure == nil && exitCode == 0 }
+
+    var outcomeText: String {
+        if let failure { return "Launch failed: \(failure)" }
+        return String(format: "exit=%d in %.1f s", exitCode ?? -1, elapsedSeconds)
+    }
+
+    /// Replaces the user's home directory with `~` so reports don't leak account names.
+    static func redactHome(_ path: String, home: String = NSHomeDirectory()) -> String {
+        guard !home.isEmpty, home != "/" else { return path }
+        return path.replacingOccurrences(of: home, with: "~")
+    }
+
+    var fields: [(label: String, value: String)] {
+        let r: (String) -> String = { LaunchDiagnostics.redactHome($0) }
+        return [
+            ("Game", "\(title) (\(architecture); \(detectedAPIs.isEmpty ? "Win32" : detectedAPIs.joined(separator: " + ")))"),
+            ("Executable", r(exePath)),
+            ("Started", GameLibraryManager.isoFormatter.string(from: startedAt)),
+            ("Result", outcomeText),
+            ("Engine", "\(activeEngine) (requested: \(requestedEngine))"),
+            ("Sandbox", sandboxed ? "macOS Seatbelt" : "off"),
+            ("APFS clone", cloneMs.map { String(format: "%.2f ms", $0) } ?? "—"),
+            ("Prefix", "\(prefixName) → \(r(prefixPath))"),
+            ("Shader cache", r(shaderCacheDir)),
+            ("Controller", controllerProfile),
+            ("Settings", settings),
+            ("Extra args", extraArgs.isEmpty ? "—" : extraArgs),
+            ("GPU", gpuSummary),
+            ("macOS", macOSVersion),
+            ("DirectMetal", "v\(appVersion) · MetalSharp-Wine \(runtimeVersion)"),
+        ]
+    }
+
+    /// Plain-text report body (aligned `Label: value` lines).
+    var reportBody: String {
+        let width = (fields.map(\.label.count).max() ?? 0) + 2
+        let lines = fields.map { f in (f.label + ":").padding(toLength: width, withPad: " ", startingAt: 0) + f.value }
+        return (["DirectMetal Launch Diagnostics"] + lines).joined(separator: "\n")
+    }
+
+    /// GitHub-ready Markdown: the report body in a fenced block.
+    var markdownReport: String { "```text\n\(reportBody)\n```\n" }
+}
+
+extension LaunchDiagnostics {
+    /// Builds a snapshot after a launch finishes (or throws). Safe to call off the main thread.
+    static func capture(entry e: GameLibraryEntry, startedAt: Date, result: LaunchResult?, failure: String?,
+                        gpuSummary: String) -> LaunchDiagnostics {
+        let resolved = ControllerMappingManager.resolvedProfile(for: e.id)
+        let scope: String
+        switch resolved.source {
+        case "game": scope = "per-game profile"
+        case "global": scope = "global profile"
+        default: scope = "stock, no overrides"
+        }
+        let onOff: (Bool) -> String = { $0 ? "on" : "off" }
+        return LaunchDiagnostics(
+            gameID: e.id,
+            title: e.title,
+            exePath: e.exePath,
+            architecture: e.architecture,
+            detectedAPIs: e.detectedAPIs,
+            startedAt: startedAt,
+            elapsedSeconds: result?.elapsedSeconds ?? Date().timeIntervalSince(startedAt),
+            exitCode: result?.exitCode,
+            failure: failure,
+            requestedEngine: e.engine.rawValue,
+            activeEngine: result?.activeEngine ?? "not started",
+            sandboxed: result?.sandboxed ?? e.enableSandbox,
+            cloneMs: result?.cloneMs,
+            prefixName: e.launchPrefixName,
+            prefixPath: result?.prefixPath ?? PrefixManager().prefixURL(named: e.launchPrefixName).path,
+            shaderCacheDir: result?.shaderCacheDir ?? RuntimeLauncher.shaderCacheRoot().path,
+            controllerProfile: "\(resolved.profile.preset.displayName) (\(scope))",
+            settings: "perf=\(e.perfProfile.rawValue) dx9=\(e.dx9Backend.rawValue) metalfx=\(e.launchUpscaleMode ?? "off") "
+                + "retina=\(onOff(e.retinaMode)) hud=\(onOff(e.enableHUD))",
+            extraArgs: e.extraArgs.trimmingCharacters(in: .whitespacesAndNewlines),
+            gpuSummary: gpuSummary,
+            appVersion: RuntimeLauncher.appVersion(),
+            runtimeVersion: AppUpdater.installedRuntimeVersion(),
+            macOSVersion: ProcessInfo.processInfo.operatingSystemVersionString
+        )
+    }
+}
+
+/// Collapsible "Last Launch Diagnostics" drawer with a one-click "Copy Report" button.
+struct LaunchDiagnosticsDrawer: View {
+    let diagnostics: LaunchDiagnostics?
+    let onCopy: @MainActor (LaunchDiagnostics) -> Void
+    @State private var expanded = false
+    @State private var copied = false
+
+    private func relative(_ date: Date) -> String {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .short
+        return f.localizedString(for: date, relativeTo: Date())
+    }
+
+    var body: some View {
+        GroupBox {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Button {
+                        withAnimation(.snappy(duration: 0.2)) { expanded.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "chevron.right")
+                                .font(.caption.weight(.bold))
+                                .foregroundStyle(.secondary)
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                            Label("Last Launch Diagnostics", systemImage: "stethoscope")
+                                .font(.headline)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(expanded ? "Hide launch details" : "Show launch details")
+                    if let d = diagnostics {
+                        HStack(spacing: 4) {
+                            Circle().fill(d.succeeded ? Color.green : Color.orange).frame(width: 7, height: 7)
+                            Text("\(d.failure == nil ? d.outcomeText : "Launch failed") · \(relative(d.startedAt))")
+                                .lineLimit(1)
+                        }
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Button {
+                        guard let d = diagnostics else { return }
+                        onCopy(d)
+                        withAnimation { copied = true }
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 1_600_000_000)
+                            withAnimation { copied = false }
+                        }
+                    } label: {
+                        Label(copied ? "Copied" : "Copy Report", systemImage: copied ? "checkmark" : "doc.on.doc")
+                    }
+                    .controlSize(.small)
+                    .disabled(diagnostics == nil)
+                    .help("Copy a Markdown launch report to the clipboard for a GitHub issue")
+                }
+                if expanded {
+                    if let d = diagnostics {
+                        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 4) {
+                            ForEach(d.fields, id: \.label) { f in
+                                GridRow {
+                                    Text(f.label).foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                                    Text(f.value)
+                                        .foregroundStyle(f.label == "Result" && !d.succeeded ? Color.orange : Color.primary)
+                                        .lineLimit(f.label == "Result" ? 4 : 1)
+                                        .truncationMode(.middle)
+                                        .textSelection(.enabled)
+                                }
+                            }
+                        }
+                        .font(.caption.monospaced())
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    } else {
+                        Text("Launch this game once to capture the active engine, sandbox state, exit code, timing, prefix, shader cache and controller profile for a one-click bug report.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(6)
+        }
+    }
+}

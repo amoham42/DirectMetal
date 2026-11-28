@@ -60,6 +60,16 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var runtimeUpdateDone: String?
     // Controller remapping sheet
     @Published var showControllerSheet: Bool = false
+    // Sidebar quick filter + sort (sort order persists across launches)
+    @Published var libraryFilter: LibraryFilter = .all
+    @Published var librarySort: LibrarySort =
+        LibrarySort(rawValue: UserDefaults.standard.string(forKey: LibrarySort.defaultsKey) ?? "") ?? .recent {
+        didSet { UserDefaults.standard.set(librarySort.rawValue, forKey: LibrarySort.defaultsKey) }
+    }
+    /// Bumped by ⌘F; the sidebar focuses its search field on change.
+    @Published var searchFocusRequest: Int = 0
+    /// Most recent launch per game ID, for the "Last Launch Diagnostics" drawer.
+    @Published var lastLaunches: [String: LaunchDiagnostics] = [:]
 
     private let manager = GameLibraryManager()
 
@@ -67,7 +77,6 @@ final class DirectMetalViewModel: ObservableObject {
     func profile(for entry: GameLibraryEntry) -> GameProfile? {
         manager.profileRegistry.profile(id: entry.profileID)
     }
-
 
     init() {
         library = manager.load()
@@ -89,7 +98,8 @@ final class DirectMetalViewModel: ObservableObject {
         "\(gpuInfo.gpuName) • \(gpuInfo.supportsMetal4 ? "Metal 4" : (gpuInfo.supportsMetal3 ? "Metal 3" : "Metal"))"
     }
 
-    var filteredLibrary: [GameLibraryEntry] {
+    /// Library entries matching the search text (before the quick filter), in stored order.
+    var searchMatches: [GameLibraryEntry] {
         let q = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else { return library }
         return library.filter { e in
@@ -101,12 +111,69 @@ final class DirectMetalViewModel: ObservableObject {
         }
     }
 
+    /// What the sidebar shows: search, then quick filter, then the chosen sort order.
+    var filteredLibrary: [GameLibraryEntry] {
+        librarySort.sorted(searchMatches.filter(libraryFilter.matches))
+    }
+
+    /// Chip counts reflect the current search so they always match what a click would show.
+    func filterCount(_ filter: LibraryFilter) -> Int {
+        searchMatches.reduce(0) { $0 + (filter.matches($1) ? 1 : 0) }
+    }
+
+    var isFiltering: Bool {
+        libraryFilter != .all || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    func clearFilters() {
+        libraryFilter = .all
+        searchText = ""
+    }
+
     var selectedEntry: GameLibraryEntry? {
         guard let id = selectedID else { return nil }
         return library.first(where: { $0.id == id })
     }
 
     var isRunning: Bool { runningGameID != nil }
+
+    var isPresentingModal: Bool {
+        showImportSheet || showUpdatesSheet || showControllerSheet || showRemoveConfirm
+    }
+
+    var canPlaySelected: Bool {
+        selectedEntry != nil && !isRunning && runtimePaths != nil
+    }
+
+    // MARK: Menu commands
+
+    func playSelected() {
+        guard canPlaySelected, let entry = selectedEntry else { return }
+        play(entry)
+    }
+
+    func requestSearchFocus() {
+        searchFocusRequest &+= 1
+    }
+
+    func openControllers() {
+        guard !isPresentingModal else { return }
+        showControllerSheet = true
+    }
+
+    /// ⌘U: open the Updates sheet and re-check GitHub Releases.
+    func openUpdates() {
+        guard !isPresentingModal || showUpdatesSheet else { return }
+        showUpdatesSheet = true
+        checkForUpdates()
+    }
+
+    func copyLaunchReport(_ diagnostics: LaunchDiagnostics) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(diagnostics.markdownReport, forType: .string)
+        statusMessage = "Copied \(diagnostics.title) launch diagnostics — paste it into a GitHub issue."
+    }
 
     // MARK: Per-game settings (auto-persisted)
 
@@ -261,6 +328,8 @@ final class DirectMetalViewModel: ObservableObject {
         reloadLibrary()
         runningGameID = current.id
         statusMessage = "Launching \(current.title) — cloning APFS prefix “\(current.launchPrefixName)” & starting DirectMetal…"
+        let startedAt = Date()
+        let gpu = gpuSummary
 
         DispatchQueue.global(qos: .userInitiated).async {
             do {
@@ -278,8 +347,11 @@ final class DirectMetalViewModel: ObservableObject {
                     warmServerSeconds: 180,
                     controllerProfileKey: current.id
                 )
+                let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: result,
+                                                            failure: nil, gpuSummary: gpu)
                 DispatchQueue.main.async {
                     self.runningGameID = nil
+                    self.lastLaunches[current.id] = diagnostics
                     self.refreshPrefixes()
                     self.statusMessage = String(
                         format: "%@ finished (exit=%d) in %.1f s [engine=%@, CoW=%.2f ms%@]",
@@ -288,8 +360,11 @@ final class DirectMetalViewModel: ObservableObject {
                     )
                 }
             } catch {
+                let diagnostics = LaunchDiagnostics.capture(entry: current, startedAt: startedAt, result: nil,
+                                                            failure: "\(error)", gpuSummary: gpu)
                 DispatchQueue.main.async {
                     self.runningGameID = nil
+                    self.lastLaunches[current.id] = diagnostics
                     self.statusMessage = "Launch failed: \(error)"
                 }
             }
@@ -378,6 +453,7 @@ struct DirectMetalContentView: View {
             LauncherStatusBar(vm: vm)
         }
         .frame(minWidth: 920, minHeight: 600)
+        .focusedSceneObject(vm)
         .overlay {
             if isDropTargeted {
                 RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -422,6 +498,18 @@ struct DirectMetalContentView: View {
 
 struct LibrarySidebar: View {
     @ObservedObject var vm: DirectMetalViewModel
+    @FocusState private var searchFocused: Bool
+
+    private var headerText: String {
+        let shown = vm.filteredLibrary.count
+        return vm.isFiltering ? "Showing \(shown) of \(vm.library.count)" : "Library — \(vm.library.count)"
+    }
+
+    private var emptyText: String {
+        let q = vm.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let scope = vm.libraryFilter == .all ? "" : " in \(vm.libraryFilter.rawValue)"
+        return q.isEmpty ? "No \(vm.libraryFilter.rawValue) games in your library" : "No matches for “\(q)”\(scope)"
+    }
 
     var body: some View {
         List(selection: $vm.selectedID) {
@@ -442,11 +530,27 @@ struct LibrarySidebar: View {
                         }
                 }
             } header: {
-                Text(vm.searchText.isEmpty ? "Library — \(vm.library.count)" : "Results — \(vm.filteredLibrary.count)")
+                HStack {
+                    Text(headerText)
+                    Spacer()
+                    Label(vm.librarySort.rawValue, systemImage: vm.librarySort.systemImage)
+                        .labelStyle(.titleAndIcon)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
             }
         }
         .listStyle(.sidebar)
-        .searchable(text: $vm.searchText, placement: .sidebar, prompt: "Search games")
+        .searchable(text: $vm.searchText, placement: .sidebar, prompt: "Search games (⌘F)")
+        .searchFocused($searchFocused)
+        .onChange(of: vm.searchFocusRequest) {
+            searchFocused = true
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !vm.library.isEmpty {
+                filterBar
+            }
+        }
         .overlay {
             if vm.library.isEmpty {
                 VStack(spacing: 8) {
@@ -459,7 +563,16 @@ struct LibrarySidebar: View {
                     }
                 }
             } else if vm.filteredLibrary.isEmpty {
-                Text("No matches for “\(vm.searchText)”").font(.callout).foregroundStyle(.secondary)
+                VStack(spacing: 6) {
+                    Text(emptyText)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Clear Filters") { vm.clearFilters() }
+                        .buttonStyle(.link)
+                        .font(.callout)
+                }
+                .padding(.horizontal, 16)
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -504,6 +617,40 @@ struct LibrarySidebar: View {
             .background(.bar)
         }
     }
+
+    /// Quick filter chips (with live counts) + sort menu.
+    private var filterBar: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 4) {
+                    ForEach(LibraryFilter.allCases) { filter in
+                        FilterChip(title: filter.rawValue, count: vm.filterCount(filter), tint: filter.tint,
+                                   isSelected: vm.libraryFilter == filter) {
+                            vm.libraryFilter = (vm.libraryFilter == filter && filter != .all) ? .all : filter
+                        }
+                        .help(filter.help)
+                    }
+                }
+                .padding(.vertical, 1)
+            }
+            Menu {
+                Picker("Sort By", selection: $vm.librarySort) {
+                    ForEach(LibrarySort.allCases) { sort in
+                        Label(sort.rawValue, systemImage: sort.systemImage).tag(sort)
+                    }
+                }
+                .pickerStyle(.inline)
+            } label: {
+                Image(systemName: "arrow.up.arrow.down")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Sort library: \(vm.librarySort.rawValue)")
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+    }
 }
 
 // MARK: - Detail
@@ -525,6 +672,7 @@ struct GameDetailView: View {
                 PeripheralStrip(monitor: peripherals, onControllers: { vm.showControllerSheet = true })
                 peProfileCard
                 settingsPanel
+                LaunchDiagnosticsDrawer(diagnostics: vm.lastLaunches[entry.id]) { vm.copyLaunchReport($0) }
                 shaderCachePanel
                 AttestationSecurityCard(vm: vm)
             }
@@ -589,7 +737,6 @@ struct GameDetailView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.extraLarge)
-                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(vm.isRunning || vm.runtimePaths == nil)
                 if vm.runtimePaths == nil {
                     Text("Runtime not installed").font(.caption2).foregroundStyle(.red)
@@ -905,5 +1052,70 @@ struct DirectMetalDesktopApp: App {
         }
         .defaultSize(width: 1120, height: 760)
         .windowToolbarStyle(.unified(showsTitle: true))
+        .commands { DirectMetalCommands() }
+    }
+}
+
+/// Native menu bar commands + keyboard shortcuts, routed to the key window's view model.
+struct DirectMetalCommands: Commands {
+    @FocusedObject private var vm: DirectMetalViewModel?
+
+    private var modal: Bool { vm?.isPresentingModal ?? true }
+
+    var body: some Commands {
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { vm?.openUpdates() }
+                .keyboardShortcut("u", modifiers: .command)
+                .disabled(vm == nil || (modal && vm?.showUpdatesSheet != true))
+        }
+        CommandGroup(replacing: .appSettings) {
+            Button("Controllers…") { vm?.openControllers() }
+                .keyboardShortcut(",", modifiers: .command)
+                .disabled(modal)
+        }
+        CommandGroup(after: .newItem) {
+            Divider()
+            Button("Add .exe or Game Folder…") { vm?.openAddPanel() }
+                .keyboardShortcut("o", modifiers: .command)
+                .disabled(modal)
+            Button("Scan Library") { vm?.scanLibrary() }
+                .keyboardShortcut("r", modifiers: .command)
+                .disabled(vm == nil || vm?.isScanning == true)
+        }
+        CommandMenu("Library") {
+            Button(vm?.selectedEntry.map { "Play \($0.title)" } ?? "Play Selected Game") { vm?.playSelected() }
+                .keyboardShortcut(.return, modifiers: .command)
+                .disabled(modal || !(vm?.canPlaySelected ?? false))
+            Button("Find Game…") { vm?.requestSearchFocus() }
+                .keyboardShortcut("f", modifiers: .command)
+                .disabled(vm == nil)
+            Divider()
+            Picker("Filter", selection: Binding(get: { vm?.libraryFilter ?? .all },
+                                                set: { vm?.libraryFilter = $0 })) {
+                ForEach(LibraryFilter.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .disabled(vm == nil)
+            Picker("Sort By", selection: Binding(get: { vm?.librarySort ?? .recent },
+                                                 set: { vm?.librarySort = $0 })) {
+                ForEach(LibrarySort.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .disabled(vm == nil)
+            Divider()
+            Button("Show in Finder") {
+                if let vm, let e = vm.selectedEntry { vm.revealInFinder(e) }
+            }
+            .disabled(vm?.selectedEntry == nil)
+            Button("Re-inspect Executable") {
+                if let vm, let e = vm.selectedEntry { vm.reinspect(e) }
+            }
+            .disabled(vm?.selectedEntry == nil)
+            Button("Copy Last Launch Report") {
+                if let vm, let id = vm.selectedID, let d = vm.lastLaunches[id] { vm.copyLaunchReport(d) }
+            }
+            .disabled(vm?.selectedID.flatMap { vm?.lastLaunches[$0] } == nil)
+            Divider()
+            Button("Remove from Library…") { vm?.showRemoveConfirm = true }
+                .disabled(modal || vm?.selectedEntry == nil)
+        }
     }
 }
