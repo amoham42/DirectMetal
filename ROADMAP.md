@@ -24,3 +24,15 @@
 ## Phase 4 — Compatibility Matrix & Attested Sandbox
 - [x] Expand automated game/engine compatibility matrix (Unreal Engine 4/5, Unity, RE Engine, REDengine, Frostbite, Source 2, id Tech). *(SM 6.0 DXIL `eng_01`–`eng_06` + `eng_bench_deferred_pbr` and [docs/ENGINE_COMPATIBILITY_MATRIX.md](docs/ENGINE_COMPATIBILITY_MATRIX.md) verified **25/25**)*
 - [x] Prototype hardened per-game isolation sandbox and platform-attested anti-cheat verification SDK. *(Stripped Hardened Runtime `--options runtime`, Seatbelt `dm_sandbox` `5/5` + live sandboxed `Hades`/`REANIMAL` + `dm_attestation` / `DirectMetal attest` & `verify-attest` ECDSA P-256 verified)*
+
+## Phase 5 — Consumer Release, Cross-Chip Verification & Ecosystem (`v1.0` – `v1.1`)
+- [x] Ship **`DirectMetal-Lite.app` (`2.9 MB` / `2.8 MiB` DMG)** with on-demand SHA-256 + `codesign`-verified ARM64EC runtime installer and dehydrated base-prefix hydration (`~150 ms`).
+- [x] Ship verified **App & Runtime Self-Updater** (`update check|apply`, `runtime update`) with live `v1.0.0 → v1.0.1` GitHub Releases verification.
+- [x] Cross-verify full stack on **Apple M1 Pro (`Apple7`)** and **Apple M4 (`Apple9`)**: `25/25` conformance (`SSIM 0.99984`), `4,490 FPS` D3D12, `2,092 FPS` Deferred PBR, and multi-chip **Cloud Shader Cache CDN** (`Apple7` + `Apple9`).
+- [x] Expand storefront auto-discovery (**Steam, GOG Galaxy, Epic Games Store, Heroic**), **50 validated community game profiles**, pure-Swift PE icon extraction, playtime tracking, and interactive **`GCController` remapper**.
+- [x] Ship native **System Health & Shader Cache Maintenance** (`DirectMetal doctor`, `cache list|prune`, `⌘D` GUI sheet), **APFS Prefix Manager & Storage Inspector** (`prefix stats`, `⇧⌘P` GUI sheet), Homebrew Cask (`Casks/directmetal.rb`), and full **GitHub Actions `macos-15` CI** covering native C/Obj-C++, Swift, and Python unit test suites.
+
+## Phase 6 — Next Horizons
+- [ ] Apple Developer ID notarization in automated GitHub Releases CI (zero quarantine prompt out of the box).
+- [ ] Expanded multi-chip community Cloud Shader Cache coverage (`Apple8` M2, `Apple9` M3/M4, `Apple10` M5) and automated game compatibility test reports.
+- [ ] Live Metal Performance HUD customization & per-game FPS cap / VRR frame-pacing controls inside the SwiftUI launcher.

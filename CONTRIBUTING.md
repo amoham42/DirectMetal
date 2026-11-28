@@ -42,7 +42,7 @@ Run `make help` at any time to list all build, packaging, conformance, and clean
 
 | Path | Description |
 | :--- | :--- |
-| `app/DirectMetalApp/` | Native `arm64` Swift / SwiftUI launcher (`DirectMetalGUI.swift`), CLI (`main.swift`), `GameLibraryManager`, `RuntimeManager`, `RuntimeLauncher`, `PEInspector`, `BasePrefixHydrator`, `ShaderCacheManager`, `SandboxAttestation`, and controller/peripheral telemetry |
+| `app/DirectMetalApp/` | Modular native `arm64` Swift / SwiftUI launcher (`DirectMetalGUI`, `LauncherComponents`, `SystemHealthSheet`, `PrefixManagerSheet`, `ControllerMappingSheet`, `UpdatesAndRuntimeSheets`), modular CLI (`main.swift`, `LibraryAndProfilesCLI`, `RuntimeAndUpdateCLI`, `DoctorAndCompletionsCLI`), `GameLibraryManager`, `GameProfileRegistry`, `StorefrontScanner`, `GameArtworkManager`, `PEInspector`, `RuntimeManager`, `RuntimeLauncher`, `BasePrefixHydrator`, `ShaderCacheManager`, `AppUpdater`, and `SandboxAttestation` |
 | `graphics/dm_metal_core/` | Native Objective-C++ Metal 3/4 device probe, UMA zero-copy allocator (`MTLStorageModeShared`), and TBDR render-pass coalescer (`MTLStorageModeMemoryless`) |
 | `graphics/dm_d3d12_placed_guard/` | Win64 `d3d12.dll` shim (`d3d12_guard.c`) that promotes misaligned UE5 32 KiB placed-resource allocations to `CreateCommittedResource` |
 | `graphics/dm_vk_compat/` | Universal `arm64`/`x86_64` Vulkan layer (`VK_LAYER_DIRECTMETAL_mvk_compat`) for DXVK / KosmicKrisp / MoltenVK compatibility |
@@ -53,7 +53,7 @@ Run `make help` at any time to list all build, packaging, conformance, and clean
 | `shaders/dm_shader_cache/` | `MTLBinaryArchive` pipeline cache manager keyed by `(build_hash, gpu_family, macos_build)` |
 | `upscaling/` | `dm_metalfx_bridge` (`MTLFXSpatialScaler` / `MTLFXTemporalScaler`) and DLSS/FSR/XeSS interceptor shims |
 | `sandbox/` | Hardened Runtime entitlements (`DirectMetal.entitlements`), Seatbelt template (`directmetal_game.sb.tmpl`), `dm_sandbox`, and Secure Enclave Attestation v2 (`dm_attestation`) |
-| `tests/` | D3D11, D3D12, and SM 6.0 DXIL Engine conformance sources plus Windows 11 + NVIDIA RTX 3070 ground-truth captures (`tests/reference/rtx3070/`) |
+| `tests/` | Standalone native Swift unit test suite (`tests/swift/DirectMetalTests.swift`), Python packaging/validation unit tests (`tests/python/test_packaging_tools.py`), D3D11/D3D12/SM 6.0 DXIL Engine conformance sources, and Windows 11 + NVIDIA RTX 3070 ground-truth captures (`tests/reference/rtx3070/`) |
 | `tools/` | Pixel-accurate Wang-Bovik SSIM / PSNR visual diff harness (`diff_harness.py`, `test_diff_harness.py`) and `CAMetalLayer` frame-time probe (`dm_fps_probe`) |
 | `scripts/` | App bundler (`package_app.sh`), ULFO/ULMO DMG builder (`build_dmg.sh`), prefix dehydrator, hardlink deduplicator, Cloud Shader Cache publisher (`publish_shader_cache.sh`), and local CI runner (`run_ci_local.sh`) |
 
@@ -72,8 +72,10 @@ Community per-game presets live in `runtime/profiles/game_profiles.json` and are
    ./dist/DirectMetal-Lite.app/Contents/MacOS/DirectMetal run "/path/to/Game.exe" --perf-mode ultra --hud --sandbox
    ```
 3. **Add or update the entry** in `runtime/profiles/game_profiles.json` with clean 2-space indentation, matching by executable name (and optional `buildHash` when build-specific).
-4. **Validate JSON syntax & packaging:**
+4. **Validate profile schema, Python packaging tests & app build:**
    ```bash
+   python3 scripts/validate_profiles.py
+   python3 -m unittest discover -s tests/python -v
    make lint && make app-lite
    ```
 5. Include your Apple Silicon model, `sw_vers`, resolution, and measured FPS / 1%-low telemetry in your pull request (or open a **Game Compatibility Report** issue).
