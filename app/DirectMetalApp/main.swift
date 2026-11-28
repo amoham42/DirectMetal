@@ -80,6 +80,8 @@ private func printUsage() {
                                          Lint customEnv & extraArgs for blocked keys, Proton vars & syntax issues
       DirectMetal library preflight <id_or_title> [--json|--markdown]
                                          Run 7-point launch readiness & kernel anti-cheat pre-flight check
+      DirectMetal library report [--format markdown|csv] [--sort most-played|title|recent|favorites] [--output <path>]
+                                         Export a privacy-safe playtime & stability report (CSV or Markdown)
       DirectMetal library shortcut <id_or_title> [--format app|command] [--dir <path>]
                                          Export a native macOS Spotlight/Dock .app or .command launcher
       DirectMetal library play <id_or_title> [--warm-server [secs]|--no-warm-server] [-- <args...>]

@@ -395,6 +395,9 @@ struct DirectMetalTests {
             ("UserProfileOverlayManager: draft, validate, upsert/remove overlay & PR snippet", {
                 try testUserProfileOverlayManager(tempRoot: tempRoot)
             }),
+            ("LibraryReportExporter: CSV formula-injection guard, Markdown table, analytics join & privacy", {
+                try testLibraryReportExporter(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2876,5 +2879,51 @@ struct DirectMetalTests {
 
         let doc2 = try UserProfileOverlayManager.remove(id: "indie-space-sim", at: overlayURL)
         try expectEqual(doc2.profiles.count, 0)
+    }
+
+    private static func testLibraryReportExporter(tempRoot: URL) throws {
+        var g1 = GameLibraryEntry(
+            title: "Hades",
+            exePath: "/Users/secretuser/Games/Hades/x64/Hades.exe",
+            prefixName: "Hades",
+            perfProfile: .ultra,
+            playCount: 10,
+            totalPlaySeconds: 7200,
+            profileID: "hades",
+            isFavorite: true
+        )
+        g1.customEnv = "MY_TOKEN=very_secret_value_123"
+        let g2 = GameLibraryEntry(
+            title: "=CMD|' /C calc'!A0, \"Quoted\"",
+            exePath: "/Users/secretuser/Games/Evil/Evil.exe",
+            prefixName: "Evil",
+            playCount: 1,
+            totalPlaySeconds: 60
+        )
+        let history = [
+            LaunchHistoryEntry(gameID: g1.id, title: "Hades", exePath: g1.exePath, prefixName: "Hades", exitCode: 0, elapsedSeconds: 3600),
+            LaunchHistoryEntry(gameID: g1.id, title: "Hades", exePath: g1.exePath, prefixName: "Hades", exitCode: 0, elapsedSeconds: 3600),
+        ]
+
+        let report = LibraryReportExporter.buildReport(library: [g2, g1], history: history, sort: .mostPlayed)
+        try expectEqual(report.totalGames, 2)
+        try expectEqual(report.favoriteCount, 1)
+        try expectEqual(report.profiledCount, 1)
+        try expectEqual(report.rows[0].title, "Hades", "mostPlayed sort puts Hades first")
+        try expectEqual(report.rows[0].stabilityTier, "Rock Solid")
+        try expectEqual(report.rows[1].stabilityTier, "Untested")
+
+        let csv = LibraryReportExporter.formatCSV(report)
+        try expect(csv.contains("'=CMD"), "CSV must neutralize leading '=' formula injection")
+        try expect(!csv.contains("secretuser"), "CSV must omit exePath / username")
+        try expect(!csv.contains("very_secret_value_123"), "CSV must omit customEnv secrets")
+
+        let md = LibraryReportExporter.formatMarkdown(report)
+        try expect(md.contains("\\|"), "Markdown must escape pipe characters in game titles")
+        try expect(!md.contains("secretuser"), "Markdown must omit exePath / username")
+
+        let outURL = tempRoot.appendingPathComponent("reports/library.csv")
+        let written = try LibraryReportExporter.writeReport(report, format: .csv, to: outURL.path)
+        try expectEqual(try String(contentsOf: written, encoding: .utf8), csv)
     }
 }

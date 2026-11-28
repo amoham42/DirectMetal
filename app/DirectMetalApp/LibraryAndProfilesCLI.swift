@@ -60,7 +60,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|sync-profiles|lint|preflight|play|explain|shortcut|export|import)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|diff|reset-settings|sync-profiles|lint|preflight|report|play|explain|shortcut|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -428,6 +428,75 @@ func runLibraryCLI(args: [String]) -> Int32 {
             print(PreflightChecker.formatText(report))
         }
         return report.canLaunch ? 0 : 2
+
+    case "report":
+        var format: LibraryReportFormat = .markdown
+        var sort: LibraryReportSort = .mostPlayed
+        var outputPath: String? = nil
+        let asJSON = rest.contains("--json")
+        var idx = 0
+        while idx < rest.count {
+            let arg = rest[idx]
+            if arg == "--format", idx + 1 < rest.count {
+                let raw = rest[idx + 1].lowercased()
+                if raw == "csv" {
+                    format = .csv
+                } else if raw == "markdown" || raw == "md" {
+                    format = .markdown
+                } else {
+                    fputs("error: unknown report format \"\(rest[idx + 1])\" (expected: markdown|csv)\n", stderr)
+                    return 1
+                }
+                idx += 2
+            } else if arg == "--csv" {
+                format = .csv
+                idx += 1
+            } else if arg == "--markdown" || arg == "--md" {
+                format = .markdown
+                idx += 1
+            } else if arg == "--sort", idx + 1 < rest.count {
+                switch rest[idx + 1].lowercased() {
+                case "most-played", "mostplayed", "playtime": sort = .mostPlayed
+                case "title", "name", "alpha": sort = .title
+                case "recent", "last-played": sort = .recent
+                case "favorites", "favorites-first", "favoritesfirst": sort = .favoritesFirst
+                default:
+                    fputs("error: unknown report sort \"\(rest[idx + 1])\" (expected: most-played|title|recent|favorites)\n", stderr)
+                    return 1
+                }
+                idx += 2
+            } else if (arg == "--output" || arg == "-o"), idx + 1 < rest.count {
+                outputPath = (rest[idx + 1] as NSString).expandingTildeInPath
+                idx += 2
+            } else {
+                idx += 1
+            }
+        }
+        let entries = mgr.load()
+        let history = LaunchHistoryStore().load(limit: LaunchHistoryStore.maxEntries)
+        let report = LibraryReportExporter.buildReport(library: entries, history: history, sort: sort)
+        if let out = outputPath {
+            do {
+                let written = try LibraryReportExporter.writeReport(report, format: format, to: out)
+                if asJSON {
+                    printLibraryJSON(report)
+                } else {
+                    print("Wrote \(format.rawValue) library report (\(report.totalGames) games) to \(written.path)")
+                }
+                return 0
+            } catch {
+                fputs("library report failed: \(error.localizedDescription)\n", stderr)
+                return 1
+            }
+        }
+        if asJSON {
+            printLibraryJSON(report)
+        } else if format == .csv {
+            print(LibraryReportExporter.formatCSV(report), terminator: "")
+        } else {
+            print(LibraryReportExporter.formatMarkdown(report))
+        }
+        return 0
 
     case "shortcut":
         var format: ShortcutFormat = .app
