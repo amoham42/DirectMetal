@@ -536,6 +536,12 @@ struct GameDetailView: View {
                         .background(Color.blue.opacity(0.14), in: Capsule())
                 }
                 Spacer()
+                Button("Save as Profile…") {
+                    vm.openCustomProfileEditor()
+                }
+                .buttonStyle(.link)
+                .font(.caption)
+                .help("Save these tuned settings as a local game profile overlay or copy a validated community PR JSON snippet")
                 if diff.hasCustomizations {
                     Button(matchedProfile != nil ? "Reset to Preset" : "Reset to Defaults") {
                         vm.update(e.id) { ConfigDiffEngine.resetSettings(of: &$0, using: matchedProfile) }

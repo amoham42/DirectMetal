@@ -76,6 +76,8 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var showHUDCustomizerSheet: Bool = false
     // Interactive Launch Log Crash Triage sheet (⇧⌘L)
     @Published var showLogTriageSheet: Bool = false
+    // Custom local game profile overlay & PR snippet editor sheet
+    @Published var showCustomProfileEditorSheet: Bool = false
     // Detail vs Poster Gallery toggle
     @Published var showGalleryView: Bool = false
     // Sidebar quick filter + sort (sort order persists across launches)
@@ -159,7 +161,7 @@ final class DirectMetalViewModel: ObservableObject {
         showImportSheet || showUpdatesSheet || showControllerSheet || showSystemHealthSheet
             || showPrefixManagerSheet || showCommandPalette || showLaunchHistorySheet
             || showProfileBrowserSheet || showLaunchPlanSheet || showHUDCustomizerSheet
-            || showLogTriageSheet || showRemoveConfirm
+            || showLogTriageSheet || showCustomProfileEditorSheet || showRemoveConfirm
     }
 
     var canPlaySelected: Bool {
@@ -233,6 +235,13 @@ final class DirectMetalViewModel: ObservableObject {
     func openLogTriage() {
         guard !isPresentingModal || showLogTriageSheet else { return }
         showLogTriageSheet = true
+    }
+
+    /// Open the Custom Profile Overlay & Community PR Exporter sheet for the selected game.
+    func openCustomProfileEditor() {
+        guard selectedEntry != nil else { return }
+        guard !isPresentingModal || showCustomProfileEditorSheet else { return }
+        showCustomProfileEditorSheet = true
     }
 
     /// ⌘U: open the Updates sheet and re-check GitHub Releases.
@@ -738,6 +747,11 @@ struct DirectMetalContentView: View {
         .sheet(isPresented: $vm.showLogTriageSheet) {
             LaunchLogTriageSheet()
         }
+        .sheet(isPresented: $vm.showCustomProfileEditorSheet) {
+            if let entry = vm.selectedEntry {
+                CustomProfileEditorSheet(entry: entry, vm: vm)
+            }
+        }
         .confirmationDialog(
             "Remove \(vm.selectedEntry?.title ?? "game") from the library?",
             isPresented: $vm.showRemoveConfirm,
@@ -865,6 +879,8 @@ struct DirectMetalCommands: Commands {
             Button("Inspect Launch Plan…") { vm?.openLaunchPlan() }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
                 .disabled(vm?.selectedEntry == nil || (modal && vm?.showLaunchPlanSheet != true))
+            Button("Save / Export Custom Profile…") { vm?.openCustomProfileEditor() }
+                .disabled(vm?.selectedEntry == nil || (modal && vm?.showCustomProfileEditorSheet != true))
             Button("Re-inspect Executable") {
                 if let vm, let e = vm.selectedEntry { vm.reinspect(e) }
             }
