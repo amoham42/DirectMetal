@@ -22,6 +22,11 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
     var buildHash: String
     var playCount: Int
     var lastPlayedUtc: String?
+    /// Steam app ID discovered from the Steam library manifest / `steam_appid.txt` (artwork + profile matching).
+    var steamAppID: String?
+    /// Community game profile (`runtime/profiles/game_profiles.json`) that seeded this entry's settings.
+    var profileID: String?
+    var profileNote: String?
 
     init(
         id: String? = nil,
@@ -41,7 +46,10 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         detectedUpscalers: [String] = [],
         buildHash: String = "",
         playCount: Int = 0,
-        lastPlayedUtc: String? = nil
+        lastPlayedUtc: String? = nil,
+        steamAppID: String? = nil,
+        profileID: String? = nil,
+        profileNote: String? = nil
     ) {
         let canonical = GameLibraryManager.canonicalPath(exePath)
         self.id = id ?? GameLibraryManager.stableID(forCanonicalPath: canonical)
@@ -62,12 +70,16 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         self.buildHash = buildHash
         self.playCount = playCount
         self.lastPlayedUtc = lastPlayedUtc
+        self.steamAppID = steamAppID
+        self.profileID = profileID
+        self.profileNote = profileNote
     }
 
     enum CodingKeys: String, CodingKey {
         case id, title, exePath, prefixName, engine, perfProfile, dx9Backend, upscaleMode
         case retinaMode, enableHUD, enableSandbox, extraArgs, architecture, detectedAPIs
         case detectedUpscalers, buildHash, playCount, lastPlayedUtc
+        case steamAppID, profileID, profileNote
     }
 
     /// Tolerant decoder: missing or unknown values fall back to defaults so older/newer
@@ -96,6 +108,22 @@ struct GameLibraryEntry: Codable, Identifiable, Equatable {
         buildHash = opt(String.self, .buildHash) ?? ""
         playCount = opt(Int.self, .playCount) ?? 0
         lastPlayedUtc = opt(String.self, .lastPlayedUtc)
+        steamAppID = opt(String.self, .steamAppID) ?? opt(Int.self, .steamAppID).map(String.init)
+        profileID = opt(String.self, .profileID)
+        profileNote = opt(String.self, .profileNote)
+    }
+
+    /// Seeds per-game settings from a community profile. Only used for brand-new library entries so a
+    /// user-configured game is never overwritten.
+    mutating func apply(gameProfile p: GameProfile) {
+        if let v = p.perfProfile { perfProfile = v }
+        if let v = p.dx9Backend { dx9Backend = v }
+        if let v = p.upscaleMode { upscaleMode = v }
+        if let v = p.retinaMode { retinaMode = v }
+        if let v = p.enableHUD { enableHUD = v }
+        if let v = p.enableSandbox { enableSandbox = v }
+        profileID = p.id
+        profileNote = p.notes ?? "Community preset: \(p.title)"
     }
 
     /// Refresh auto-detected fields from a fresh PE inspection (user settings untouched).
@@ -140,6 +168,8 @@ final class GameLibraryManager {
     let libraryURL: URL
     let hiddenURL: URL
     let prefixRoot: URL
+    /// Community profiles (bundled/repo/embedded + the user's `<supportRoot>/game_profiles.json` overlay).
+    private(set) lazy var profileRegistry = GameProfileRegistry.load(supportRoot: supportRoot)
 
     init(supportRoot: URL? = nil, prefixRoot: URL? = nil) {
         let root = supportRoot ?? GameLibraryManager.defaultSupportRoot()
@@ -226,6 +256,9 @@ final class GameLibraryManager {
         if let idx = entries.firstIndex(where: { GameLibraryManager.canonicalPath($0.exePath) == canonical }) {
             entries[idx].apply(profile: profile)
             if let t = title, !t.isEmpty { entries[idx].title = t }
+            if entries[idx].steamAppID == nil {
+                entries[idx].steamAppID = SteamLibraryLocator.steamAppID(forExePath: canonical)
+            }
             result = entries[idx]
         } else {
             let prefixMap = previouslyUsedPrefixes()
@@ -235,6 +268,7 @@ final class GameLibraryManager {
                 prefixName: prefixMap[canonical] ?? GameLibraryManager.defaultPrefixName(exePath: canonical)
             )
             entry.apply(profile: profile)
+            applyNewEntryDefaults(&entry)
             entries.append(entry)
             result = entry
         }
@@ -243,6 +277,16 @@ final class GameLibraryManager {
         if hidden.remove(canonical) != nil { saveHidden(hidden) }
         save(entries)
         return result
+    }
+
+    /// Brand-new entries only: discover the Steam app ID and seed settings from the matching community profile.
+    private func applyNewEntryDefaults(_ entry: inout GameLibraryEntry) {
+        if entry.steamAppID == nil {
+            entry.steamAppID = SteamLibraryLocator.steamAppID(forExePath: entry.exePath)
+        }
+        if let p = profileRegistry.match(title: entry.title, exePath: entry.exePath, steamAppID: entry.steamAppID) {
+            entry.apply(gameProfile: p)
+        }
     }
 
     /// Removes a game (by id, id prefix, title, or exe name). Removed games are remembered so a
@@ -337,6 +381,10 @@ final class GameLibraryManager {
             if let prof = try? PEInspector.inspect(exePath: entries[i].exePath) {
                 entries[i].apply(profile: prof)
             }
+            // Metadata only (artwork); user settings and profile choices are never touched on refresh.
+            if entries[i].steamAppID == nil {
+                entries[i].steamAppID = SteamLibraryLocator.steamAppID(forExePath: entries[i].exePath)
+            }
         }
 
         for d in discoveries {
@@ -349,6 +397,7 @@ final class GameLibraryManager {
                 prefixName: prefixMap[c] ?? d.prefixName ?? GameLibraryManager.defaultPrefixName(exePath: c)
             )
             entry.apply(profile: prof)
+            applyNewEntryDefaults(&entry)
             indexByPath[c] = entries.count
             entries.append(entry)
         }
@@ -776,4 +825,436 @@ final class GameLibraryManager {
         if hasToken { args.append(cur) }
         return args
     }
+}
+
+// MARK: - Community game profiles
+
+/// One community preset from `runtime/profiles/game_profiles.json` (schema `directmetal.game_profiles.v1`).
+struct GameProfile: Codable, Identifiable, Equatable {
+    var id: String
+    var title: String
+    var matchTitles: [String]
+    var matchExeNames: [String]
+    var steamAppIds: [String]
+    var perfProfile: PerfProfile?
+    var dx9Backend: DX9Backend?
+    var upscaleMode: String?
+    var retinaMode: Bool?
+    var enableHUD: Bool?
+    var enableSandbox: Bool?
+    var status: String?
+    var notes: String?
+    var verifiedOn: [String]
+
+    static let upscaleModes: Set<String> = ["off", "quality", "balanced", "performance", "ultra_performance"]
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, matchTitles, matchExeNames, steamAppIds, perfProfile, dx9Backend, upscaleMode
+        case retinaMode, enableHUD, enableSandbox, status, notes, verifiedOn
+    }
+
+    /// Tolerant decoder: unknown enum values are ignored (field left unset) and app IDs may be numbers.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        func opt<T: Decodable>(_ type: T.Type, _ key: CodingKeys) -> T? {
+            (try? c.decodeIfPresent(type, forKey: key)) ?? nil
+        }
+        let rawID = (opt(String.self, .id) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawID.isEmpty else {
+            throw DecodingError.dataCorruptedError(forKey: .id, in: c, debugDescription: "game profile requires an id")
+        }
+        id = rawID
+        title = opt(String.self, .title) ?? rawID
+        matchTitles = opt([String].self, .matchTitles) ?? []
+        matchExeNames = opt([String].self, .matchExeNames) ?? []
+        if let ids = opt([String].self, .steamAppIds) {
+            steamAppIds = ids
+        } else {
+            steamAppIds = (opt([Int].self, .steamAppIds) ?? []).map(String.init)
+        }
+        perfProfile = opt(String.self, .perfProfile).flatMap { PerfProfile(rawValue: $0.lowercased()) }
+        dx9Backend = opt(String.self, .dx9Backend).flatMap { DX9Backend(rawValue: $0.lowercased()) }
+        upscaleMode = opt(String.self, .upscaleMode).map { $0.lowercased() }.flatMap { GameProfile.upscaleModes.contains($0) ? $0 : nil }
+        retinaMode = opt(Bool.self, .retinaMode)
+        enableHUD = opt(Bool.self, .enableHUD)
+        enableSandbox = opt(Bool.self, .enableSandbox)
+        status = opt(String.self, .status)
+        notes = opt(String.self, .notes)
+        verifiedOn = opt([String].self, .verifiedOn) ?? ["preset"]
+    }
+
+    /// `true` only when a maintainer actually ran the game (not a `["preset"]` starter template).
+    var isVerified: Bool {
+        verifiedOn.contains { !$0.isEmpty && $0.lowercased() != "preset" }
+    }
+
+    var verificationLabel: String {
+        isVerified ? "Tested on \(verifiedOn.filter { $0.lowercased() != "preset" }.joined(separator: ", "))"
+                   : "Community starter preset (untested)"
+    }
+}
+
+private struct GameProfileDocument: Codable {
+    var schema: String?
+    var profiles: [GameProfile]
+}
+
+/// Loads community game profiles: `DIRECTMETAL_GAME_PROFILES` -> `Bundle.main.resourceURL/game_profiles.json`
+/// -> `<cwd>/runtime/profiles/game_profiles.json` -> repo copy next to the executable -> embedded defaults,
+/// then overlays `<supportRoot>/game_profiles.json` (user/community additions; same id replaces).
+struct GameProfileRegistry {
+    static let schemaID = "directmetal.game_profiles.v1"
+    static let fileName = "game_profiles.json"
+
+    let profiles: [GameProfile]
+    /// Path of the base profile file, or `embedded`.
+    let source: String
+    /// Path of the user overlay when one was merged.
+    let userOverlay: String?
+
+    /// Process-wide registry for the GUI / CLI (default support root).
+    static let shared = GameProfileRegistry.load()
+
+    static func candidateURLs() -> [URL] {
+        let fm = FileManager.default
+        var out: [URL] = []
+        if let env = ProcessInfo.processInfo.environment["DIRECTMETAL_GAME_PROFILES"], !env.isEmpty {
+            out.append(URL(fileURLWithPath: (env as NSString).expandingTildeInPath))
+        }
+        if let res = Bundle.main.resourceURL {
+            out.append(res.appendingPathComponent(fileName))
+        }
+        out.append(URL(fileURLWithPath: fm.currentDirectoryPath, isDirectory: true)
+            .appendingPathComponent("runtime/profiles/\(fileName)"))
+        var probe = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath().deletingLastPathComponent()
+        for _ in 0..<5 {
+            out.append(probe.appendingPathComponent("runtime/profiles/\(fileName)"))
+            probe = probe.deletingLastPathComponent()
+        }
+        return out
+    }
+
+    static func load(supportRoot: URL? = nil) -> GameProfileRegistry {
+        let fm = FileManager.default
+        var base: [GameProfile]? = nil
+        var source = "embedded"
+        var seen = Set<String>()
+        for url in candidateURLs() where seen.insert(url.standardizedFileURL.path).inserted {
+            guard fm.fileExists(atPath: url.path), let data = try? Data(contentsOf: url),
+                  let profiles = decode(data) else { continue }
+            base = profiles
+            source = url.standardizedFileURL.path
+            break
+        }
+        var profiles = base ?? decode(Data(embeddedJSON.utf8)) ?? []
+
+        let overlayURL = (supportRoot ?? GameLibraryManager.defaultSupportRoot()).appendingPathComponent(fileName)
+        var overlayPath: String? = nil
+        if fm.fileExists(atPath: overlayURL.path), let data = try? Data(contentsOf: overlayURL), let extra = decode(data) {
+            let ids = Set(extra.map(\.id))
+            profiles = extra + profiles.filter { !ids.contains($0.id) }
+            overlayPath = overlayURL.path
+        }
+        return GameProfileRegistry(profiles: profiles, source: source, userOverlay: overlayPath)
+    }
+
+    /// Decodes a profile document; `nil` for a wrong schema or malformed JSON (bad individual profiles are skipped).
+    static func decode(_ data: Data) -> [GameProfile]? {
+        guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (obj["schema"] as? String) == schemaID,
+              let rawProfiles = obj["profiles"] as? [Any] else { return nil }
+        var out: [GameProfile] = []
+        var ids = Set<String>()
+        for raw in rawProfiles {
+            guard JSONSerialization.isValidJSONObject(raw),
+                  let d = try? JSONSerialization.data(withJSONObject: raw),
+                  let p = try? JSONDecoder().decode(GameProfile.self, from: d),
+                  ids.insert(p.id).inserted else { continue }
+            out.append(p)
+        }
+        return out
+    }
+
+    func profile(id: String?) -> GameProfile? {
+        guard let id, !id.isEmpty else { return nil }
+        return profiles.first { $0.id == id }
+    }
+
+    /// Steam app ID match first, then executable name, then normalized title.
+    func match(title: String, exePath: String, steamAppID: String?) -> GameProfile? {
+        if let app = steamAppID, !app.isEmpty, let p = profiles.first(where: { $0.steamAppIds.contains(app) }) {
+            return p
+        }
+        let exe = URL(fileURLWithPath: exePath).lastPathComponent.lowercased()
+        if !exe.isEmpty, let p = profiles.first(where: { $0.matchExeNames.contains { $0.lowercased() == exe } }) {
+            return p
+        }
+        let norm = GameProfileRegistry.normalizedTitle(title)
+        guard !norm.isEmpty else { return nil }
+        return profiles.first { p in
+            (p.matchTitles + [p.title]).contains { GameProfileRegistry.normalizedTitle($0) == norm }
+        }
+    }
+
+    /// "Need For Speed - Hot Pursuit" -> "needforspeedhotpursuit"
+    static func normalizedTitle(_ s: String) -> String {
+        String(s.lowercased().unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }.map(Character.init))
+    }
+
+    /// Fallback copy of `runtime/profiles/game_profiles.json` used when no profile file ships next to the binary.
+    static let embeddedJSON = #"""
+{
+ "schema": "directmetal.game_profiles.v1",
+ "profiles": [
+  {
+   "id": "hades",
+   "title": "Hades",
+   "matchTitles": [
+    "Hades"
+   ],
+   "matchExeNames": [
+    "Hades.exe"
+   ],
+   "steamAppIds": [
+    "1145360"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "auto",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": true,
+   "status": "playable",
+   "notes": "D3D11 via ARM64EC + FEX + Mullion. Measured 120 FPS locked (ProMotion) at native Retina 1512x982 with 0 Seatbelt denials inside the sandbox; MetalFX Quality also measured (111 FPS 1%-low).",
+   "verifiedOn": [
+    "M1 Pro (macOS 26.1)"
+   ]
+  },
+  {
+   "id": "reanimal",
+   "title": "REANIMAL",
+   "matchTitles": [
+    "REANIMAL"
+   ],
+   "matchExeNames": [
+    "REANIMAL.exe"
+   ],
+   "steamAppIds": [],
+   "perfProfile": "ultra",
+   "dx9Backend": "auto",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": true,
+   "status": "playable",
+   "notes": "Unreal Engine 5 D3D12 (FL 12_2) via ARM64EC + FEX + Mullion with the bundled D3D12 placed-resource guard. In-game DLSS is routed to Metal 4 MetalFX Temporal automatically; verified with --sandbox --perf-mode ultra.",
+   "verifiedOn": [
+    "M1 Pro (macOS 27.2.1)"
+   ]
+  },
+  {
+   "id": "need-for-speed-hot-pursuit",
+   "title": "Need for Speed: Hot Pursuit",
+   "matchTitles": [
+    "Need for Speed: Hot Pursuit",
+    "Need For Speed - Hot Pursuit",
+    "Need for Speed Hot Pursuit",
+    "NFS Hot Pursuit"
+   ],
+   "matchExeNames": [
+    "NFS11.exe"
+   ],
+   "steamAppIds": [
+    "47870"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "wined3d",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": false,
+   "status": "playable",
+   "notes": "32-bit D3D9 on native ARM64EC + FEX (macOS 26.4+) with WineMetalGL (wined3d -> Metal): avoids DXVK ddraw freezes and green-tinted FMVs. 22-minute live session, exit=0, zero Rosetta 2.",
+   "verifiedOn": [
+    "M1 Pro (macOS 27.2.1)"
+   ]
+  },
+  {
+   "id": "team-fortress-2",
+   "title": "Team Fortress 2",
+   "matchTitles": [
+    "Team Fortress 2",
+    "TF2"
+   ],
+   "matchExeNames": [
+    "tf_win64.exe",
+    "tf.exe"
+   ],
+   "steamAppIds": [
+    "440"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "dxvk",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": false,
+   "status": "playable",
+   "notes": "64-bit Source D3D9 via native ARM64X DXVK 3.1.1 (MetalVulkan) -> KosmicKrisp Vulkan -> Metal. Measured 14-19% GPU load (down from 68%), zero Rosetta 2. Online play requires a Steam login.",
+   "verifiedOn": [
+    "M1 Pro (macOS 27.2.1)"
+   ]
+  },
+  {
+   "id": "prince-of-persia-the-forgotten-sands",
+   "title": "Prince of Persia: The Forgotten Sands",
+   "matchTitles": [
+    "Prince of Persia: The Forgotten Sands",
+    "Prince of Persia Forgotten Sands",
+    "Prince of Persia - The Forgotten Sands",
+    "Prince of Persia: Forgotten Sands"
+   ],
+   "matchExeNames": [],
+   "steamAppIds": [
+    "33320"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "wined3d",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": false,
+   "status": "needs-steam-login",
+   "notes": "32-bit D3D9 with SteamStub + Ubisoft DRM: launches, then shows a \"Steam Error\" dialog unless the Windows Steam client in the DirectMetal steam prefix is signed in (no DRM bypass). Not matched by exe name because \"Prince of Persia.exe\" is shared with other titles.",
+   "verifiedOn": [
+    "M1 Pro (macOS 26.1)"
+   ]
+  },
+  {
+   "id": "cyberpunk-2077",
+   "title": "Cyberpunk 2077",
+   "matchTitles": [
+    "Cyberpunk 2077"
+   ],
+   "matchExeNames": [
+    "Cyberpunk2077.exe"
+   ],
+   "steamAppIds": [
+    "1091500"
+   ],
+   "perfProfile": "ultra",
+   "dx9Backend": "auto",
+   "upscaleMode": "performance",
+   "retinaMode": true,
+   "enableHUD": true,
+   "enableSandbox": false,
+   "status": "preset",
+   "notes": "Starter template (untested): REDengine 4 D3D12. Heavy title; begins with Ultra perf mode and MetalFX Performance, HUD on to judge frame pacing.",
+   "verifiedOn": [
+    "preset"
+   ]
+  },
+  {
+   "id": "elden-ring",
+   "title": "Elden Ring",
+   "matchTitles": [
+    "Elden Ring",
+    "ELDEN RING"
+   ],
+   "matchExeNames": [
+    "eldenring.exe"
+   ],
+   "steamAppIds": [
+    "1245620"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "auto",
+   "upscaleMode": "quality",
+   "retinaMode": true,
+   "enableHUD": true,
+   "enableSandbox": false,
+   "status": "preset",
+   "notes": "Starter template (untested): D3D12. Easy Anti-Cheat is not supported, so only offline play via eldenring.exe can work; online features will not.",
+   "verifiedOn": [
+    "preset"
+   ]
+  },
+  {
+   "id": "baldurs-gate-3",
+   "title": "Baldur's Gate 3",
+   "matchTitles": [
+    "Baldur's Gate 3",
+    "Baldurs Gate 3",
+    "BG3"
+   ],
+   "matchExeNames": [
+    "bg3_dx11.exe",
+    "bg3.exe"
+   ],
+   "steamAppIds": [
+    "1086940"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "auto",
+   "upscaleMode": "quality",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": false,
+   "status": "preset",
+   "notes": "Starter template (untested): point the library at bin/bg3_dx11.exe (D3D11) - bg3.exe is the Vulkan renderer, which DirectMetal's DirectX path does not accelerate.",
+   "verifiedOn": [
+    "preset"
+   ]
+  },
+  {
+   "id": "hollow-knight",
+   "title": "Hollow Knight",
+   "matchTitles": [
+    "Hollow Knight"
+   ],
+   "matchExeNames": [
+    "hollow_knight.exe"
+   ],
+   "steamAppIds": [
+    "367520"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "auto",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": true,
+   "status": "preset",
+   "notes": "Starter template (untested): lightweight Unity D3D11 2D title; native Retina without upscaling, sandboxed by default.",
+   "verifiedOn": [
+    "preset"
+   ]
+  },
+  {
+   "id": "celeste",
+   "title": "Celeste",
+   "matchTitles": [
+    "Celeste"
+   ],
+   "matchExeNames": [
+    "Celeste.exe"
+   ],
+   "steamAppIds": [
+    "504230"
+   ],
+   "perfProfile": "balanced",
+   "dx9Backend": "auto",
+   "upscaleMode": "off",
+   "retinaMode": true,
+   "enableHUD": false,
+   "enableSandbox": true,
+   "status": "preset",
+   "notes": "Starter template (untested): lightweight 2D pixel-art title; native Retina without upscaling, sandboxed by default.",
+   "verifiedOn": [
+    "preset"
+   ]
+  }
+ ]
+}
+"""#
 }
