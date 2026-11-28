@@ -12,7 +12,7 @@ import unittest
 import numpy as np
 from PIL import Image
 
-from diff_harness import compute_image_metrics, evaluate_pair, render_compatibility_markdown
+from diff_harness import compute_image_metrics, evaluate_pair, render_compatibility_markdown, save_diff_visualization
 
 
 class TestDiffHarness(unittest.TestCase):
@@ -162,6 +162,23 @@ class TestDiffHarness(unittest.TestCase):
             rep_eng = evaluate_pair(ref_dir, cand_dir, save_diffs_dir=diffs_dir)
             self.assertIn("D3D12-Engine", rep_eng["apis"])
             self.assertEqual(rep_eng["apis"]["D3D12-Engine"]["passed"], 1)
+
+    def test_diff_heatmap_high_error_no_uint8_wrap(self) -> None:
+        black = Image.fromarray(np.zeros((16, 16, 3), dtype=np.uint8), mode="RGB")
+        white = Image.fromarray(np.full((16, 16, 3), 255, dtype=np.uint8), mode="RGB")
+        with tempfile.TemporaryDirectory() as td:
+            out = Path(td) / "heat.png"
+            save_diff_visualization(black, white, out)
+            strip = np.asarray(Image.open(out).convert("RGB"))
+            # Right third is the error heatmap; max diff must saturate to pure white (255,255,255)
+            heatmap = strip[:, 32:, :]
+            self.assertTrue(np.all(heatmap == 255), f"expected saturated white heatmap, got min={heatmap.min()}")
+
+    def test_small_image_metrics(self) -> None:
+        small = Image.fromarray(np.full((8, 8, 4), 128, dtype=np.uint8), mode="RGBA")
+        m = compute_image_metrics(small, small)
+        self.assertEqual(m["mse"], 0.0)
+        self.assertAlmostEqual(m["ssim"], 1.0, places=9)
 
 
 if __name__ == "__main__":

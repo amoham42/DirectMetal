@@ -26,11 +26,13 @@ _GAUSS_1D = _gaussian_kernel_1d(11, 1.5)
 
 
 def _gaussian_blur_valid_2d(arr: np.ndarray, kernel: np.ndarray = _GAUSS_1D) -> np.ndarray:
-    """Separable 2D valid convolution in pure NumPy (matches Wang-Bovik SSIM)."""
-    win_h = np.lib.stride_tricks.sliding_window_view(arr, len(kernel), axis=1)
-    horiz = np.tensordot(win_h, kernel, axes=([2], [0]))
-    win_v = np.lib.stride_tricks.sliding_window_view(horiz, len(kernel), axis=0)
-    return np.tensordot(win_v, kernel, axes=([2], [0]))
+    """Separable 2D valid convolution in pure NumPy (matches Wang-Bovik SSIM).
+    Supports both 2D `(H, W)` and 3D `(H, W, C)` arrays in a single vectorized pass."""
+    klen = len(kernel)
+    win_h = np.lib.stride_tricks.sliding_window_view(arr, klen, axis=1)
+    horiz = np.tensordot(win_h, kernel, axes=([-1], [0]))
+    win_v = np.lib.stride_tricks.sliding_window_view(horiz, klen, axis=0)
+    return np.tensordot(win_v, kernel, axes=([-1], [0]))
 
 
 def compute_image_metrics(ref_img: Image.Image, cand_img: Image.Image) -> dict[str, Any]:
@@ -54,27 +56,26 @@ def compute_image_metrics(ref_img: Image.Image, cand_img: Image.Image) -> dict[s
     c1 = (0.01 * 255.0) ** 2
     c2 = (0.03 * 255.0) ** 2
 
-    ssim_channels = []
-    for ch in range(3):
-        x = ref_rgb[:, :, ch]
-        y = cand_rgb[:, :, ch]
-        mu_x = _gaussian_blur_valid_2d(x)
-        mu_y = _gaussian_blur_valid_2d(y)
+    min_dim = min(ref_rgb.shape[0], ref_rgb.shape[1])
+    if min_dim >= 11:
+        kernel = _GAUSS_1D
+    else:
+        win = min_dim if (min_dim % 2 == 1) else max(1, min_dim - 1)
+        kernel = _gaussian_kernel_1d(win, 1.5)
 
-        mu_x2 = mu_x * mu_x
-        mu_y2 = mu_y * mu_y
-        mu_xy = mu_x * mu_y
+    mu_x = _gaussian_blur_valid_2d(ref_rgb, kernel)
+    mu_y = _gaussian_blur_valid_2d(cand_rgb, kernel)
+    mu_x2 = mu_x * mu_x
+    mu_y2 = mu_y * mu_y
+    mu_xy = mu_x * mu_y
 
-        sigma_x2 = np.maximum(0.0, _gaussian_blur_valid_2d(x * x) - mu_x2)
-        sigma_y2 = np.maximum(0.0, _gaussian_blur_valid_2d(y * y) - mu_y2)
-        sigma_xy = _gaussian_blur_valid_2d(x * y) - mu_xy
+    sigma_x2 = np.maximum(0.0, _gaussian_blur_valid_2d(ref_rgb * ref_rgb, kernel) - mu_x2)
+    sigma_y2 = np.maximum(0.0, _gaussian_blur_valid_2d(cand_rgb * cand_rgb, kernel) - mu_y2)
+    sigma_xy = _gaussian_blur_valid_2d(ref_rgb * cand_rgb, kernel) - mu_xy
 
-        num = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
-        den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
-        ssim_map = num / den
-        ssim_channels.append(float(np.mean(ssim_map)))
-
-    ssim = float(sum(ssim_channels) / len(ssim_channels))
+    num = (2.0 * mu_xy + c1) * (2.0 * sigma_xy + c2)
+    den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
+    ssim = float(np.mean(num / den))
     return {
         "mse": mse,
         "psnr_db": psnr,
@@ -92,13 +93,13 @@ def save_diff_visualization(
     ref_rgb = np.asarray(ref_img.convert("RGB"), dtype=np.uint8)
     cand_rgb = np.asarray(cand_img.convert("RGB"), dtype=np.uint8)
     abs_diff = np.abs(ref_rgb.astype(np.float64) - cand_rgb.astype(np.float64))
-    mag = np.clip(np.max(abs_diff, axis=2) * amp, 0.0, 255.0).astype(np.uint8)
+    mag = np.clip(np.max(abs_diff, axis=2) * amp, 0.0, 255.0).astype(np.int32)
 
-    # Simple high-contrast heatmap (black -> red -> yellow -> white)
+    # High-contrast heatmap (black -> red -> yellow -> white); int32 prevents uint8 wraparound
     heat = np.zeros_like(ref_rgb)
     heat[:, :, 0] = np.clip(mag * 2, 0, 255).astype(np.uint8)
-    heat[:, :, 1] = np.clip((mag.astype(np.int32) - 85) * 2, 0, 255).astype(np.uint8)
-    heat[:, :, 2] = np.clip((mag.astype(np.int32) - 170) * 3, 0, 255).astype(np.uint8)
+    heat[:, :, 1] = np.clip((mag - 85) * 2, 0, 255).astype(np.uint8)
+    heat[:, :, 2] = np.clip((mag - 170) * 3, 0, 255).astype(np.uint8)
 
     strip = np.concatenate([ref_rgb, cand_rgb, heat], axis=1)
     out_path.parent.mkdir(parents=True, exist_ok=True)
