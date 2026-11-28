@@ -26,6 +26,17 @@ All performance and visual-conformance measurements in DirectMetal are produced 
 | **MetalFX Spatial Quality (`720p→1080p`)** | 1.5× upscale | `281.0 FPS` (**`1.72×`**) | — | `PSNR 51.23 dB`, `SSIM 0.9941` |
 | **MetalFX Temporal Quality (`720p→1080p`)** | 1.5× temporal | `180.5 FPS` (**`1.10×`**) | — | `PSNR 55.95 dB`, `SSIM 0.9991` |
 
+### Built-In `DirectMetal bench` Scorecard (M1 Pro vs. Apple M4)
+
+Measured with `DirectMetal bench --markdown` (zero external binaries; runs in `<1 s`):
+
+| Built-In Benchmark | Apple M1 Pro (`Apple7`, 200 GB/s UMA) | Apple M4 (`Apple9`, 120 GB/s UMA) |
+| :--- | ---: | ---: |
+| **Metal UMA Compute Bandwidth** (`48 MiB/pass`, verified) | **`94.1 GB/s`** (`0.53 ms/pass`) | **`43.9 GB/s`** (`1.15 ms/pass`) |
+| **APFS CoW Prefix Clone** (`48 files`, median of 5) | **`0.478 ms`** (`min 0.450 ms`) | **`0.332 ms`** (`min 0.295 ms`) |
+| **ARMv8 SHA-256 Verification Speed** (`32 MiB` stream) | **`2,275.0 MiB/s`** (`14.1 ms`) | **`2,957.2 MiB/s`** (`10.8 ms`) |
+| **PE32+ Cached Inspection** (`50` stat-validated hits) | **`28.1 µs/call`** | **`19.9 µs/call`** |
+
 ## 3. Packaging & Delivery Size Benchmarks
 
 | Artifact | Uncompressed `.app` | Compressed `.dmg` | Install / Hydration Time |
