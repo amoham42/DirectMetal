@@ -59,7 +59,7 @@ private struct ArtworkReport: Encodable {
 func runLibraryCLI(args: [String]) -> Int32 {
     let mgr = GameLibraryManager()
     guard let sub = args.first else {
-        fputs("error: library requires subcommand (list|scan|add|remove|show|set|play)\n", stderr)
+        fputs("error: library requires subcommand (list|scan|add|remove|show|artwork|set|play|export|import)\n", stderr)
         return 1
     }
     let rest = Array(args.dropFirst())
@@ -261,6 +261,46 @@ func runLibraryCLI(args: [String]) -> Int32 {
             return res.exitCode
         } catch {
             fputs("library play failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "export":
+        guard let outPath = rest.first, !outPath.isEmpty else {
+            fputs("error: library export requires <backup.json>\n", stderr)
+            return 1
+        }
+        do {
+            let outURL = URL(fileURLWithPath: (outPath as NSString).expandingTildeInPath)
+            let backup = try mgr.exportBackup(to: outURL)
+            if rest.contains("--json") {
+                printLibraryJSON(backup)
+            } else {
+                print("Exported \(backup.games.count) game(s) and \(backup.controllerProfiles.count) controller profile(s) to \(outURL.path)")
+            }
+            return 0
+        } catch {
+            fputs("library export failed: \(error)\n", stderr)
+            return 1
+        }
+
+    case "import":
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        guard let inPath = positional.first, !inPath.isEmpty else {
+            fputs("error: library import requires <backup.json> [--overwrite]\n", stderr)
+            return 1
+        }
+        let overwrite = rest.contains("--overwrite")
+        do {
+            let inURL = URL(fileURLWithPath: (inPath as NSString).expandingTildeInPath)
+            let summary = try mgr.importBackup(from: inURL, overwriteExisting: overwrite)
+            if rest.contains("--json") {
+                printLibraryJSON(summary)
+            } else {
+                print("Imported backup: added=\(summary.added) updated=\(summary.updated) skipped=\(summary.skipped) controller_profiles=\(summary.controllerProfilesRestored)")
+            }
+            return 0
+        } catch {
+            fputs("library import failed: \(error)\n", stderr)
             return 1
         }
 

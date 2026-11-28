@@ -320,6 +320,9 @@ struct DirectMetalTests {
             ("DirectMetalBenchmark: built-in UMA, APFS CoW, SHA-256 & PE microbenchmarks run cleanly", {
                 try testBuiltInBenchmarkScorecard()
             }),
+            ("GameLibraryManager: portable library + controller backup export/import round-trip", {
+                try testLibraryBackupExportAndImport(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -1625,5 +1628,52 @@ struct DirectMetalTests {
         for m in card.metrics {
             try expect(m.value > 0, "benchmark \(m.id) should produce positive value, got \(m.value) (\(m.detail))")
         }
+    }
+
+    private static func testLibraryBackupExportAndImport(tempRoot: URL) throws {
+        let dir = tempRoot.appendingPathComponent("backup_roundtrip", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let exe = dir.appendingPathComponent("BackupGame.exe")
+        try makeSyntheticPE(is64Bit: true, importedDLLs: ["d3d12.dll"]).write(to: exe)
+
+        let srcSupport = dir.appendingPathComponent("src_support", isDirectory: true)
+        let dstSupport = dir.appendingPathComponent("dst_support", isDirectory: true)
+        let prefixes = dir.appendingPathComponent("prefixes", isDirectory: true)
+        let srcMgr = GameLibraryManager(supportRoot: srcSupport, prefixRoot: prefixes)
+        var added = try srcMgr.addOrUpdate(exePath: exe.path, customTitle: "Backup Game")
+        added.perfProfile = .ultra
+        added.upscaleMode = "quality"
+        added.totalPlaySeconds = 7200
+        srcMgr.save([added])
+
+        let ctrlProfile = ControllerMappingProfile.forPreset(.nintendoSwap)
+        try ControllerMappingManager.setProfile(ctrlProfile, for: added.id)
+
+        let backupFile = dir.appendingPathComponent("directmetal_backup.json")
+        let exported = try srcMgr.exportBackup(to: backupFile)
+        try expectEqual(exported.games.count, 1)
+        try expectEqual(exported.controllerProfiles[added.id]?.preset, .nintendoSwap)
+
+        // Reset controller profiles, then restore into a fresh library support dir
+        try ControllerMappingManager.resetProfile(for: added.id)
+        let dstMgr = GameLibraryManager(supportRoot: dstSupport, prefixRoot: prefixes)
+        let summary1 = try dstMgr.importBackup(from: backupFile, overwriteExisting: false)
+        try expectEqual(summary1.added, 1)
+        try expectEqual(summary1.skipped, 0)
+        try expect(summary1.controllerProfilesRestored >= 1, "expected controller profile restored")
+        let restored = try expectNotNil(dstMgr.load().first)
+        try expectEqual(restored.perfProfile, .ultra)
+        try expectEqual(restored.upscaleMode, "quality")
+        try expectEqual(restored.totalPlaySeconds, 7200)
+        try expectEqual(ControllerMappingManager.storedProfile(for: added.id)?.preset, .nintendoSwap)
+
+        // Second import without --overwrite must skip existing entry
+        let summary2 = try dstMgr.importBackup(from: backupFile, overwriteExisting: false)
+        try expectEqual(summary2.added, 0)
+        try expectEqual(summary2.skipped, 1)
+
+        // Import with --overwrite must update existing entry
+        let summary3 = try dstMgr.importBackup(from: backupFile, overwriteExisting: true)
+        try expectEqual(summary3.updated, 1)
     }
 }

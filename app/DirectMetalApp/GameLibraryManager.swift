@@ -230,6 +230,91 @@ final class GameLibraryManager {
         try? data.write(to: libraryURL, options: .atomic)
     }
 
+    // MARK: Portable Backup & Restore
+
+    struct LibraryBackup: Codable {
+        static let schemaID = "directmetal.library_backup.v1"
+        let schema: String
+        let appVersion: String
+        let exportedUtc: String
+        let games: [GameLibraryEntry]
+        let controllerProfiles: [String: ControllerMappingProfile]
+    }
+
+    struct BackupImportSummary: Codable {
+        let added: Int
+        let updated: Int
+        let skipped: Int
+        let controllerProfilesRestored: Int
+    }
+
+    /// Exports all saved game settings and controller remapping profiles to a single portable JSON file.
+    @discardableResult
+    func exportBackup(to url: URL) throws -> LibraryBackup {
+        let backup = LibraryBackup(
+            schema: LibraryBackup.schemaID,
+            appVersion: RuntimeLauncher.appVersion(),
+            exportedUtc: GameLibraryManager.isoFormatter.string(from: Date()),
+            games: load(),
+            controllerProfiles: ControllerMappingManager.loadAll()
+        )
+        let enc = JSONEncoder()
+        enc.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        let data = try enc.encode(backup)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: url, options: .atomic)
+        return backup
+    }
+
+    /// Imports games and controller profiles from a `directmetal.library_backup.v1` JSON snapshot.
+    /// Existing games are preserved unless `overwriteExisting` is `true`.
+    func importBackup(from url: URL, overwriteExisting: Bool = false) throws -> BackupImportSummary {
+        let data = try Data(contentsOf: url)
+        let backup = try JSONDecoder().decode(LibraryBackup.self, from: data)
+        guard backup.schema == LibraryBackup.schemaID else {
+            throw GameLibraryError.notAnExecutable("Unsupported library backup schema: \(backup.schema)")
+        }
+        var current = load()
+        var byPath = Dictionary(uniqueKeysWithValues: current.enumerated().map {
+            (GameLibraryManager.canonicalPath($1.exePath), $0)
+        })
+        var added = 0
+        var updated = 0
+        var skipped = 0
+        for g in backup.games {
+            let key = GameLibraryManager.canonicalPath(g.exePath)
+            guard !key.isEmpty else { skipped += 1; continue }
+            if let idx = byPath[key] {
+                if overwriteExisting {
+                    current[idx] = g
+                    updated += 1
+                } else {
+                    skipped += 1
+                }
+            } else {
+                byPath[key] = current.count
+                current.append(g)
+                added += 1
+            }
+        }
+        save(current)
+
+        var restoredControllers = 0
+        for (key, profile) in backup.controllerProfiles {
+            if !overwriteExisting, ControllerMappingManager.storedProfile(for: key) != nil {
+                continue
+            }
+            try ControllerMappingManager.setProfile(profile, for: key)
+            restoredControllers += 1
+        }
+        return BackupImportSummary(
+            added: added,
+            updated: updated,
+            skipped: skipped,
+            controllerProfilesRestored: restoredControllers
+        )
+    }
+
     private func loadHidden() -> Set<String> {
         guard let data = try? Data(contentsOf: hiddenURL),
               let paths = try? JSONDecoder().decode([String].self, from: data)
