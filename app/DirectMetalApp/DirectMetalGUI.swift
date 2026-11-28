@@ -120,7 +120,11 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var gpuInfo: MetalHardwareInfo = RuntimeLauncher.queryHardwareInfo()
     @Published var runtimePaths: RuntimePaths? = try? RuntimeLauncher.resolveRuntimePaths()
     @Published var library: [GameLibraryEntry] = []
-    @Published var selectedID: String?
+    @Published var selectedID: String? {
+        didSet {
+            if selectedID != oldValue { prewarmSelectedPrefix() }
+        }
+    }
     @Published var searchText: String = ""
     @Published var prefixes: [String] = []
     @Published var cacheSummary: ShaderCacheSummary = RuntimeLauncher.queryShaderCache()
@@ -136,6 +140,13 @@ final class DirectMetalViewModel: ObservableObject {
     @Published var importSource: String = ""
     @Published var importAllowCrossBuild: Bool = false
     @Published var showRemoveConfirm: Bool = false
+    // Lite first-run runtime installation
+    @Published var runtimeInstallRunning: Bool = false
+    @Published var runtimeInstallPhase: String = ""
+    @Published var runtimeInstallFraction: Double = -1
+    @Published var runtimeInstallBytes: Int64 = 0
+    @Published var runtimeInstallTotal: Int64 = -1
+    @Published var runtimeInstallError: String?
 
     private let manager = GameLibraryManager()
 
@@ -143,10 +154,14 @@ final class DirectMetalViewModel: ObservableObject {
         library = manager.load()
         selectedID = library.max(by: { ($0.lastPlayedUtc ?? "") < ($1.lastPlayedUtc ?? "") })?.id ?? library.first?.id
         refreshPrefixes()
-        runAttestationCheck()
+        // Let the window appear first: attestation spawns subprocesses / Secure Enclave work.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            self?.runAttestationCheck()
+        }
         if library.isEmpty {
             scanLibrary()
         }
+        prewarmSelectedPrefix()
     }
 
     // MARK: Derived state
@@ -338,7 +353,8 @@ final class DirectMetalViewModel: ObservableObject {
                     dx9Backend: current.dx9Backend,
                     perfProfile: current.perfProfile,
                     retinaMode: current.retinaMode,
-                    sandboxed: current.enableSandbox
+                    sandboxed: current.enableSandbox,
+                    warmServerSeconds: 180
                 )
                 DispatchQueue.main.async {
                     self.runningGameID = nil
@@ -355,6 +371,64 @@ final class DirectMetalViewModel: ObservableObject {
                     self.statusMessage = "Launch failed: \(error)"
                 }
             }
+        }
+    }
+
+    // MARK: Runtime install + warm launch pool
+
+    /// One-click DirectMetal-Lite runtime install: streaming download, SHA-256, ditto, codesign, atomic install.
+    func installRuntime() {
+        guard !runtimeInstallRunning else { return }
+        runtimeInstallRunning = true
+        runtimeInstallError = nil
+        runtimeInstallPhase = "Preparing…"
+        runtimeInstallFraction = -1
+        runtimeInstallBytes = 0
+        runtimeInstallTotal = -1
+        statusMessage = "Installing DirectMetal runtime \(RuntimeManager.arm64ecVersion)…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let root = try RuntimeManager.installARM64ECRuntime { p in
+                    DispatchQueue.main.async {
+                        self.runtimeInstallPhase = p.message
+                        self.runtimeInstallFraction = p.fraction
+                        if p.bytesReceived > 0 || p.phase == .downloading {
+                            self.runtimeInstallBytes = p.bytesReceived
+                            self.runtimeInstallTotal = p.totalBytes
+                        }
+                    }
+                }
+                let paths = try? RuntimeLauncher.resolveRuntimePaths()
+                DispatchQueue.main.async {
+                    self.runtimeInstallRunning = false
+                    self.runtimePaths = paths
+                    self.statusMessage = paths != nil
+                        ? "DirectMetal runtime installed at \(root.path) — Play is ready."
+                        : "Runtime installed at \(root.path), but it could not be resolved."
+                    self.prewarmSelectedPrefix()
+                }
+            } catch {
+                let msg = "\(error)"
+                DispatchQueue.main.async {
+                    self.runtimeInstallRunning = false
+                    self.runtimeInstallError = msg
+                    self.statusMessage = "Runtime install failed: \(msg)"
+                }
+            }
+        }
+    }
+
+    /// Fire-and-forget warm wineserver for the selected game's existing prefix => Play starts in ~220 ms.
+    func prewarmSelectedPrefix() {
+        guard runningGameID == nil,
+              let entry = selectedEntry,
+              entry.engine != .rosetta,
+              !entry.enableSandbox,
+              let ws = runtimePaths?.arm64ecWineserverBin else { return }
+        let prefix = PrefixManager().prefixURL(named: entry.launchPrefixName)
+        DispatchQueue.global(qos: .utility).async {
+            guard FileManager.default.fileExists(atPath: prefix.path) else { return }
+            WineserverPool.warm(prefixURL: prefix, wineserverBin: ws, persistSeconds: 180)
         }
     }
 
@@ -458,7 +532,7 @@ final class DirectMetalViewModel: ObservableObject {
         guard !attestationRunning else { return }
         attestationRunning = true
         let sandbox = selectedEntry?.enableSandbox ?? false
-        DispatchQueue.global(qos: .userInitiated).async {
+        DispatchQueue.global(qos: .utility).async {
             let st = DirectMetalAttestation.collectStatus(sandboxActive: sandbox)
             let nonce = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
             let bundleResult = try? DirectMetalAttestation.generateSignedBundle(status: st, nonceHex: nonce)
@@ -662,6 +736,9 @@ struct GameDetailView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
+                if vm.runtimePaths == nil {
+                    RuntimeSetupCard(vm: vm)
+                }
                 header
                 peProfileCard
                 settingsPanel
@@ -1013,6 +1090,11 @@ struct WelcomeView: View {
 
     var body: some View {
         VStack(spacing: 18) {
+            if vm.runtimePaths == nil {
+                RuntimeSetupCard(vm: vm)
+                    .frame(maxWidth: 620)
+                    .padding(.bottom, 6)
+            }
             Image(systemName: "gamecontroller.fill")
                 .font(.system(size: 64))
                 .foregroundStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
@@ -1140,9 +1222,105 @@ struct CacheImportSheet: View {
     }
 }
 
+// MARK: - Lite runtime setup card
+
+struct RuntimeSetupCard: View {
+    @ObservedObject var vm: DirectMetalViewModel
+
+    private func mb(_ bytes: Int64) -> String {
+        String(format: "%.0f MB", Double(max(bytes, 0)) / 1_000_000.0)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: "shippingbox.and.arrow.backward.fill")
+                    .font(.system(size: 34))
+                    .foregroundStyle(LinearGradient(colors: [.blue, .purple], startPoint: .topLeading, endPoint: .bottomTrailing))
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Set up the DirectMetal Runtime")
+                        .font(.title3.bold())
+                    Text("DirectMetal Lite downloads the notarized MetalSharp-Wine \(RuntimeManager.arm64ecVersion) ARM64EC + FEX runtime once. Every byte is SHA-256 verified and its Apple Developer ID signature checked before install.")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if vm.runtimeInstallRunning {
+                VStack(alignment: .leading, spacing: 6) {
+                    if vm.runtimeInstallFraction >= 0 {
+                        ProgressView(value: min(max(vm.runtimeInstallFraction, 0), 1))
+                    } else {
+                        ProgressView().progressViewStyle(.linear)
+                    }
+                    HStack {
+                        Text(vm.runtimeInstallPhase)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 8)
+                        if vm.runtimeInstallBytes > 0 {
+                            Text(vm.runtimeInstallTotal > 0
+                                 ? "\(mb(vm.runtimeInstallBytes)) / \(mb(vm.runtimeInstallTotal))"
+                                 : mb(vm.runtimeInstallBytes))
+                                .monospacedDigit()
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            } else {
+                HStack(spacing: 10) {
+                    Button {
+                        vm.installRuntime()
+                    } label: {
+                        Label("Install DirectMetal Runtime (\(RuntimeManager.archiveSizeLabel), SHA-256 & Apple Notarized)",
+                              systemImage: "arrow.down.circle.fill")
+                            .font(.headline)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    Spacer(minLength: 0)
+                }
+                if let err = vm.runtimeInstallError {
+                    Label(err, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(3)
+                        .textSelection(.enabled)
+                }
+            }
+
+            Text("Installs to \(RuntimeManager.userARM64ECRuntimeDir().path)")
+                .font(.caption2.monospaced())
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            LinearGradient(colors: [Color.blue.opacity(0.16), Color.purple.opacity(0.10)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing),
+            in: RoundedRectangle(cornerRadius: 14, style: .continuous)
+        )
+        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.accentColor.opacity(0.35)))
+    }
+}
+
 // MARK: - App
 
+/// Stops every warm wineserver this GUI started, so quitting leaves zero orphan daemons.
+final class DirectMetalAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillTerminate(_ notification: Notification) {
+        WineserverPool.stopAll()
+    }
+}
+
 struct DirectMetalDesktopApp: App {
+    @NSApplicationDelegateAdaptor(DirectMetalAppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup("DirectMetal") {
             DirectMetalContentView()
