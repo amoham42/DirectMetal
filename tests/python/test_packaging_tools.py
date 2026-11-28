@@ -15,6 +15,7 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import re
 import stat
 import subprocess
@@ -891,6 +892,108 @@ class TestPublishShaderCache(unittest.TestCase):
         self.assertTrue(archive_path.is_file(), "exported .dmcache.tar.gz must exist")
         actual_sha = hashlib.sha256(archive_path.read_bytes()).hexdigest()
         self.assertEqual(entry["archive_sha256"], actual_sha)
+
+
+class TestShellAndReleaseContracts(unittest.TestCase):
+    """Contract & syntax checks for packaging scripts, Info.plist, and Homebrew Cask."""
+
+    def test_all_shell_scripts_pass_bash_syntax_check(self) -> None:
+        shell_scripts = sorted(SCRIPTS_DIR.glob("*.sh"))
+        self.assertGreaterEqual(len(shell_scripts), 5, "Expected packaging/CI shell scripts in scripts/")
+        for script in shell_scripts:
+            proc = subprocess.run(
+                ["bash", "-n", str(script)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                proc.returncode,
+                0,
+                msg=f"bash -n failed for {script.name}: {proc.stderr}",
+            )
+
+    def test_core_shell_scripts_help_and_unknown_flag_rejection(self) -> None:
+        for script_name in (
+            "run_ci_local.sh",
+            "build_dmg.sh",
+            "package_app.sh",
+            "publish_shader_cache.sh",
+        ):
+            script_path = SCRIPTS_DIR / script_name
+            help_proc = subprocess.run(
+                ["bash", str(script_path), "--help"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(
+                help_proc.returncode,
+                0,
+                msg=f"{script_name} --help exited {help_proc.returncode}: {help_proc.stderr}",
+            )
+            self.assertIn("Usage:", help_proc.stdout, msg=f"{script_name} --help missing Usage:")
+
+            bad_proc = subprocess.run(
+                ["bash", str(script_path), "--definitely-unknown-flag"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(
+                bad_proc.returncode,
+                0,
+                msg=f"{script_name} unexpectedly accepted unknown flag",
+            )
+
+        # package_app.sh --output without a path argument must fail cleanly
+        missing_arg = subprocess.run(
+            ["bash", str(SCRIPTS_DIR / "package_app.sh"), "--output"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        self.assertNotEqual(missing_arg.returncode, 0)
+        self.assertIn("--output requires", missing_arg.stderr)
+
+    def test_homebrew_cask_structure_and_semver_contract(self) -> None:
+        cask_path = REPO_ROOT / "Casks" / "directmetal.rb"
+        self.assertTrue(cask_path.is_file(), f"Missing {cask_path}")
+        cask_text = cask_path.read_text(encoding="utf-8")
+
+        ver_match = re.search(r'^\s*version\s+"(\d+\.\d+\.\d+)"\s*$', cask_text, re.MULTILINE)
+        self.assertIsNotNone(ver_match, "Casks/directmetal.rb must declare a semver version")
+
+        sha_match = re.search(r'^\s*sha256\s+"([0-9a-f]{64})"\s*$', cask_text, re.MULTILINE)
+        self.assertIsNotNone(sha_match, "Casks/directmetal.rb must declare a 64-hex SHA-256")
+
+        self.assertIn('depends_on arch: :arm64', cask_text)
+        self.assertIn('https://github.com/amoham42/DirectMetal/releases/download/v#{version}/', cask_text)
+
+    def test_info_plist_version_matches_runtime_hardware_fallback(self) -> None:
+        plist_path = REPO_ROOT / "app" / "DirectMetalApp" / "Info.plist"
+        with plist_path.open("rb") as fh:
+            plist_data = plistlib.load(fh)
+
+        short_version = plist_data.get("CFBundleShortVersionString", "")
+        self.assertRegex(short_version, r"^\d+\.\d+\.\d+$")
+
+        hw_swift = (REPO_ROOT / "app" / "DirectMetalApp" / "RuntimeHardware.swift").read_text(encoding="utf-8")
+        app_ver_match = re.search(
+            r'static func appVersion\(\) -> String \{.*?:\s*"(\d+\.\d+\.\d+)"',
+            hw_swift,
+            re.DOTALL,
+        )
+        self.assertIsNotNone(app_ver_match, "Could not locate fallback version in RuntimeHardware.swift")
+        assert app_ver_match is not None
+        self.assertEqual(
+            app_ver_match.group(1),
+            short_version,
+            msg=(
+                f"RuntimeHardware.swift fallback version ({app_ver_match.group(1)}) should match "
+                f"Info.plist CFBundleShortVersionString ({short_version})"
+            ),
+        )
 
 
 if __name__ == "__main__":
