@@ -362,6 +362,9 @@ struct DirectMetalTests {
             ("LaunchLogAnalyzer: multi-category triage, deduplication, home redaction & tail file read", {
                 try testLaunchLogAnalyzerTriage(tempRoot: tempRoot)
             }),
+            ("SupportBundleExporter: redacted archive export & customEnv secret value omission", {
+                try testSupportBundleExporterPrivacy(tempRoot: tempRoot)
+            }),
         ]
 
         var passed = 0
@@ -2237,5 +2240,73 @@ struct DirectMetalTests {
         let fromDisk = try LaunchLogAnalyzer.analyzeFile(at: logFile.path)
         try expectEqual(fromDisk.highestSeverity, .error)
         try expect(!LaunchLogAnalyzer.formatMarkdown(fromDisk).isEmpty, "markdown formatter must emit output")
+    }
+
+    private static func testSupportBundleExporterPrivacy(tempRoot: URL) throws {
+        let dir = tempRoot.appendingPathComponent("support_bundle_test", isDirectory: true)
+        let libDir = dir.appendingPathComponent("lib", isDirectory: true)
+        let pfxDir = dir.appendingPathComponent("pfx", isDirectory: true)
+        try FileManager.default.createDirectory(at: libDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: pfxDir, withIntermediateDirectories: true)
+
+        let libMgr = GameLibraryManager(supportRoot: libDir, prefixRoot: pfxDir)
+        let secretValue = "SUPER_SECRET_API_TOKEN_999"
+        let entry = GameLibraryEntry(
+            title: "SecretTestGame",
+            exePath: "/Users/alice/Games/SecretTestGame/Game.exe",
+            prefixName: "SecretPrefix",
+            extraArgs: "--password=hunter2",
+            customEnv: "MY_API_TOKEN=\(secretValue) DXMT_LOG=info"
+        )
+        libMgr.save([entry])
+
+        let histStore = LaunchHistoryStore(supportRoot: libDir)
+        histStore.append(LaunchHistoryEntry(
+            gameID: entry.id,
+            title: entry.title,
+            exePath: entry.exePath,
+            prefixName: entry.prefixName,
+            requestedEngine: "auto",
+            activeEngine: "arm64ec",
+            exitCode: 0,
+            elapsedSeconds: 12.0,
+            sandboxed: true,
+            cowCloneMs: 0.4,
+            fpsCap: 60,
+            upscaleMode: "off",
+            failure: nil
+        ))
+
+        let outArchive = dir.appendingPathComponent("bundle.tar.gz")
+        let res = try SupportBundleExporter.exportBundle(
+            to: outArchive.path,
+            libraryManager: libMgr,
+            prefixManager: PrefixManager(prefixRoot: pfxDir),
+            historyStore: histStore,
+            home: "/Users/alice"
+        )
+        try expectEqual(res.schema, SupportBundleExporter.schemaID)
+        try expectEqual(res.gameCount, 1)
+        try expectEqual(res.historyEntryCount, 1)
+        try expect(res.archiveBytes > 0, "exported tar.gz must be non-empty")
+
+        // Unpack and verify zero secret values or raw /Users/alice paths leaked
+        let unpackDir = dir.appendingPathComponent("unpacked", isDirectory: true)
+        try FileManager.default.createDirectory(at: unpackDir, withIntermediateDirectories: true)
+        let tarProc = Process()
+        tarProc.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tarProc.arguments = ["-xzf", outArchive.path, "-C", unpackDir.path]
+        try tarProc.run()
+        tarProc.waitUntilExit()
+        try expectEqual(tarProc.terminationStatus, 0, "support bundle archive must extract cleanly")
+
+        let libSummary = try String(contentsOf: unpackDir.appendingPathComponent("library_summary.json"), encoding: .utf8)
+        try expect(libSummary.contains("MY_API_TOKEN"), "customEnv key name should be retained")
+        try expect(!libSummary.contains(secretValue), "customEnv secret value MUST NOT appear in support bundle")
+        try expect(!libSummary.contains("hunter2"), "extraArgs MUST NOT appear in support bundle")
+        try expect(!libSummary.contains("/Users/alice"), "raw home path MUST be redacted")
+
+        let historyJSON = try String(contentsOf: unpackDir.appendingPathComponent("launch_history.json"), encoding: .utf8)
+        try expect(!historyJSON.contains("/Users/alice"), "launch_history.json must redact home path")
     }
 }

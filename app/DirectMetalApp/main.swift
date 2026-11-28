@@ -818,6 +818,32 @@ private func runCLI(args: [String]) -> Int32 {
             return 1
         }
 
+    case "support-bundle":
+        let rest = Array(args.dropFirst())
+        let asJSON = rest.contains("--json")
+        let positional = rest.filter { !$0.hasPrefix("--") }
+        let outPath: String
+        if let explicit = positional.first, !explicit.isEmpty {
+            outPath = (explicit as NSString).expandingTildeInPath
+        } else {
+            let desktop = (("~/Desktop" as NSString).expandingTildeInPath)
+            outPath = "\(desktop)/DirectMetal-Support-Bundle.tar.gz"
+        }
+        do {
+            let res = try SupportBundleExporter.exportBundle(to: outPath)
+            if asJSON {
+                printLibraryJSON(res)
+            } else {
+                let kib = String(format: "%.1f", Double(res.archiveBytes) / 1024.0)
+                print("Exported redacted diagnostics bundle (\(kib) KiB, \(res.includedFiles.count) files) to \(res.archivePath)")
+                print("  games=\(res.gameCount) history=\(res.historyEntryCount) prefixes=\(res.prefixCount) shader_caches=\(res.shaderCacheEntryCount)")
+            }
+            return 0
+        } catch {
+            fputs("support-bundle failed: \(error)\n", stderr)
+            return 1
+        }
+
     default:
         fputs("unknown command: \(cmd)\n", stderr)
         printUsage()

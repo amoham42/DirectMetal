@@ -258,6 +258,7 @@ _directmetal() {
     'library:Manage saved games, auto-scanner, artwork and per-game settings'
     'history:View, export as Markdown/JSON, or clear recent game launch history'
     'diagnose-log:Analyze a Wine/DirectX/Metal log file for crashes, missing DLLs & fixes'
+    'support-bundle:Export a privacy-redacted diagnostics .tar.gz bundle for bug reports'
     'runtime:Install, update, verify or warm the ARM64EC+FEX runtime'
     'prefix:Create, list, reset or delete APFS CoW game prefixes'
     'cache:Inspect, export, import, sync or clear pre-compiled Metal shader caches'
@@ -346,7 +347,7 @@ _directmetal_completions() {
   cmd="${COMP_WORDS[1]}"
 
   if [[ ${COMP_CWORD} -eq 1 ]]; then
-    COMPREPLY=( $(compgen -W "info doctor bench inspect run library history diagnose-log runtime prefix cache controller profiles update attest verify-attest completions help" -- "${cur}") )
+    COMPREPLY=( $(compgen -W "info doctor bench inspect run library history diagnose-log support-bundle runtime prefix cache controller profiles update attest verify-attest completions help" -- "${cur}") )
     return 0
   fi
 

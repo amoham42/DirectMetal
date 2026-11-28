@@ -430,6 +430,30 @@ final class DirectMetalViewModel: ObservableObject {
         }
     }
 
+    func exportDiagnosticsBundle() {
+        let panel = NSSavePanel()
+        panel.title = "Export Diagnostics Support Bundle"
+        panel.message = "Save a privacy-redacted .tar.gz archive (hardware, redacted library summary, launch history, prefix & cache metadata) for GitHub bug reports."
+        panel.allowedContentTypes = [UTType.gzip]
+        panel.nameFieldStringValue = "DirectMetal-Support-Bundle.tar.gz"
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        statusMessage = "Building privacy-redacted diagnostics support bundle…"
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let res = try SupportBundleExporter.exportBundle(to: url.path)
+                DispatchQueue.main.async {
+                    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: res.archivePath)])
+                    self.statusMessage = "Exported diagnostics bundle (\(res.includedFiles.count) files, paths redacted) to \(url.lastPathComponent)."
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    self.statusMessage = "Diagnostics bundle export failed: \(error)"
+                }
+            }
+        }
+    }
+
     // MARK: Launch
 
     func play(_ entry: GameLibraryEntry) {
@@ -741,6 +765,9 @@ struct DirectMetalCommands: Commands {
             Button("Export Library Backup…") { vm?.exportLibraryBackup() }
                 .disabled(modal)
             Button("Import Library Backup…") { vm?.importLibraryBackup() }
+                .disabled(modal)
+            Divider()
+            Button("Export Diagnostics Bundle…") { vm?.exportDiagnosticsBundle() }
                 .disabled(modal)
         }
         CommandMenu("Library") {

@@ -222,6 +222,7 @@ private struct PaletteQuickAction: Identifiable {
         case detailInspector
         case exportBackup
         case importBackup
+        case exportSupportBundle
     }
 
     let id: String
@@ -366,6 +367,17 @@ private struct PaletteQuickAction: Identifiable {
             tint: .mint,
             shortcutHint: nil,
             keywords: ["import", "backup", "restore", "json", "load", "settings"],
+            presentsModal: true
+        ),
+        PaletteQuickAction(
+            id: "action.support-bundle",
+            kind: .exportSupportBundle,
+            title: "Export Diagnostics Support Bundle…",
+            subtitle: "Create a privacy-redacted .tar.gz archive for GitHub bug reports",
+            systemImage: "doc.zipper",
+            tint: .teal,
+            shortcutHint: nil,
+            keywords: ["support", "bundle", "diagnostics", "bug", "report", "logs", "export", "redact"],
             presentsModal: true
         ),
     ]
@@ -932,6 +944,8 @@ struct CommandPaletteSheet: View {
                 vm.exportLibraryBackup()
             case .importBackup:
                 vm.importLibraryBackup()
+            case .exportSupportBundle:
+                vm.exportDiagnosticsBundle()
             }
         }
 
