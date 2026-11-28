@@ -2,10 +2,12 @@
 import AppKit
 import CoreGraphics
 import Foundation
+import zlib
 
 // DirectMetal macOS App Icon Generator (.icns)
-// Pure Swift CoreGraphics + AppKit — zero external dependencies.
-// Generates all standard macOS iconset sizes (16..1024 @1x/@2x) and compiles AppIcon.icns via iconutil.
+// Pure Swift CoreGraphics + AppKit + zlib — zero external dependencies.
+// Generates all standard macOS iconset sizes (16..1024 @1x/@2x) with lossless adaptive PNG
+// filtering + zlib level-9 compression and compiles a compact AppIcon.icns via iconutil.
 
 struct IconSpec {
     let pointSize: Int
@@ -559,6 +561,383 @@ func drawDirectMetalIcon(in ctx: CGContext, pixelSize: Int) {
     ctx.restoreGState()
 }
 
+@inline(__always)
+func readBE32(_ bytes: UnsafePointer<UInt8>, _ offset: Int) -> UInt32 {
+    (UInt32(bytes[offset]) << 24)
+        | (UInt32(bytes[offset + 1]) << 16)
+        | (UInt32(bytes[offset + 2]) << 8)
+        | UInt32(bytes[offset + 3])
+}
+
+@inline(__always)
+func appendBE32(_ data: inout Data, _ val: UInt32) {
+    var be = val.bigEndian
+    withUnsafeBytes(of: &be) { data.append(contentsOf: $0) }
+}
+
+@inline(__always)
+func paethPredictor(_ a: Int, _ b: Int, _ c: Int) -> UInt8 {
+    let p = a + b - c
+    let pa = abs(p - a)
+    let pb = abs(p - b)
+    let pc = abs(p - c)
+    if pa <= pb && pa <= pc { return UInt8(truncatingIfNeeded: a) }
+    if pb <= pc { return UInt8(truncatingIfNeeded: b) }
+    return UInt8(truncatingIfNeeded: c)
+}
+
+func zlibInflate(_ compressed: Data, expectedSize: Int) -> Data? {
+    var out = Data(count: expectedSize)
+    let ok = compressed.withUnsafeBytes { inRaw -> Bool in
+        out.withUnsafeMutableBytes { outRaw -> Bool in
+            guard let inBase = inRaw.bindMemory(to: Bytef.self).baseAddress,
+                  let outBase = outRaw.bindMemory(to: Bytef.self).baseAddress else {
+                return false
+            }
+            var strm = z_stream()
+            strm.next_in = UnsafeMutablePointer<Bytef>(mutating: inBase)
+            strm.avail_in = uInt(compressed.count)
+            strm.next_out = outBase
+            strm.avail_out = uInt(expectedSize)
+            guard inflateInit_(&strm, ZLIB_VERSION, Int32(MemoryLayout<z_stream>.size)) == Z_OK else {
+                return false
+            }
+            defer { inflateEnd(&strm) }
+            let rc = inflate(&strm, Z_FINISH)
+            return rc == Z_STREAM_END && Int(strm.total_out) == expectedSize
+        }
+    }
+    return ok ? out : nil
+}
+
+func zlibDeflateLevel9(_ raw: [UInt8], strategy: Int32) -> Data? {
+    let bound = Int(compressBound(uLong(raw.count))) + 64
+    var out = Data(count: bound)
+    var produced = 0
+    let ok = raw.withUnsafeBufferPointer { inBuf -> Bool in
+        out.withUnsafeMutableBytes { outRaw -> Bool in
+            guard let inBase = inBuf.baseAddress,
+                  let outBase = outRaw.bindMemory(to: Bytef.self).baseAddress else {
+                return false
+            }
+            var strm = z_stream()
+            strm.next_in = UnsafeMutablePointer<Bytef>(mutating: inBase)
+            strm.avail_in = uInt(raw.count)
+            strm.next_out = outBase
+            strm.avail_out = uInt(bound)
+            let initRc = deflateInit2_(
+                &strm,
+                Z_BEST_COMPRESSION,
+                Z_DEFLATED,
+                MAX_WBITS,
+                9,
+                strategy,
+                ZLIB_VERSION,
+                Int32(MemoryLayout<z_stream>.size)
+            )
+            guard initRc == Z_OK else { return false }
+            defer { deflateEnd(&strm) }
+            let rc = deflate(&strm, Z_FINISH)
+            guard rc == Z_STREAM_END else { return false }
+            produced = Int(strm.total_out)
+            return true
+        }
+    }
+    guard ok else { return nil }
+    out.count = produced
+    return out
+}
+
+func appendPNGChunk(_ out: inout Data, type: [UInt8], payload: Data) {
+    appendBE32(&out, UInt32(payload.count))
+    let crcStart = out.count
+    out.append(contentsOf: type)
+    out.append(payload)
+    let crcVal: UInt32 = out.withUnsafeBytes { raw in
+        let base = raw.bindMemory(to: Bytef.self).baseAddress!
+        return UInt32(crc32(0, base.advanced(by: crcStart), uInt(4 + payload.count)))
+    }
+    appendBE32(&out, crcVal)
+}
+
+/// Losslessly re-filters and re-compresses an 8-bit RGB/RGBA PNG at zlib level 9.
+/// Keeps every single pixel 100% bit-exact.
+func optimizePNGLossless(_ pngData: Data, stripMetadata: Bool) -> Data {
+    let pngSig: [UInt8] = [137, 80, 78, 71, 13, 10, 26, 10]
+    guard pngData.count > 33 else { return pngData }
+    return pngData.withUnsafeBytes { raw -> Data in
+        guard let ptr = raw.bindMemory(to: UInt8.self).baseAddress else { return pngData }
+        for i in 0..<8 where ptr[i] != pngSig[i] {
+            return pngData
+        }
+
+        var pos = 8
+        var ihdrPayload: Data?
+        var ancillaries: [([UInt8], Data)] = []
+        var idatCombined = Data()
+        var width = 0
+        var height = 0
+        var bpp = 0
+
+        while pos + 12 <= pngData.count {
+            let length = Int(readBE32(ptr, pos))
+            guard length >= 0, pos + 12 + length <= pngData.count else { return pngData }
+            let ctype = [ptr[pos + 4], ptr[pos + 5], ptr[pos + 6], ptr[pos + 7]]
+            let payloadStart = pos + 8
+            let payload = pngData.subdata(in: payloadStart..<(payloadStart + length))
+            pos += 12 + length
+
+            let name = String(bytes: ctype, encoding: .isoLatin1) ?? ""
+            if name == "IHDR" {
+                guard length == 13 else { return pngData }
+                width = Int(readBE32(ptr, payloadStart))
+                height = Int(readBE32(ptr, payloadStart + 4))
+                let bitDepth = ptr[payloadStart + 8]
+                let colorType = ptr[payloadStart + 9]
+                let compMethod = ptr[payloadStart + 10]
+                let filterMethod = ptr[payloadStart + 11]
+                let interlace = ptr[payloadStart + 12]
+                guard width > 0, height > 0, bitDepth == 8, compMethod == 0, filterMethod == 0, interlace == 0 else {
+                    return pngData
+                }
+                if colorType == 6 {
+                    bpp = 4
+                } else if colorType == 2 {
+                    bpp = 3
+                } else {
+                    return pngData
+                }
+                ihdrPayload = payload
+            } else if name == "IDAT" {
+                idatCombined.append(payload)
+            } else if name == "IEND" {
+                break
+            } else {
+                // Critical unknown chunks (uppercase first letter) must never be dropped
+                let isCritical = (ctype[0] & 0x20) == 0
+                if isCritical {
+                    return pngData
+                }
+                if stripMetadata {
+                    // Inside .icns, keep color-space chunks (sRGB, iCCP, gAMA, cHRM); drop camera/DPI bloat (eXIf, pHYs, tEXt, iTXt)
+                    if name == "sRGB" || name == "iCCP" || name == "gAMA" || name == "cHRM" {
+                        ancillaries.append((ctype, payload))
+                    }
+                } else {
+                    ancillaries.append((ctype, payload))
+                }
+            }
+        }
+
+        guard let ihdr = ihdrPayload, !idatCombined.isEmpty else { return pngData }
+        let rowBytes = width * bpp
+        let scanlineSize = (1 + rowBytes) * height
+        guard let inflated = zlibInflate(idatCombined, expectedSize: scanlineSize) else {
+            return pngData
+        }
+
+        // Unfilter existing PNG scanlines into raw pixel buffer
+        var pixels = [UInt8](repeating: 0, count: height * rowBytes)
+        let unfilterOk = inflated.withUnsafeBytes { infRaw -> Bool in
+            let src = infRaw.bindMemory(to: UInt8.self).baseAddress!
+            for y in 0..<height {
+                let ftype = src[y * (1 + rowBytes)]
+                let rowSrc = src.advanced(by: y * (1 + rowBytes) + 1)
+                let dstBase = y * rowBytes
+                let prevBase = (y - 1) * rowBytes
+                switch ftype {
+                case 0:
+                    for i in 0..<rowBytes { pixels[dstBase + i] = rowSrc[i] }
+                case 1:
+                    for i in 0..<rowBytes {
+                        let a = i >= bpp ? pixels[dstBase + i - bpp] : 0
+                        pixels[dstBase + i] = rowSrc[i] &+ a
+                    }
+                case 2:
+                    for i in 0..<rowBytes {
+                        let b = y > 0 ? pixels[prevBase + i] : 0
+                        pixels[dstBase + i] = rowSrc[i] &+ b
+                    }
+                case 3:
+                    for i in 0..<rowBytes {
+                        let a = Int(i >= bpp ? pixels[dstBase + i - bpp] : 0)
+                        let b = Int(y > 0 ? pixels[prevBase + i] : 0)
+                        pixels[dstBase + i] = rowSrc[i] &+ UInt8(truncatingIfNeeded: (a + b) >> 1)
+                    }
+                case 4:
+                    for i in 0..<rowBytes {
+                        let a = Int(i >= bpp ? pixels[dstBase + i - bpp] : 0)
+                        let b = Int(y > 0 ? pixels[prevBase + i] : 0)
+                        let c = Int((y > 0 && i >= bpp) ? pixels[prevBase + i - bpp] : 0)
+                        pixels[dstBase + i] = rowSrc[i] &+ paethPredictor(a, b, c)
+                    }
+                default:
+                    return false
+                }
+            }
+            return true
+        }
+        guard unfilterOk else { return pngData }
+
+        func buildFilteredStream(fixedFilter: UInt8?) -> [UInt8] {
+            var stream = [UInt8](repeating: 0, count: scanlineSize)
+            var candRows = [[UInt8]](repeating: [UInt8](repeating: 0, count: rowBytes), count: 5)
+            for y in 0..<height {
+                let curBase = y * rowBytes
+                let prevBase = (y - 1) * rowBytes
+                let outBase = y * (1 + rowBytes)
+
+                let filtersToCompute: ClosedRange<Int> = fixedFilter.map { Int($0)...Int($0) } ?? 0...4
+                var bestFilter = filtersToCompute.lowerBound
+                var bestScore = Int.max
+
+                for f in filtersToCompute {
+                    var score = 0
+                    for i in 0..<rowBytes {
+                        let x = pixels[curBase + i]
+                        let pred: UInt8
+                        switch f {
+                        case 0:
+                            pred = 0
+                        case 1:
+                            pred = i >= bpp ? pixels[curBase + i - bpp] : 0
+                        case 2:
+                            pred = y > 0 ? pixels[prevBase + i] : 0
+                        case 3:
+                            let a = Int(i >= bpp ? pixels[curBase + i - bpp] : 0)
+                            let b = Int(y > 0 ? pixels[prevBase + i] : 0)
+                            pred = UInt8(truncatingIfNeeded: (a + b) >> 1)
+                        default:
+                            let a = Int(i >= bpp ? pixels[curBase + i - bpp] : 0)
+                            let b = Int(y > 0 ? pixels[prevBase + i] : 0)
+                            let c = Int((y > 0 && i >= bpp) ? pixels[prevBase + i - bpp] : 0)
+                            pred = paethPredictor(a, b, c)
+                        }
+                        let diff = x &- pred
+                        candRows[f][i] = diff
+                        if fixedFilter == nil {
+                            let signedDiff = Int(Int8(bitPattern: diff))
+                            score += abs(signedDiff)
+                        }
+                    }
+                    if fixedFilter == nil && score < bestScore {
+                        bestScore = score
+                        bestFilter = f
+                    }
+                }
+
+                stream[outBase] = UInt8(bestFilter)
+                for i in 0..<rowBytes {
+                    stream[outBase + 1 + i] = candRows[bestFilter][i]
+                }
+            }
+            return stream
+        }
+
+        let adaptiveStream = buildFilteredStream(fixedFilter: nil)
+        let paethStream = buildFilteredStream(fixedFilter: 4)
+
+        var bestIDAT = idatCombined
+        for (stream, strat) in [
+            (adaptiveStream, Z_FILTERED),
+            (adaptiveStream, Z_DEFAULT_STRATEGY),
+            (paethStream, Z_FILTERED),
+            (paethStream, Z_DEFAULT_STRATEGY),
+        ] {
+            if let compressed = zlibDeflateLevel9(stream, strategy: strat), compressed.count < bestIDAT.count {
+                bestIDAT = compressed
+            }
+        }
+
+        var out = Data()
+        out.reserveCapacity(64 + bestIDAT.count)
+        out.append(contentsOf: pngSig)
+        appendPNGChunk(&out, type: Array("IHDR".utf8), payload: ihdr)
+        for (atype, apayload) in ancillaries {
+            appendPNGChunk(&out, type: atype, payload: apayload)
+        }
+        appendPNGChunk(&out, type: Array("IDAT".utf8), payload: bestIDAT)
+        appendPNGChunk(&out, type: Array("IEND".utf8), payload: Data())
+
+        return out.count < pngData.count ? out : pngData
+    }
+}
+
+/// Losslessly re-optimizes embedded PNG representations inside an .icns container
+/// (in case iconutil re-encoded .iconset PNGs at default ImageIO compression level).
+func optimizeICNSContainer(at url: URL) throws {
+    let rawData = try Data(contentsOf: url)
+    guard rawData.count >= 8 else { return }
+    let magic = String(data: rawData.subdata(in: 0..<4), encoding: .isoLatin1)
+    guard magic == "icns" else { return }
+
+    var atoms: [([UInt8], Data)] = []
+    var cache: [Data: Data] = [:]
+    let pngHeader = Data([137, 80, 78, 71, 13, 10, 26, 10])
+
+    let parseOk: Bool = rawData.withUnsafeBytes { buf in
+        guard let ptr = buf.bindMemory(to: UInt8.self).baseAddress else { return false }
+        var pos = 8
+        while pos + 8 <= rawData.count {
+            let atomType = [ptr[pos], ptr[pos + 1], ptr[pos + 2], ptr[pos + 3]]
+            let atomLen = Int(readBE32(ptr, pos + 4))
+            guard atomLen >= 8, pos + atomLen <= rawData.count else { return false }
+            let payload = rawData.subdata(in: (pos + 8)..<(pos + atomLen))
+            atoms.append((atomType, payload))
+            pos += atomLen
+        }
+        return pos == rawData.count
+    }
+    guard parseOk, !atoms.isEmpty else { return }
+
+    var hasTOC = false
+    var contentAtoms: [([UInt8], Data)] = []
+    for (atype, payload) in atoms {
+        let name = String(bytes: atype, encoding: .isoLatin1) ?? ""
+        if name == "TOC " {
+            hasTOC = true
+            continue
+        }
+        if payload.count > 8 && payload.prefix(8) == pngHeader {
+            if let cached = cache[payload] {
+                contentAtoms.append((atype, cached))
+            } else {
+                let opt = optimizePNGLossless(payload, stripMetadata: true)
+                cache[payload] = opt
+                contentAtoms.append((atype, opt))
+            }
+        } else {
+            contentAtoms.append((atype, payload))
+        }
+    }
+
+    var rebuilt = Data()
+    let tocBytes = hasTOC ? (8 + contentAtoms.count * 8) : 0
+    let totalLen = 8 + tocBytes + contentAtoms.reduce(0) { $0 + 8 + $1.1.count }
+    rebuilt.reserveCapacity(totalLen)
+    rebuilt.append(contentsOf: Array("icns".utf8))
+    appendBE32(&rebuilt, UInt32(totalLen))
+
+    if hasTOC {
+        rebuilt.append(contentsOf: Array("TOC ".utf8))
+        appendBE32(&rebuilt, UInt32(tocBytes))
+        for (atype, payload) in contentAtoms {
+            rebuilt.append(contentsOf: atype)
+            appendBE32(&rebuilt, UInt32(8 + payload.count))
+        }
+    }
+
+    for (atype, payload) in contentAtoms {
+        rebuilt.append(contentsOf: atype)
+        appendBE32(&rebuilt, UInt32(8 + payload.count))
+        rebuilt.append(payload)
+    }
+
+    if rebuilt.count < rawData.count {
+        try rebuilt.write(to: url, options: .atomic)
+    }
+}
+
 func renderIconPNG(spec: IconSpec, to outputURL: URL) throws {
     let px = spec.pixelSize
     guard let cgCtx = CGContext(
@@ -582,10 +961,11 @@ func renderIconPNG(spec: IconSpec, to outputURL: URL) throws {
     let rep = NSBitmapImageRep(cgImage: cgImage)
     rep.size = NSSize(width: spec.pointSize, height: spec.pointSize)
 
-    guard let pngData = rep.representation(using: .png, properties: [:]) else {
+    guard let rawPNG = rep.representation(using: .png, properties: [:]) else {
         throw NSError(domain: "DirectMetalIcon", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to encode PNG for \(px)x\(px)"])
     }
-    try pngData.write(to: outputURL, options: .atomic)
+    let optimizedPNG = optimizePNGLossless(rawPNG, stripMetadata: false)
+    try optimizedPNG.write(to: outputURL, options: .atomic)
 }
 
 func main() throws {
@@ -625,6 +1005,8 @@ func main() throws {
         let errMsg = String(data: errData, encoding: .utf8) ?? "iconutil exited with status \(proc.terminationStatus)"
         throw NSError(domain: "DirectMetalIcon", code: Int(proc.terminationStatus), userInfo: [NSLocalizedDescriptionKey: errMsg])
     }
+
+    try optimizeICNSContainer(at: outputURL)
 
     let attrs = try fm.attributesOfItem(atPath: outputURL.path)
     let sizeBytes = (attrs[.size] as? NSNumber)?.intValue ?? 0

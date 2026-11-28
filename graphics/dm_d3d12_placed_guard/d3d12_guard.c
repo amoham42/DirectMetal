@@ -138,8 +138,29 @@ static HMODULE g_real_d3d12 = NULL;
 static PFN_Dev_CreatePlacedResource g_orig_CreatePlacedResource = NULL;
 static PFN_Dev_CreatePlacedResource1 g_orig_CreatePlacedResource1 = NULL;
 static PFN_Dev_CreatePlacedResource2 g_orig_CreatePlacedResource2 = NULL;
+static PFN_Dev_CreateCommittedResource g_orig_CreateCommittedResource = NULL;
+static PFN_Dev_CreateCommittedResource2 g_orig_CreateCommittedResource2 = NULL;
+static PFN_Dev_CreateCommittedResource3 g_orig_CreateCommittedResource3 = NULL;
 static volatile LONG g_fallback_count = 0;
 static int g_vtable_patched = 0;
+static int g_fast_fallback = 0;
+
+#if defined(__GNUC__) || defined(__clang__)
+#define DM_NOINLINE __attribute__((noinline))
+#else
+#define DM_NOINLINE
+#endif
+
+static void refresh_fast_fallback_env(void) {
+    char buf[16];
+    DWORD n = GetEnvironmentVariableA("DIRECTMETAL_D3D12_GUARD_FAST_FALLBACK", buf, sizeof(buf));
+    if (n > 0 && n < sizeof(buf) &&
+        (buf[0] == '1' || buf[0] == 'y' || buf[0] == 'Y' || buf[0] == 't' || buf[0] == 'T')) {
+        g_fast_fallback = 1;
+    } else {
+        g_fast_fallback = 0;
+    }
+}
 
 static HMODULE load_real_d3d12(void) {
     if (g_real_d3d12) return g_real_d3d12;
@@ -171,16 +192,40 @@ static DM_D3D12_HEAP_DESC get_heap_desc(void* pHeap) {
     return hd;
 }
 
-static HRESULT WINAPI hook_CreatePlacedResource(
+static DM_NOINLINE HRESULT slow_CreatePlacedResource(
     void* self, void* pHeap, UINT64 HeapOffset, const void* pDesc,
     uint32_t InitialState, const void* pOptimizedClearValue,
     const GUID* riid, void** ppvResource)
 {
-    HRESULT hr = g_orig_CreatePlacedResource(self, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
-    if (hr == E_INVALIDARG && pHeap && pDesc && (HeapOffset % 65536ULL) != 0) {
+    if (g_fast_fallback && self && pHeap && pDesc) {
+        PFN_Dev_CreateCommittedResource fn = g_orig_CreateCommittedResource;
+        if (!fn) {
+            void** vtbl = *(void***)self;
+            fn = (PFN_Dev_CreateCommittedResource)vtbl[27];
+        }
         DM_D3D12_HEAP_DESC hd = get_heap_desc(pHeap);
-        void** vtbl = *(void***)self;
-        PFN_Dev_CreateCommittedResource fn = (PFN_Dev_CreateCommittedResource)vtbl[27];
+        if (fn && hd.Properties.Type != 0) {
+            uint32_t cleanFlags = hd.Flags & ~DM_HEAP_FLAG_DENY_MASK;
+            HRESULT fb = fn(self, &hd.Properties, cleanFlags, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+            if (fb >= 0) {
+                LONG n = InterlockedIncrement(&g_fallback_count);
+                if (n <= 3) {
+                    fprintf(stderr, "[DirectMetal-D3D12Guard] Fast-promoted misaligned CreatePlacedResource (offset=%llu) -> CreateCommittedResource (#%ld)\n",
+                            (unsigned long long)HeapOffset, (long)n);
+                }
+                return fb;
+            }
+        }
+    }
+
+    HRESULT hr = g_orig_CreatePlacedResource(self, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+    if (hr == E_INVALIDARG && self && pHeap && pDesc) {
+        PFN_Dev_CreateCommittedResource fn = g_orig_CreateCommittedResource;
+        if (!fn) {
+            void** vtbl = *(void***)self;
+            fn = (PFN_Dev_CreateCommittedResource)vtbl[27];
+        }
+        DM_D3D12_HEAP_DESC hd = get_heap_desc(pHeap);
         if (fn && hd.Properties.Type != 0) {
             uint32_t cleanFlags = hd.Flags & ~DM_HEAP_FLAG_DENY_MASK;
             HRESULT fb = fn(self, &hd.Properties, cleanFlags, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
@@ -197,16 +242,51 @@ static HRESULT WINAPI hook_CreatePlacedResource(
     return hr;
 }
 
-static HRESULT WINAPI hook_CreatePlacedResource1(
+static HRESULT WINAPI hook_CreatePlacedResource(
+    void* self, void* pHeap, UINT64 HeapOffset, const void* pDesc,
+    uint32_t InitialState, const void* pOptimizedClearValue,
+    const GUID* riid, void** ppvResource)
+{
+    if (__builtin_expect((HeapOffset & 0xFFFFULL) == 0, 1)) {
+        return g_orig_CreatePlacedResource(self, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+    }
+    return slow_CreatePlacedResource(self, pHeap, HeapOffset, pDesc, InitialState, pOptimizedClearValue, riid, ppvResource);
+}
+
+static DM_NOINLINE HRESULT slow_CreatePlacedResource1(
     void* self, void* pHeap, UINT64 HeapOffset, const void* pDesc1,
     uint32_t InitialState, const void* pOptimizedClearValue,
     const GUID* riid, void** ppvResource)
 {
-    HRESULT hr = g_orig_CreatePlacedResource1(self, pHeap, HeapOffset, pDesc1, InitialState, pOptimizedClearValue, riid, ppvResource);
-    if (hr == E_INVALIDARG && pHeap && pDesc1 && (HeapOffset % 65536ULL) != 0) {
+    if (g_fast_fallback && self && pHeap && pDesc1) {
+        PFN_Dev_CreateCommittedResource2 fn = g_orig_CreateCommittedResource2;
+        if (!fn) {
+            void** vtbl = *(void***)self;
+            fn = (PFN_Dev_CreateCommittedResource2)vtbl[68];
+        }
         DM_D3D12_HEAP_DESC hd = get_heap_desc(pHeap);
-        void** vtbl = *(void***)self;
-        PFN_Dev_CreateCommittedResource2 fn = (PFN_Dev_CreateCommittedResource2)vtbl[68];
+        if (fn && hd.Properties.Type != 0) {
+            uint32_t cleanFlags = hd.Flags & ~DM_HEAP_FLAG_DENY_MASK;
+            HRESULT fb = fn(self, &hd.Properties, cleanFlags, pDesc1, InitialState, pOptimizedClearValue, NULL, riid, ppvResource);
+            if (fb >= 0) {
+                LONG n = InterlockedIncrement(&g_fallback_count);
+                if (n <= 3) {
+                    fprintf(stderr, "[DirectMetal-D3D12Guard] Fast-promoted misaligned CreatePlacedResource1 (offset=%llu) -> CreateCommittedResource2 (#%ld)\n",
+                            (unsigned long long)HeapOffset, (long)n);
+                }
+                return fb;
+            }
+        }
+    }
+
+    HRESULT hr = g_orig_CreatePlacedResource1(self, pHeap, HeapOffset, pDesc1, InitialState, pOptimizedClearValue, riid, ppvResource);
+    if (hr == E_INVALIDARG && self && pHeap && pDesc1) {
+        PFN_Dev_CreateCommittedResource2 fn = g_orig_CreateCommittedResource2;
+        if (!fn) {
+            void** vtbl = *(void***)self;
+            fn = (PFN_Dev_CreateCommittedResource2)vtbl[68];
+        }
+        DM_D3D12_HEAP_DESC hd = get_heap_desc(pHeap);
         if (fn && hd.Properties.Type != 0) {
             uint32_t cleanFlags = hd.Flags & ~DM_HEAP_FLAG_DENY_MASK;
             HRESULT fb = fn(self, &hd.Properties, cleanFlags, pDesc1, InitialState, pOptimizedClearValue, NULL, riid, ppvResource);
@@ -223,17 +303,52 @@ static HRESULT WINAPI hook_CreatePlacedResource1(
     return hr;
 }
 
-static HRESULT WINAPI hook_CreatePlacedResource2(
+static HRESULT WINAPI hook_CreatePlacedResource1(
+    void* self, void* pHeap, UINT64 HeapOffset, const void* pDesc1,
+    uint32_t InitialState, const void* pOptimizedClearValue,
+    const GUID* riid, void** ppvResource)
+{
+    if (__builtin_expect((HeapOffset & 0xFFFFULL) == 0, 1)) {
+        return g_orig_CreatePlacedResource1(self, pHeap, HeapOffset, pDesc1, InitialState, pOptimizedClearValue, riid, ppvResource);
+    }
+    return slow_CreatePlacedResource1(self, pHeap, HeapOffset, pDesc1, InitialState, pOptimizedClearValue, riid, ppvResource);
+}
+
+static DM_NOINLINE HRESULT slow_CreatePlacedResource2(
     void* self, void* pHeap, UINT64 HeapOffset, const void* pDesc1,
     uint32_t InitialLayout, const void* pOptimizedClearValue,
     UINT32 NumCastableFormats, const uint32_t* pCastableFormats,
     const GUID* riid, void** ppvResource)
 {
-    HRESULT hr = g_orig_CreatePlacedResource2(self, pHeap, HeapOffset, pDesc1, InitialLayout, pOptimizedClearValue, NumCastableFormats, pCastableFormats, riid, ppvResource);
-    if (hr == E_INVALIDARG && pHeap && pDesc1 && (HeapOffset % 65536ULL) != 0) {
+    if (g_fast_fallback && self && pHeap && pDesc1) {
+        PFN_Dev_CreateCommittedResource3 fn = g_orig_CreateCommittedResource3;
+        if (!fn) {
+            void** vtbl = *(void***)self;
+            fn = (PFN_Dev_CreateCommittedResource3)vtbl[76];
+        }
         DM_D3D12_HEAP_DESC hd = get_heap_desc(pHeap);
-        void** vtbl = *(void***)self;
-        PFN_Dev_CreateCommittedResource3 fn = (PFN_Dev_CreateCommittedResource3)vtbl[76];
+        if (fn && hd.Properties.Type != 0) {
+            uint32_t cleanFlags = hd.Flags & ~DM_HEAP_FLAG_DENY_MASK;
+            HRESULT fb = fn(self, &hd.Properties, cleanFlags, pDesc1, InitialLayout, pOptimizedClearValue, NULL, NumCastableFormats, pCastableFormats, riid, ppvResource);
+            if (fb >= 0) {
+                LONG n = InterlockedIncrement(&g_fallback_count);
+                if (n <= 3) {
+                    fprintf(stderr, "[DirectMetal-D3D12Guard] Fast-promoted misaligned CreatePlacedResource2 (offset=%llu) -> CreateCommittedResource3 (#%ld)\n",
+                            (unsigned long long)HeapOffset, (long)n);
+                }
+                return fb;
+            }
+        }
+    }
+
+    HRESULT hr = g_orig_CreatePlacedResource2(self, pHeap, HeapOffset, pDesc1, InitialLayout, pOptimizedClearValue, NumCastableFormats, pCastableFormats, riid, ppvResource);
+    if (hr == E_INVALIDARG && self && pHeap && pDesc1) {
+        PFN_Dev_CreateCommittedResource3 fn = g_orig_CreateCommittedResource3;
+        if (!fn) {
+            void** vtbl = *(void***)self;
+            fn = (PFN_Dev_CreateCommittedResource3)vtbl[76];
+        }
+        DM_D3D12_HEAP_DESC hd = get_heap_desc(pHeap);
         if (fn && hd.Properties.Type != 0) {
             uint32_t cleanFlags = hd.Flags & ~DM_HEAP_FLAG_DENY_MASK;
             HRESULT fb = fn(self, &hd.Properties, cleanFlags, pDesc1, InitialLayout, pOptimizedClearValue, NULL, NumCastableFormats, pCastableFormats, riid, ppvResource);
@@ -250,12 +365,34 @@ static HRESULT WINAPI hook_CreatePlacedResource2(
     return hr;
 }
 
+static HRESULT WINAPI hook_CreatePlacedResource2(
+    void* self, void* pHeap, UINT64 HeapOffset, const void* pDesc1,
+    uint32_t InitialLayout, const void* pOptimizedClearValue,
+    UINT32 NumCastableFormats, const uint32_t* pCastableFormats,
+    const GUID* riid, void** ppvResource)
+{
+    if (__builtin_expect((HeapOffset & 0xFFFFULL) == 0, 1)) {
+        return g_orig_CreatePlacedResource2(self, pHeap, HeapOffset, pDesc1, InitialLayout, pOptimizedClearValue, NumCastableFormats, pCastableFormats, riid, ppvResource);
+    }
+    return slow_CreatePlacedResource2(self, pHeap, HeapOffset, pDesc1, InitialLayout, pOptimizedClearValue, NumCastableFormats, pCastableFormats, riid, ppvResource);
+}
+
 static void patch_device_vtable(void* dev) {
     if (!dev) return;
     EnterCriticalSection(&g_cs);
     if (!g_vtable_patched) {
         void** vtbl = *(void***)dev;
         DWORD oldProt = 0;
+        refresh_fast_fallback_env();
+        if (vtbl[27]) {
+            g_orig_CreateCommittedResource = (PFN_Dev_CreateCommittedResource)vtbl[27];
+        }
+        if (vtbl[68]) {
+            g_orig_CreateCommittedResource2 = (PFN_Dev_CreateCommittedResource2)vtbl[68];
+        }
+        if (vtbl[76]) {
+            g_orig_CreateCommittedResource3 = (PFN_Dev_CreateCommittedResource3)vtbl[76];
+        }
         if (VirtualProtect(&vtbl[29], sizeof(void*) * 52, PAGE_READWRITE, &oldProt)) {
             if (vtbl[29] && vtbl[29] != (void*)hook_CreatePlacedResource) {
                 g_orig_CreatePlacedResource = (PFN_Dev_CreatePlacedResource)vtbl[29];
@@ -271,7 +408,8 @@ static void patch_device_vtable(void* dev) {
             }
             VirtualProtect(&vtbl[29], sizeof(void*) * 52, oldProt, &oldProt);
             g_vtable_patched = 1;
-            fprintf(stderr, "[DirectMetal-D3D12Guard] Installed CreatePlacedResource/1/2 alignment guard on ID3D12Device vtable\n");
+            fprintf(stderr, "[DirectMetal-D3D12Guard] Installed CreatePlacedResource/1/2 alignment guard on ID3D12Device vtable (fast_fallback=%d)\n",
+                    g_fast_fallback);
         }
     }
     LeaveCriticalSection(&g_cs);
@@ -388,6 +526,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     (void)hInst; (void)reserved;
     if (reason == DLL_PROCESS_ATTACH) {
         InitializeCriticalSection(&g_cs);
+        refresh_fast_fallback_env();
     } else if (reason == DLL_PROCESS_DETACH) {
         DeleteCriticalSection(&g_cs);
     }

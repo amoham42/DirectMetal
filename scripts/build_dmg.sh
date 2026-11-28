@@ -4,9 +4,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-APP_BUNDLE="${REPO_ROOT}/dist/DirectMetal.app"
-DMG_PATH="${REPO_ROOT}/dist/DirectMetal-macOS-arm64.dmg"
-VOL_NAME="DirectMetal"
+CUSTOM_APP_BUNDLE=""
+CUSTOM_DMG_PATH=""
+CUSTOM_VOL_NAME=""
+LITE_MODE=0
 SIGN_IDENTITY="${APPLE_SIGN_IDENTITY:--}"
 NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-}"
 REQUEST_SIGN=0
@@ -16,16 +17,20 @@ PACKAGE_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --lite)
+      LITE_MODE=1
+      shift
+      ;;
     --app)
-      APP_BUNDLE="$2"
+      CUSTOM_APP_BUNDLE="$2"
       shift 2
       ;;
     --output)
-      DMG_PATH="$2"
+      CUSTOM_DMG_PATH="$2"
       shift 2
       ;;
     --volname)
-      VOL_NAME="$2"
+      CUSTOM_VOL_NAME="$2"
       shift 2
       ;;
     --repackage)
@@ -61,9 +66,10 @@ Builds a compressed macOS arm64 DMG installer (default ULFO / Apple LZFSE, or UL
 with optional Apple Developer ID code signing, Notarytool submission, and Ticket Stapling.
 
 Options:
-  --app <path>              Source .app bundle (default: dist/DirectMetal.app)
-  --output <path>           Output .dmg path (default: dist/DirectMetal-macOS-arm64.dmg)
-  --volname <name>          Mounted volume name (default: DirectMetal)
+  --lite                    Build DirectMetal Lite DMG (defaults: dist/DirectMetal-Lite.app -> dist/DirectMetal-Lite-macOS-arm64.dmg)
+  --app <path>              Source .app bundle (default: dist/DirectMetal.app, or dist/DirectMetal-Lite.app with --lite)
+  --output <path>           Output .dmg path (default: dist/DirectMetal-macOS-arm64.dmg, or dist/DirectMetal-Lite-macOS-arm64.dmg with --lite)
+  --volname <name>          Mounted volume name (default: DirectMetal, or "DirectMetal Lite" with --lite)
   --repackage               Force running scripts/package_app.sh before building the DMG
   --include-rosetta         Include legacy Rosetta 2 runtime if packaging DirectMetal.app
   --ultra-compress          Use ULMO (LZMA) instead of default ULFO (LZFSE) for maximum release compression
@@ -83,6 +89,21 @@ EOF
       ;;
   esac
 done
+
+if [[ "${LITE_MODE}" == "1" ]]; then
+  APP_BUNDLE="${CUSTOM_APP_BUNDLE:-${REPO_ROOT}/dist/DirectMetal-Lite.app}"
+  DMG_PATH="${CUSTOM_DMG_PATH:-${REPO_ROOT}/dist/DirectMetal-Lite-macOS-arm64.dmg}"
+  VOL_NAME="${CUSTOM_VOL_NAME:-DirectMetal Lite}"
+  PACKAGE_ARGS+=(--lite)
+else
+  APP_BUNDLE="${CUSTOM_APP_BUNDLE:-${REPO_ROOT}/dist/DirectMetal.app}"
+  DMG_PATH="${CUSTOM_DMG_PATH:-${REPO_ROOT}/dist/DirectMetal-macOS-arm64.dmg}"
+  VOL_NAME="${CUSTOM_VOL_NAME:-DirectMetal}"
+fi
+if [[ -n "${CUSTOM_APP_BUNDLE}" ]]; then
+  PACKAGE_ARGS+=(--output "${APP_BUNDLE}")
+fi
+APP_BASENAME="$(basename "${APP_BUNDLE}")"
 
 if [[ "${REQUEST_SIGN}" == "1" && ( -z "${SIGN_IDENTITY}" || "${SIGN_IDENTITY}" == "-" ) ]]; then
   echo "error: --sign was passed, but no real Apple Developer ID identity was provided." >&2
@@ -116,21 +137,27 @@ trap cleanup EXIT
 rm -rf "${STAGE_DIR}"
 mkdir -p "${STAGE_DIR}"
 
-echo "[DirectMetal] Staging DMG layout in ${STAGE_DIR}..."
+echo "[DirectMetal] Staging DMG layout in ${STAGE_DIR} (${APP_BASENAME})..."
 # Prefer APFS CoW clone (-c) when staging on the same volume, falling back to standard copy across volumes
-if ! cp -Rc "${APP_BUNDLE}" "${STAGE_DIR}/DirectMetal.app" 2>/dev/null; then
-  cp -R "${APP_BUNDLE}" "${STAGE_DIR}/DirectMetal.app"
+if ! cp -Rc "${APP_BUNDLE}" "${STAGE_DIR}/${APP_BASENAME}" 2>/dev/null; then
+  cp -R "${APP_BUNDLE}" "${STAGE_DIR}/${APP_BASENAME}"
 fi
 
 ln -s /Applications "${STAGE_DIR}/Applications"
 
-cat > "${STAGE_DIR}/README.txt" <<'EOF'
-DirectMetal — Apple Silicon DirectX 9/10/11/12 Runtime
-======================================================
+if [[ "${LITE_MODE}" == "1" ]]; then
+  cat > "${STAGE_DIR}/README.txt" <<EOF
+DirectMetal Lite — Apple Silicon DirectX 9/10/11/12 Launcher
+============================================================
 
 Installation:
-  1. Drag DirectMetal.app onto the Applications folder shortcut.
-  2. Eject the DirectMetal disk image and launch DirectMetal from Applications.
+  1. Drag ${APP_BASENAME} onto the Applications folder shortcut.
+  2. Eject the ${VOL_NAME} disk image and launch ${APP_BASENAME%.app} from Applications.
+
+Verified First-Run Runtime Download:
+  DirectMetal Lite automatically downloads and SHA-256 verifies the signed ARM64EC + FEX + Mullion
+  runtime on first launch via the GUI, or from Terminal via:
+    /Applications/${APP_BASENAME}/Contents/MacOS/DirectMetal runtime install
 
 System Requirements:
   • Apple Silicon Mac (M1 / M2 / M3 / M4 / M5)
@@ -139,11 +166,33 @@ System Requirements:
 Local / Ad-Hoc Builds:
   If this DMG was built locally without Apple Developer ID notarization, remove
   Gatekeeper quarantine once after copying to /Applications:
-    xattr -dr com.apple.quarantine /Applications/DirectMetal.app
+    xattr -dr com.apple.quarantine "/Applications/${APP_BASENAME}"
 
 Command-Line Interface:
-  /Applications/DirectMetal.app/Contents/MacOS/DirectMetal --help
+  "/Applications/${APP_BASENAME}/Contents/MacOS/DirectMetal" --help
 EOF
+else
+  cat > "${STAGE_DIR}/README.txt" <<EOF
+DirectMetal — Apple Silicon DirectX 9/10/11/12 Runtime
+======================================================
+
+Installation:
+  1. Drag ${APP_BASENAME} onto the Applications folder shortcut.
+  2. Eject the ${VOL_NAME} disk image and launch ${APP_BASENAME%.app} from Applications.
+
+System Requirements:
+  • Apple Silicon Mac (M1 / M2 / M3 / M4 / M5)
+  • macOS 15.0 Sequoia or newer (macOS 26.4+ recommended for 100% post-Rosetta ARM64EC + FEX execution)
+
+Local / Ad-Hoc Builds:
+  If this DMG was built locally without Apple Developer ID notarization, remove
+  Gatekeeper quarantine once after copying to /Applications:
+    xattr -dr com.apple.quarantine "/Applications/${APP_BASENAME}"
+
+Command-Line Interface:
+  "/Applications/${APP_BASENAME}/Contents/MacOS/DirectMetal" --help
+EOF
+fi
 
 ICON_CANDIDATE=""
 if [[ -f "${APP_BUNDLE}/Contents/Resources/AppIcon.icns" ]]; then
@@ -199,13 +248,13 @@ if [[ -n "${SIGN_IDENTITY}" && "${SIGN_IDENTITY}" != "-" ]]; then
 EOF
   fi
 else
-  cat <<'EOF'
+  cat <<EOF
 [DirectMetal] Local unsigned/ad-hoc DMG build complete (no Developer ID certificate used).
-  • DirectMetal.app uses ad-hoc Hardened Runtime signing (-) for local Apple Silicon testing.
+  • ${APP_BASENAME} uses ad-hoc Hardened Runtime signing (-) for local Apple Silicon testing.
   • For public Gatekeeper distribution without quarantine prompts, re-run with real Apple credentials:
-      APPLE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-      APPLE_NOTARY_PROFILE="DirectMetalNotary" \
-      ./scripts/build_dmg.sh --repackage
+      APPLE_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \\
+      APPLE_NOTARY_PROFILE="DirectMetalNotary" \\
+      ./scripts/build_dmg.sh --repackage$( [[ "${LITE_MODE}" == "1" ]] && printf " --lite" )
 EOF
 fi
 
