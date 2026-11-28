@@ -227,11 +227,11 @@ enum RuntimeLauncher {
         return nil
     }
 
-    /// Marketing version of the running app (`CFBundleShortVersionString`), `1.0.0` for bare CLI builds.
+    /// Marketing version of the running app (`CFBundleShortVersionString`), `1.0.1` for bare CLI builds.
     static func appVersion() -> String {
         let v = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return (v?.isEmpty == false) ? v! : "1.0.0"
+        return (v?.isEmpty == false) ? v! : "1.0.1"
     }
 
     /// Resources that ship with DirectMetal itself rather than with a Wine runtime: `mullion.conf` and the

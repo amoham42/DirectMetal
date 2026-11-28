@@ -363,6 +363,8 @@ final class DirectMetalViewModel: ObservableObject {
                                                             failure: nil, gpuSummary: gpu)
                 DispatchQueue.main.async {
                     self.runningGameID = nil
+                    self.manager.recordSessionDuration(id: current.id, seconds: result.elapsedSeconds)
+                    self.reloadLibrary()
                     self.lastLaunches[current.id] = diagnostics
                     self.refreshPrefixes()
                     self.statusMessage = String(
@@ -730,6 +732,9 @@ struct GameDetailView: View {
                     .textSelection(.enabled)
                 HStack(spacing: 12) {
                     Label("\(e.playCount) play\(e.playCount == 1 ? "" : "s")", systemImage: "gamecontroller")
+                    if let pt = LauncherStyle.playtimeText(e.totalPlaySeconds) {
+                        Label(pt, systemImage: "timer")
+                    }
                     Label(LauncherStyle.lastPlayedText(e.lastPlayedUtc), systemImage: "clock")
                     Label(vm.gpuSummary, systemImage: "cpu")
                         .padding(.horizontal, 8)
